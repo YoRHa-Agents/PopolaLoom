@@ -1,0 +1,11 @@
+{
+  "mcpServers": {
+    "popolaloom": {
+      "command": "python",
+      "args": ["-m", "popolaloom.mcp"],
+      "env": {
+        "POPOLA_HOME": "${HOME}/.popola"
+      }
+    }
+  }
+}

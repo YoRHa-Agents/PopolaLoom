@@ -77,6 +77,28 @@ temp/
 *.bak
 
 
+# === PopolaLoom runtime artifacts ===
+# popolad daemon 的运行时产物 (出处: spec.md §10 路径表):
+#   ~/.popola/                       — 用户级 daemon 目录 (sock / pid / events / blobs)
+#   popola.sock                      — repo 内调试 socket
+#   events/                          — NDJSON event log 目录 (CloudEvents 1.0)
+#   state.sqlite                     — LangGraph SqliteSaver 持久化文件
+~/.popola/
+popola.sock
+events/
+state.sqlite
+
+# === PopolaLoom auxiliary build artifacts ===
+arktower.db
+.benchmarks/
+.coverage
+.hypothesis/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+.workflow/
+.cursor/
+
 # =============================================================================
 # DO NOT IGNORE — DevolaFlow tracked surfaces
 # =============================================================================

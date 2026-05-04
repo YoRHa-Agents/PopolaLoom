@@ -1,0 +1,10 @@
+# serializer version: 1
+# name: test_subgraph_dag_output_keys_snapshot
+  list([
+    'done',
+    'patch',
+    'prompt',
+    'score',
+    'test_output',
+  ])
+# ---

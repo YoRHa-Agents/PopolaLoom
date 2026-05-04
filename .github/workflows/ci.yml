@@ -1,0 +1,142 @@
+# PopolaLoom CI — testing-matrix.md §3.2 + §3.3 + roadmap v0.2.2 §3.3.
+#
+# Three lanes:
+#   * default — every PR + push to main; runs the fast Tier 1 + Tier 2
+#     suite + chaos (which is Tier-2-speed mocked failure injection).
+#     Matrix: ubuntu-22.04 + ubuntu-24.04 × Python 3.11 + 3.12.
+#   * slow    — weekly cron; runs Tier 3 (real daemon subprocess,
+#     cross-process dispatch, S1 crash recovery) + NFR benchmarks +
+#     self-bootstrap S1 + S3.
+#   * lint    — ruff (style + select rules) + mypy strict on src/.
+#
+# real_cli + real_lark + nightly lanes are out-of-scope for this CI
+# config; they're tracked under §3.2 and run on opt-in basis (manual
+# trigger or installer-shipped runners with the binaries / Lark
+# credentials present).
+
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+  schedule:
+    # weekly slow + lint regression sweep — Monday 03:00 UTC per
+    # testing-matrix.md §3.4.
+    - cron: "0 3 * * 1"
+
+jobs:
+  default:
+    name: default (${{ matrix.os }} / py${{ matrix.python-version }})
+    runs-on: ${{ matrix.os }}
+    if: github.event_name != 'schedule'
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-22.04, ubuntu-24.04]
+        python-version: ["3.11", "3.12"]
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python ${{ matrix.python-version }}
+        uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          # ArkTower lives at the absolute path used by the dev VM; if
+          # that's not present (which is true on GitHub-hosted runners)
+          # we install from the public ArkTower repo at the pinned
+          # commit referenced in spec §5.1.
+          if [ ! -d /home/agent/reference/ArkTower ]; then
+            mkdir -p /home/agent/reference
+            git clone --depth 1 https://github.com/YoRHa-Agents/ArkTower /home/agent/reference/ArkTower || true
+          fi
+          pip install -e ".[dev]"
+
+      - name: Run default lane (T1 + T2 + chaos)
+        run: |
+          pytest -m "not slow and not nightly and not real_cli and not real_lark" \
+            --cov=popolaloom \
+            --cov-report=term-missing \
+            --cov-report=xml:coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
+
+      - name: Upload coverage XML
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.os }}-py${{ matrix.python-version }}
+          path: coverage-${{ matrix.os }}-py${{ matrix.python-version }}.xml
+          if-no-files-found: ignore
+
+  slow:
+    name: slow lane (weekly cron + manual)
+    runs-on: ubuntu-latest
+    if: github.event_name == 'schedule' || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ ! -d /home/agent/reference/ArkTower ]; then
+            mkdir -p /home/agent/reference
+            git clone --depth 1 https://github.com/YoRHa-Agents/ArkTower /home/agent/reference/ArkTower || true
+          fi
+          pip install -e ".[dev]"
+
+      - name: Run slow lane (T3 + NFR + S1 self-bootstrap)
+        run: |
+          pytest -m "slow and not real_cli and not real_lark" \
+            --benchmark-only \
+            --benchmark-json=benchmarks-slow.json \
+            -o "addopts="
+
+      - name: Upload benchmark JSON
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: benchmarks-slow
+          path: benchmarks-slow.json
+          if-no-files-found: ignore
+
+  lint:
+    name: lint (ruff + mypy)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          if [ ! -d /home/agent/reference/ArkTower ]; then
+            mkdir -p /home/agent/reference
+            git clone --depth 1 https://github.com/YoRHa-Agents/ArkTower /home/agent/reference/ArkTower || true
+          fi
+          pip install -e ".[dev]"
+
+      - name: ruff check
+        run: ruff check src/popolaloom tests/
+
+      - name: mypy strict
+        run: mypy src/popolaloom

@@ -1,0 +1,24 @@
+{
+  "source_cli": "cursor",
+  "target_cli": "claude",
+  "source_task_id": "cursor-abc123def456",
+  "payload": {
+    "file_changes": [
+      {
+        "path": "src/popolaloom/daemon/primitives/relay.py",
+        "kind": "added",
+        "lines_added": 159,
+        "lines_removed": 0
+      }
+    ],
+    "next_step": "review",
+    "summary": "Implemented relay primitive (F2.2). Adds RelayHandoffEnvelope schema + relay() function that spawns a child task with parent_task_id link.",
+    "checkpoint_id": "v0.3.0-F2-relay-step-1"
+  },
+  "reason": "code review handoff after relay primitive implementation",
+  "constraints": {
+    "timeout": 1800,
+    "max_tokens": 50000,
+    "allowed_paths": ["src/popolaloom/daemon/primitives/**", "tests/test_primitives.py"]
+  }
+}
