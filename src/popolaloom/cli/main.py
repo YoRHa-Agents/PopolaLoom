@@ -62,7 +62,7 @@ app = typer.Typer(
 
 
 def _register_subcommand_groups() -> None:
-    """Attach the popolad + eval subcommand groups to the root app.
+    """Attach the popolad + eval + init subcommand groups to the root app.
 
     Registered here (not in :mod:`popolaloom.cli.__init__`) so that
     ``python -m popolaloom.cli.main`` invocations get the same surface
@@ -71,6 +71,7 @@ def _register_subcommand_groups() -> None:
     Typer app construction.
     """
     from popolaloom.cli.eval import app as eval_app
+    from popolaloom.cli.init_cmd import app as init_app
     from popolaloom.cli.popolad import app as popolad_app
 
     app.add_typer(popolad_app, name="popolad", help="Manage popolad daemon process")
@@ -79,6 +80,7 @@ def _register_subcommand_groups() -> None:
         name="eval",
         help="PopolaLoom self-evaluation (8-dim nines runner)",
     )
+    app.add_typer(init_app, name="init")
 
 
 _register_subcommand_groups()
