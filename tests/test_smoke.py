@@ -1,5 +1,21 @@
 """Smoke test: verify package import + version string.
 
+v0.5.0 release (Phase 2 prelude): user-facing Skill interaction
+surface + DevolaFlow-style multi-IDE installer.  Closes the v0.4.0
+"Known limitations" §4 (Skill install / `popola init` / multi-IDE)
+in 5 stages: S1 vendored ArkTower at ``popolaloom._vendored.arktower``
+(removing the ``arktower @ file://`` direct reference per Q5-4 fallback
+to Path B vendor), S2 ``popola init`` Typer subcommand group with 8
+verbs + 8 modifiers (mirrors DevolaFlow ``devola-init`` per Q5-2 lock),
+S3 canonical SKILL.md at ``src/popolaloom/skills/popolaloom/SKILL.md``
+(~ 10 623 chars / ~ 2 655 tokens, 7 sections, ships in wheel), S4
+``popola skill {install,doctor,upgrade}`` subcommand group + ``popola
+doctor`` aggregate health verb (4 new verbs total), S5 docs / DEMO /
+quickstart refresh + release notes + e2e + version bump.  See
+``release-notes-v0.5.0.md`` for the full v0.0.1 → v0.5.0 journey
+table, 5/5 stage closures, the Q5-1..Q5-5 answer ledger, and the
+final default-lane test count + coverage gate.
+
 v0.4.1 minor (Phase 1 close-out): the proactive Lark notification
 patch — the supervisor wait-thread now emits ``task.canceled``
 (closing the latent contract bug from v0.4.0 research §F.3), 5 new
@@ -65,4 +81,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.4.1"
+    assert popolaloom.__version__ == "0.5.0"

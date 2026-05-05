@@ -1,12 +1,101 @@
-# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.4.0 GA)
+# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.5.0)
 
-> 5-minute setup, 5-step automation, 8-dim self-evaluation.
+> 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
+> Skill install + `popola doctor` aggregate health check.
+
+## v0.5.0 Skill installation walkthrough
+
+The fastest path from a fresh checkout to "task running in Cursor +
+Lark notification on completion" is the new 6-step flow that ships with
+v0.5.0:
+
+```bash
+# 1. install (vendored ArkTower — no sibling clone required)
+$ pip install popolaloom
+Successfully installed popolaloom-0.5.0
+
+# 2. inspect detected IDEs (read-only — no writes)
+$ popola init --list
+Detected install targets:
+  cursor    project=present  global=missing
+  claude    project=present  global=missing
+  codex     CODEX_HOME=/home/agent/.codex (present)
+  copilot   project=present (single-file)
+  local     scaffold=missing
+
+# 3. install Skill into Cursor globally (idempotent)
+$ popola init cursor --global
+  OK   /home/agent/.cursor/skills/popolaloom/SKILL.md
+  OK   /home/agent/.cursor/skills/popolaloom/.popolaloom-version
+
+# 4. start the daemon
+$ popola popolad start
+popolad started, PID=12345
+socket: /home/agent/.popola/popolad.sock
+log:    /home/agent/.popola/log/popolad.log
+
+# 5. dispatch a task to Cursor
+$ popola dispatch "refactor module X for clarity, add tests" --cli=cursor --json
+{"task_id": "cursor-23e74ec18917", "events_log": "/home/.../events/cursor-23e74ec18917.jsonl", "cli": "cursor"}
+
+# 6. one-shot health check across skill + daemon + lark + ArkTower
+$ popola doctor
+PopolaLoom Doctor Report
+
+Skill audit
+  cursor global  /home/agent/.cursor/skills/popolaloom/SKILL.md  OK     v0.5.0
+  cursor project <repo>/.cursor/skills/popolaloom/SKILL.md       MISS   expected v0.5.0
+  claude global  /home/agent/.claude/skills/popolaloom/SKILL.md  MISS   expected v0.5.0
+  ...
+Daemon audit
+  socket   /home/agent/.popola/popolad.sock                       OK     pid=12345 uptime=3.4s
+Lark audit
+  lark-cli /usr/local/bin/lark-cli                                OK     binary on PATH
+  notify   LARK_HITL_TARGET_OPEN_ID                              WARN   env unset
+ArkTower audit
+  module   popolaloom._vendored.arktower                         OK     importable
+  005 mig  <repo>/migrations/005_popolaloom_extensions.sql        OK     present
+  006 mig  <repo>/migrations/006_popola_hitl.sql                  OK     present
+
+Summary: 4/4 subsystems checked. 1 WARN, 0 DRIFT, 0 FAIL.
+```
+
+The `popola doctor` exit code is `0` by default (WARN / DRIFT / MISS
+are informational); pass `--strict` to escalate any FAIL into a
+non-zero exit so CI scripts can hard-gate on it. The `--json` flag
+emits a 4-section envelope (`skill` / `daemon` / `lark` / `arktower`
++ a `summary` rollup) for programmatic consumers.
+
+### Lark notification subsection (v0.4.1+)
+
+When `lark-cli` is installed AND `LARK_HITL_TARGET_OPEN_ID` is set,
+the daemon proactively sends interactive cards on every terminal
+state (per the v0.4.1 minor; see
+[`release-notes-v0.4.1.md`](../release-notes-v0.4.1.md)):
+
+| Trigger | Default | Card colour |
+|---|---|---|
+| `task.completed` | ON (`LARK_NOTIFY_ON_COMPLETED=1`) | green |
+| `task.failed` | ON (`LARK_NOTIFY_ON_FAILED=1`) | red |
+| `task.canceled` | ON (`LARK_NOTIFY_ON_CANCELED=1`) | yellow |
+| `cancel → SIGKILL` | OFF (`LARK_NOTIFY_ON_CANCEL_ESCALATED=0`) | orange |
+
+> **Screenshots (placeholder for v0.5.1)**:
+> `docs/screenshots/popola-doctor-output.png`,
+> `docs/screenshots/lark-completion-card.png`,
+> `docs/screenshots/cursor-skill-discover.png` — to be added in a
+> v0.5.1 doc-only PR alongside the deferred curl-installer (per Q5-5
+> lock). The text/output captures above are the ground truth for now.
 
 ## Quickstart walkthrough
 
 The fastest way to see PopolaLoom working is the
 [`examples/quickstart.sh`](../examples/quickstart.sh) script.  It
-exercises the 5 canonical demo steps in ~10 seconds:
+exercises the 6 canonical demo steps (Steps 0–5: `popola init` dry-run
+→ daemon start → dispatch → list → status → `popola doctor` → daemon
+stop) in ~10 seconds. The historical 5-step output below is preserved
+as a v0.3.5 reference; for the v0.5.0 6-step variant see the
+"v0.5.0 Skill installation walkthrough" section above.
 
 ```bash
 $ bash examples/quickstart.sh

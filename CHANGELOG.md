@@ -4,36 +4,117 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
-## [Unreleased]
+## [0.5.0] — 2026-05-05
 
-### Fixed
+**Phase 2 prelude — Skill + multi-IDE installer + `popola doctor`.**
+Closes the v0.4.0 GA "Known limitations" §4 (Skill install /
+multi-IDE / `popola doctor`) in 5 stages on the
+`feature/v0.5.0-skill-install` branch. See
+[`release-notes-v0.5.0.md`](release-notes-v0.5.0.md) for the full
+write-up: v0.0.1 → v0.5.0 journey table, 5/5 stage closures, the
+Q5-1..Q5-5 answer ledger (all locked at the 2026-05-05 GATE via the
+operator's "skip-default" response), known limitations, and
+verification commands. The 5 stages each shipped on the same branch
+ahead of this release-prep commit:
 
-- `pip install popolaloom` now works on a fresh machine that does not
-  contain a local `/home/agent/reference/ArkTower` clone. The previous
-  `arktower @ file:///home/agent/reference/ArkTower` direct reference
-  in [`pyproject.toml`](pyproject.toml) made the wheel un-installable
-  anywhere except this development host (per
-  [v0.5.0 plan §3 D5.7](.local/memory/specs/popolaloom/v0.5.0-plan.md)
-  and the v0.5.0 research dossier §F.5 anomaly 2). v0.5.0 Stage S1
-  resolves this by **vendoring** the minimal ArkTower subset PopolaLoom
-  uses at runtime (TaskService, EventBus, MigrationRunner,
-  SqliteTaskRepository, the supporting Pydantic models, and the four
-  schema migrations) into `popolaloom._vendored.arktower`, removing the
-  direct reference from `pyproject.toml` entirely. Refresh procedure
-  documented in [`VENDORING.md`](VENDORING.md). (Stage S1 of v0.5.0;
-  D5.7 LOCKED Path B because the upstream `arktower` package is not
-  published on PyPI.)
+- **S1** · ArkTower `file://` direct reference removed; vendored at
+  `src/popolaloom/_vendored/arktower/` (Path B per Q5-4 fallback,
+  pinned to upstream commit `467a087`); refresh procedure in
+  [`VENDORING.md`](VENDORING.md).
+- **S2** · `popola init` Typer subcommand group with **8 verbs +
+  8 modifiers** (mirrors DevolaFlow `devola-init` per Q5-2 lock).
+  4 IDE targets (Cursor / Claude / Codex / Copilot) × 2 scopes
+  (except Copilot, project-only) × 3 modes — 33 install-matrix cases.
+- **S3** · canonical `SKILL.md` at
+  `src/popolaloom/skills/popolaloom/SKILL.md` (10 623 chars /
+  ~ 2 655 tokens, 7 sections, frontmatter `name: popolaloom` per
+  Q5-1 lock). Ships in the wheel via
+  `[tool.hatch.build.targets.wheel] packages = ["src/popolaloom"]`.
+- **S4** · `popola skill {install, doctor, upgrade}` subcommand
+  group + `popola doctor` aggregate health verb (4 new verbs total).
+  Three new `popolaloom.evolution` siblings
+  (`skill_install.py` / `skill_doctor.py` / `skill_upgrade.py`)
+  share the `SKILL_TARGETS` registry with `skill_inject.py`.
+- **S5** · this release-prep stage: docs / DEMO / quickstart refresh
+  + release notes + e2e + version bump (the 7 sub-deliverables
+  S5.A–S5.H listed below).
+
+### Added
+
+- [`release-notes-v0.5.0.md`](release-notes-v0.5.0.md) — top-level
+  release notes mirroring the
+  [`release-notes-v0.4.0.md`](release-notes-v0.4.0.md) +
+  [`release-notes-v0.4.1.md`](release-notes-v0.4.1.md) style; covers
+  the v0.0.1 → v0.5.0 journey, the 5 stages, test count + coverage
+  delta, the Q5-1..Q5-5 answer ledger, and the known limitations
+  rolled forward from v0.4.0 + v0.4.1.
+- `tests/integration/test_quickstart_v050.py` — slow-marked e2e
+  smoke (one case) that runs `bash examples/quickstart.sh` end-to-end
+  against an isolated `tmp_path` `$POPOLA_HOME`. Asserts the script
+  exits 0 within 60 s. Companion `tests/integration/__init__.py` is
+  also new.
+- `docs/DEMO.md` — additive `v0.5.0 Skill installation walkthrough`
+  section showing the new 6-step flow (install → `popola init
+  --list` → `popola init cursor --global` → `popola popolad start`
+  → `popola dispatch` → `popola doctor`) + a Lark notification
+  subsection enumerating the 4 default-card env vars.
 
 ### Changed
 
-- `pyproject.toml` no longer lists `arktower @ file://...` under the
-  `dependencies` array. The `[tool.hatch.metadata]
-  allow-direct-references = true` setting is preserved against possible
-  future re-introduction of a transitional pin if/when ArkTower lands
-  on PyPI.
-- `[tool.coverage.run]` excludes `src/popolaloom/_vendored/*` from the
-  coverage gate (vendored code is upstream code with its own tests; we
-  measure first-party coverage only).
+- **`README.md`** — substantial rewrite to reflect v0.5.0 reality:
+  - Status table grew to include 4 new rows (v0.4.1 proactive Lark
+    notifications + the v0.5.0 vendored-ArkTower / `popola init` /
+    canonical SKILL.md / `popola skill + popola doctor` rows).
+  - 5-minute Quickstart now uses the v0.5.0 flow:
+    `pip install popolaloom` → `popola init` → `popola popolad
+    start` → `popola dispatch` → `popola list` → `popola attach
+    --follow` → `popola doctor`.
+  - New **Skill** section explaining the canonical SKILL.md, the
+    per-IDE install paths table, the `popola skill upgrade` flow,
+    and the `popola doctor` 4-subsystem audit.
+  - **Install** section drops the legacy `pip install -e
+    "/home/agent/reference/ArkTower[dev]"` step; mentions vendoring
+    + `VENDORING.md` + the future PyPI publish plan.
+  - New **Lark notifications** section pointing to v0.4.1+ env vars
+    (`LARK_NOTIFY_*`).
+  - Architecture diagram preserved (still accurate); footer link
+    updated to point to `release-notes-v0.5.0.md`.
+- **`examples/quickstart.sh`** — rewritten from the v0.3.5 5-step
+  smoke to the v0.5.0 6-step smoke. Step 0 (NEW) shows
+  `popola init <target> --project --dry-run` so the script never
+  writes to `~/.cursor/` from a smoke run; steps 1–6 cover daemon
+  start → dispatch → list → status → `popola doctor` → daemon stop.
+  Honours `$POPOLA_HOME`, sets `trap cleanup EXIT`, and prints
+  `[quickstart] all 6 steps PASS` on success.
+- **`pyproject.toml`** — `version 0.4.1 → 0.5.0`.
+- **`src/popolaloom/__init__.py`** — `__version__ 0.4.1 → 0.5.0`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.4.1 → 0.5.0` (in lockstep with the package version per
+  the existing `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`
+  contract).
+- **`tests/test_smoke.py`** — version assertion bumped + a v0.5.0
+  release-note paragraph prepended in the module docstring.
+- **`.local/memory/specs/popolaloom/v0.5.0-plan.md`** — §0.5 Q5-1
+  through Q5-5 answers annotated with `**FINAL: A** (S5 ship-it)`
+  to record that the locked best-guess answers were the realised
+  v0.5.0 implementation choices.
+
+### Verified
+
+- [x] Default-lane `pytest -m "not slow and not nightly and not
+      real_cli and not real_lark" --cov=src/popolaloom
+      --cov-fail-under=91` PASS at **≥ 91 %** (1104+ tests pass /
+      18 skipped / 0 failed).
+- [x] `python -c "import popolaloom; assert popolaloom.__version__
+      == '0.5.0'"` PASS.
+- [x] `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`
+      PASS — frontmatter version + package version travel in
+      lockstep.
+- [x] `popola doctor` returns exit 0 on a healthy install + exit 1
+      on `--strict` with any FAIL row (per Stage S4 contract,
+      verified by the 18-case `tests/cli/test_doctor_cmd.py`).
+
+## [0.4.1] — 2026-05-05
 
 ## [0.4.1] — 2026-05-05
 
