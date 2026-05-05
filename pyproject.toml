@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.5.1"
+version = "0.5.2"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -159,7 +159,12 @@ omit = ["src/popolaloom/_vendored/*"]
 # tests/cli/test_main_error_paths.py (NEW), tests/daemon/test_rpc_error_paths.py
 # (NEW) + tests/cli/test_doctor_cmd.py extensions, lifting coverage
 # 91.15 → 92.56 % and locking in the new floor (per release-notes-v0.5.1.md).
-fail_under = 92
+# v0.5.2: bumped to 93 after Loop 2 added 64 default-lane tests across
+# tests/daemon/test_lark_supervisor_shutdown.py (NEW),
+# tests/daemon/test_server_coverage.py (NEW), and
+# tests/lark/test_listener_coverage.py (NEW), lifting coverage
+# 92.56 → 93.37 % and locking in the new floor (per release-notes-v0.5.2.md).
+fail_under = 93
 show_missing = true
 skip_covered = false
 exclude_lines = [

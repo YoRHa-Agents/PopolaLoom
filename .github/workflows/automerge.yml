@@ -82,7 +82,7 @@ jobs:
               --cov=popolaloom \
               --cov-report=term-missing \
               --cov-report=json:coverage.json \
-              --cov-fail-under=90 | tee pytest.log; then
+              --cov-fail-under=92 | tee pytest.log; then
             echo "test_pass=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_pass=false" >> "$GITHUB_OUTPUT"

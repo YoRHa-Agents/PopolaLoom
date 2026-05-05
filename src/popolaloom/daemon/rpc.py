@@ -296,6 +296,22 @@ def create_app(
                     popolad.cancel_task(tid, sigterm_grace_s=2.0)
                 except Exception:
                     logger.exception("shutdown cancel failed for task=%s", tid)
+            # v0.5.2 Loop 2 (L2.B): tear down the optional LarkSupervisor
+            # that ``_build_default_popolad`` may have wired onto the
+            # popolad instance.  Prior to v0.5.2 the supervisor was leaked
+            # at lifespan exit (release-notes-v0.5.1.md known limitation #2);
+            # we now call the public ``await supervisor.stop()`` so the
+            # ``lark-cli event consume`` subprocess + watchdog asyncio task
+            # are stopped cooperatively.  When env vars never opted Lark in
+            # ``_lark_supervisor`` is ``None`` and this branch is a no-op
+            # (per workspace rule "No Silent Failures": missing supervisor
+            # is the documented opt-out path, not an error).
+            supervisor = getattr(popolad, "_lark_supervisor", None)
+            if supervisor is not None:
+                try:
+                    await supervisor.stop()
+                except Exception:
+                    logger.exception("lark.supervisor.stop_failed; daemon shutdown continues")
             try:
                 popolad.shutdown_persistence_bridge()
             except Exception:

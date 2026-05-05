@@ -1,5 +1,26 @@
 """Smoke test: verify package import + version string.
 
+v0.5.2 patch (Loop 2 of v0.5.x → v0.6.0 self-improvement series):
+closes the three v0.5.1 deferred items by (1) aligning
+``.github/workflows/automerge.yml --cov-fail-under`` from 90 to 92
+so the auto-merge gate matches the project pyproject directive,
+(2) wiring ``LarkSupervisor.stop()`` into the
+``daemon/rpc.py:lifespan`` exit hook so the optional ``lark-cli
+event consume`` subprocess is torn down cooperatively at daemon
+shutdown (closes
+[`release-notes-v0.5.1.md`](release-notes-v0.5.1.md)
+known-limitation #2), and (3) lifting default-lane coverage with
+new tests against ``daemon/server.py`` + ``daemon/supervisor.py``
++ ``lark/listener.py`` (the 87 % / 87 % / 81 % modules called out
+as the next coverage targets in v0.5.1's known-limitation #3).
+Slow-lane gets two new NFR benchmark files
+(``tests/matrix/nfr/test_nfr_2_status_rtt.py`` + extensions to
+``tests/matrix/nfr/test_nfr_9_dispatch_p95.py``) that publish
+``mean / p95 / p99`` percentiles for trend tracking plus mocked-
+daemon serialization-overhead floors via ``httpx.MockTransport``.
+See ``release-notes-v0.5.2.md`` for the full closure summary +
+verification commands.
+
 v0.5.1 patch (Loop 1 of v0.5.x → v0.6.0 self-improvement series):
 unblocks GitHub-hosted CI by replacing the hardcoded
 ``mkdir -p /home/agent/reference`` (which fails with Permission
@@ -94,4 +115,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.1"
+    assert popolaloom.__version__ == "0.5.2"

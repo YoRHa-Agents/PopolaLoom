@@ -4,6 +4,117 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.2] — 2026-05-05
+
+**Patch — Loop 2 of the v0.5.x → v0.6.0 self-improvement series.**
+Closes the three deferred items from
+[`release-notes-v0.5.1.md`](release-notes-v0.5.1.md) "Known
+limitations" without expanding the public surface: (1) auto-merge
+gate `--cov-fail-under` aligned 90 → 92, (2) `LarkSupervisor`
+graceful shutdown wired into `daemon/rpc.py` lifespan exit, (3)
+default-lane coverage push targeting `daemon/server.py` (87 %),
+`daemon/supervisor.py` (87 %), and `lark/listener.py` (81 %). New
+slow-lane NFR benchmarks publish `mean / p95 / p99` for
+`GET /status` (NFR-2) and `POST /dispatch` (NFR-9) plus mocked-
+daemon serialization-overhead floors via `httpx.MockTransport`. The
+patch stays inside the v0.5.0 envelope: no new modules, no new ADRs,
+no `pyproject.toml` dependency change, version `0.5.1` → `0.5.2`.
+See [`release-notes-v0.5.2.md`](release-notes-v0.5.2.md) for the
+full write-up + verification commands.
+
+### Fixed
+
+- **Lark supervisor graceful shutdown** —
+  [`daemon/rpc.py:lifespan`](src/popolaloom/daemon/rpc.py) now
+  calls `await popolad._lark_supervisor.stop()` in its `finally`
+  block when the supervisor was wired up by `_build_default_popolad`.
+  Previously the supervisor (and its `lark-cli event consume`
+  subprocess + watchdog asyncio task) was leaked at every daemon
+  restart — flagged as known-limitation #2 in v0.4.1 + v0.5.0 +
+  v0.5.1. The new exit hook is symmetric with the existing
+  `shutdown_persistence_bridge` swallow path: `supervisor.stop()`
+  raising is caught + logged at ERROR (`lark.supervisor.stop_failed`)
+  per the workspace "No Silent Failures" rule, so a misbehaving
+  supervisor cannot trap the lifespan finally block. When env vars
+  never opted Lark in (`_lark_supervisor is None`), the new branch
+  is a no-op.
+- **Auto-merge gate alignment** —
+  [`.github/workflows/automerge.yml`](.github/workflows/automerge.yml)
+  bumped `--cov-fail-under=90` → `--cov-fail-under=92` so the gate
+  matches the `pyproject.toml [tool.coverage.report] fail_under = 92`
+  directive set in v0.5.1. Previously the auto-merge gate would
+  green-light a PR with 91 % coverage even though the project
+  pyproject required 92 — a documented v0.5.1 known-limitation #4.
+
+### Changed
+
+- **`pyproject.toml`** — `version 0.5.1 → 0.5.2`;
+  `[tool.coverage.report] fail_under = 92 → 93` (the L2.D push
+  lifted realised default-lane coverage 92.56 → 93.37 % so the new
+  floor is locked in).
+- **`src/popolaloom/__init__.py`** — `__version__ 0.5.1 → 0.5.2`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.5.1 → 0.5.2` (lockstep with package version per the
+  existing
+  `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`
+  contract).
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** —
+  drift-detection marker bumped to `0.5.2`.
+- **`tests/test_smoke.py`** — version assertion bumped + a v0.5.2
+  release-note paragraph prepended in the module docstring.
+
+### Added
+
+- **`tests/daemon/test_lark_supervisor_shutdown.py`** (NEW) — 4
+  default-lane cases asserting the lifespan exit invokes
+  `supervisor.stop()` exactly once, that absence of a supervisor is
+  a documented no-op, that a raised exception is swallowed +
+  logged, and that the stop call runs **before**
+  `shutdown_persistence_bridge` (cooperative ordering contract).
+- **`tests/daemon/test_server_coverage.py`** (NEW) — 17 default-lane
+  cases targeting the previously-uncovered ramps in
+  `daemon/server.py` (87 % → ≥ 90 %) + `daemon/supervisor.py`
+  (87 % → ≥ 95 %): cancel-task `ProcessLookupError` ramp,
+  `_maybe_create_arktower_task` ImportError + repository.create
+  exception fallbacks, `_schedule_lark_terminal_notification`
+  swallow paths, `rehydrate_from_persistence` empty / ImportError
+  branches, `_emit_recovered_events` Exception swallow, supervisor
+  drain-stream Exception + close-failed paths, `_maybe_canceled_terminal`
+  store-exception + non-canceled fallback, `_get_session_id` for
+  dead pids, `_emit_stream_truncated`, `_safe_on_exit`, and
+  `_wait_and_finalize` proc.wait Exception emission.
+- **`tests/lark/test_listener_coverage.py`** (NEW) — 27 default-
+  lane cases targeting the previously-uncovered lines in
+  `lark/listener.py` (81 % → ≥ 90 %) without spawning a real
+  `lark-cli` subprocess: `_extract_event_type` v1/v2/missing
+  branches, `_extract_text_message` defensive returns,
+  `_extract_sender_open_id` shapes, idempotent `stop()`, `is_alive`
+  + `stats` properties, `_dispatch_event` routing (card / text /
+  unknown), unauthorized callback Exception swallow,
+  `_handle_card_action` missing-action / missing-keys ramps,
+  `_handle_text_feedback` no-text + non-matching + with-reason
+  paths, `_consume_stdout` parse-error / non-dict / dispatch-
+  exception ramps, `_consume_stderr` early-return + buffer
+  rotation + ready marker detection, plus `parse_card_action` /
+  `parse_message_command` public-helper unauthorized + missing-
+  keys + happy paths, plus `POPOLA_FEEDBACK_PATTERN` regex
+  coverage.
+- **`tests/matrix/nfr/test_nfr_2_status_rtt.py`** (NEW, slow-marked)
+  — 4 NFR-2 cases publishing 100-sample `GET /status` mean / p95 /
+  p99 with `mean < 50 ms`, `p95 < 100 ms`, `p99 < 200 ms` budgets
+  (generous head-room over the actual ~360 µs mean observed on the
+  developer VM); pytest-benchmark trend-tracking variant; mocked-
+  daemon serialization-overhead floor (`< 5 ms` mean, no UDS hop);
+  404-path-also-fast 100-sample assertion.
+- **`tests/matrix/nfr/test_nfr_9_dispatch_p95.py`** (extended,
+  slow-marked) — 2 new NFR-9 cases (in addition to the existing
+  4 cases) publishing 100-sample `POST /dispatch` mean / p95 / p99
+  with `mean < 100 ms`, `p95 < 200 ms` budgets; mocked-daemon
+  serialization floor benchmark via `httpx.MockTransport`.
+- [`release-notes-v0.5.2.md`](release-notes-v0.5.2.md) — top-level
+  release notes mirroring the
+  [`release-notes-v0.5.1.md`](release-notes-v0.5.1.md) style.
+
 ## [0.5.1] — 2026-05-05
 
 **Patch — Loop 1 of the v0.5.x → v0.6.0 self-improvement series.**
