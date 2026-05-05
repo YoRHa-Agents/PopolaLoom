@@ -1,7 +1,62 @@
-# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.5.0)
+# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.5.5)
 
 > 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
-> Skill install + `popola doctor` aggregate health check.
+> Skill install + `popola doctor` aggregate health check, and (v0.5.5+)
+> an interactive setup wizard.
+
+## v0.5.x evolution walkthrough (Loops 1–5)
+
+The five v0.5.x patches form a deliberate self-improvement chain
+between the v0.5.0 baseline and the forthcoming v0.6.0 minor. The
+table below shows what each loop pushed forward + the cumulative
+test / coverage delta for the default lane (per the lane filter
+``-m "not slow and not nightly and not real_cli and not real_lark"``):
+
+| Loop | Version | Closure focus                                             | Tests Δ          | Coverage Δ        |
+|------|---------|-----------------------------------------------------------|------------------|-------------------|
+| 1    | v0.5.1  | CI runner-writable fix + 90 error-path tests              | 1104 → 1194 (+90)| 91.15 % → 92.56 % |
+| 2    | v0.5.2  | NFR-2 / NFR-9 benchmarks + Lark supervisor shutdown       | 1194 → 1258 (+64)| 92.56 % → 93.37 % |
+| 3    | v0.5.3  | vendored arktower CI imports + ruff lint + SKILL `--cli-flag` docs | 1258 → 1258 (+0) | 93.37 % → 93.37 % |
+| 4    | v0.5.4  | mutmut surface 1 → 4 + 63 edge / mutation tests           | 1258 → 1321 (+63)| 93.37 % → 93.94 % |
+| 5    | v0.5.5  | `popola init --interactive` wizard + mutmut 4 → 5 + vendored migrations + coverage push | 1321 → 1368 (+47)| 93.94 % → 94.60 % |
+
+Each loop's "Known limitations / deferred" section feeds the next
+loop's first 5 minutes — see the per-version release notes
+(`release-notes-v0.5.{1,2,3,4,5}.md`) for the closure ledger and the
+verification commands.
+
+## v0.5.5 interactive wizard (NEW)
+
+```bash
+$ popola init --interactive
+PopolaLoom interactive setup wizard
+-----------------------------------
+Auto-detected: cursor, claude
+Install for Cursor? [Y/n]: y
+  Scope for cursor [G=global / P=project] [P]: P
+Install for Claude? [Y/n]: y
+  Scope for claude [G=global / P=project] [P]: P
+Install for Copilot? [y/N]: n
+Install for Codex? [y/N]: n
+Scaffold .local/ workspace? [Y/n]: y
+
+Install plan:
+  - cursor (project) → /repo/.cursor/skills/popolaloom/SKILL.md
+  - claude (project) → /repo/.claude/skills/popolaloom/SKILL.md
+  - local (project) → /repo/.local
+
+Proceed with this plan? [Y/n]: y
+
+  Cursor (project) -> /repo/.cursor/skills/popolaloom/SKILL.md
+  OK   /repo/.cursor/skills/popolaloom/SKILL.md
+  ...
+Interactive setup complete.
+```
+
+The wizard is mutually-exclusive with `--list` and verb subcommands:
+mixing them raises a `BadParameter` (the non-interactive path is
+still the default for CI scripts; `--interactive` is a deliberate
+human-driven UX surface).
 
 ## v0.5.0 Skill installation walkthrough
 

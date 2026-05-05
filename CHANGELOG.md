@@ -4,6 +4,114 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.5] — 2026-05-06
+
+**Patch — Loop 5 of the v0.5.x → v0.6.0 self-improvement series; the
+final patch before the v0.6.0 minor consolidation.** Polishes what
+Loops 1–4 built + closes the highest-priority known limitations
+carried forward across the loop chain. README + DEMO get the v0.5.x
+evolution table; `popola init` learns an `--interactive` wizard for
+human-driven setup; the `[tool.mutmut].paths_to_mutate` declarative
+surface grows from 4 to 5 modules (closes the v0.5.4 future-work
+bullet for `evaluation/runner.py`); a vendored ArkTower migration
+test suite lands; a final coverage push lifts default-lane 93.94 →
+94.60 % (+0.66 pp) and bumps the `[tool.coverage.report] fail_under`
+floor 93 → 94 to lock in the new gate. The patch stays inside the
+v0.5.0 envelope on the source side: 0 new src/ modules, 0 new
+dependencies, 0 ADRs, version `0.5.4 → 0.5.5`. See
+[`release-notes-v0.5.5.md`](release-notes-v0.5.5.md) for the full
+write-up + verification commands + the 5-loop journey rollup.
+
+### Added
+
+- **`popola init --interactive` flag** — root callback in
+  `src/popolaloom/cli/init_cmd.py` grows an `--interactive` Option
+  + `_run_interactive_wizard` helper + `_prompt_scope` +
+  `_resolve_target_path_for_wizard` private helpers (~ 130 LOC).
+  When set, walks the operator through a wizard (auto-detect IDEs →
+  confirm install per IDE → choose scope → confirm plan → execute)
+  using `typer.confirm` + `typer.prompt`. Mutually-exclusive with
+  `--list` + verb subcommands (mixing them raises `BadParameter`).
+- **`tests/cli/test_init_interactive.py`** (NEW, 6 cases) — covers
+  the wizard happy-path with all detected IDEs accepted; decline-
+  all writes nothing; `--interactive` + verb subcommand →
+  BadParameter; global-scope choice lands under `~/`; operator
+  backs out at "Proceed?" cancels the plan; fresh-repo cursor-
+  default fallback.
+- **`tests/test_evaluation_mutation_kills.py`** (NEW, 9 cases) —
+  boundary tests for the new `evaluation/runner.py` mutation
+  surface: zero-evidence placeholder for every scorer; partial-
+  evidence interpolation; full-evidence ↦ composite =
+  sum(weights); composite cutoffs at 0.85 / 0.90 / 0.95 (the
+  canonical dual-gate cutoffs); `_load_weights` 3 fallback paths
+  (missing TOML, unparseable TOML, non-table `[eval] weights`);
+  `_iso_utc` UTC normalisation of naive timestamps;
+  `collect_evidence` files=0 when dir missing.
+- **`tests/test_vendored_arktower_migrations.py`** (NEW, 4 cases)
+  — closes the prior-plan carry-over for the vendored ArkTower
+  subset under `src/popolaloom/_vendored/arktower/`: vendored
+  package + 4 subpackages all import cleanly; PopolaLoom 005/006
+  migrations exist + create their respective tables when applied
+  against in-memory SQLite; vendored `MigrationRunner` applies
+  the 4 ArkTower migrations end-to-end + populates `schema_version`
+  rows for versions 1..4 + idempotent re-runs are a no-op;
+  `POPOLA_ARKTOWER_MIGRATIONS_DIR` env-var override is honoured
+  when valid + falls back when bogus or unset.
+- **`tests/test_coverage_v055_push.py`** (NEW, 28 cases) — final
+  coverage push targeting the LAST missing branches the v0.5.4
+  term-missing report flagged across 6 modules:
+  `cli/_skill_source.py` placeholder-stub fallback +
+  `canonical_source_path` not-a-file branch;
+  `evaluation/dimensions/dispatch_isolation.py` `_safe_getpgid`
+  None / TypeError edges + PID-only fallback;
+  `single_threaded_writes.py` `OSError` on read + `ImportError`
+  of popolaloom; `evolution/skill_inject.py` unknown-target /
+  unsupported-scope KeyError + `$HOME` env override +
+  `emit_skill_check_event` None-event-log + append-failure swallow;
+  `evolution/skill_upgrade.py` `_read_existing_version`
+  UnicodeDecodeError + missing-frontmatter + unclosed-frontmatter
+  + no-version-field branches + quoted-version parsing;
+  `cli/skill_cmd.py` status-renderer table-action-column branches
+  (SKIP / `?` / UP-TO-DATE / DRIFT / OK / MISS).
+
+### Changed
+
+- **`README.md`** — Status table grows by 5 rows (v0.5.{1,2,3,4,5});
+  a "Loop-driven self-improvement" section explains the v0.5.x →
+  v0.6.0 5-loop chain; verification commands updated for
+  `fail_under = 94`; quickstart adds `--interactive` example;
+  install snippet expects `0.5.5`.
+- **`docs/DEMO.md`** — title bumped to v0.3.5 → v0.5.5; new "v0.5.x
+  evolution walkthrough" section with the 5-row closure table; new
+  "v0.5.5 interactive wizard" section with a worked demo. v0.4.0 +
+  v0.5.0 walkthroughs preserved.
+- **`pyproject.toml [tool.mutmut].paths_to_mutate`** — list grows
+  from 4 to 5 entries (adds `src/popolaloom/evaluation/runner.py`).
+  In-line comment block grows by ~ 12 lines documenting the v0.5.5
+  rationale + the carry-over live-mutmut blocker.
+- **`pyproject.toml [tool.coverage.report] fail_under`** — `93 → 94`.
+  In-line comment block grows by ~ 7 lines documenting the v0.5.5
+  coverage push + the new test files that lifted the line count.
+- Version `0.5.4 → 0.5.5` in `pyproject.toml`,
+  `src/popolaloom/__init__.py`, SKILL.md frontmatter (+ `last_updated`),
+  `.popolaloom-version`, and `tests/test_smoke.py`.
+
+### Deferred (to v0.6.0)
+
+- **Live `mutmut run` activation** — carry-over from v0.3.4 +
+  v0.5.{4,5}. The src-layout / editable-install friction is
+  unchanged; v0.5.5 is a declarative path expansion only. Pinned
+  for v0.6.0 alongside the proper layout fix.
+- **`automerge.yml --cov-fail-under`** still pinned at 92 (was
+  bumped from 90 in v0.5.2); a 1-line follow-up in v0.6.0 should
+  align it with the new 94 floor.
+- **Real Lark supervisor lifecycle test** — carry-over from v0.5.{2,3,4,5}.
+- **`--cli-flag cmd_args="--trust"` adapter passthrough** — carry-
+  over from v0.5.{3,4,5}. Sized + tracked for v0.6.0.
+- **Wizard `--mode` + `--with-examples` extension** — v0.5.5's
+  wizard focuses on per-IDE confirm + scope; v0.6.0 may add a
+  "Customize local scaffold?" follow-up that exposes those modifiers.
+
 ## [0.5.4] — 2026-05-05
 
 **Patch — Loop 4 of the v0.5.x → v0.6.0 self-improvement series.**

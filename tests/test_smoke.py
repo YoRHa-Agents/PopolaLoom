@@ -1,5 +1,21 @@
 """Smoke test: verify package import + version string.
 
+v0.5.5 patch (Loop 5 — final patch before v0.6.0 consolidation):
+the polish loop. Closes the v0.5.4 carry-overs by (1) refreshing
+``README.md`` + ``docs/DEMO.md`` to reflect v0.5.{1,2,3,4} closures
++ adding a "Loop-driven self-improvement" section explaining the
+v0.5.x → v0.6.0 5-loop pattern; (2) adding ``--interactive`` to the
+``popola init`` root callback (``typer.confirm`` + ``typer.prompt``
+based wizard for human-driven setup); (3) closing the v0.5.4
+deferred bullet by promoting ``evaluation/runner.py`` from
+mutation candidate to declared surface (5 modules total now in
+``[tool.mutmut].paths_to_mutate``); (4) adding the carry-over
+vendored ArkTower migration test suite; (5) running the final
+coverage push that lifts default-lane coverage 93.94 % → 94.60 %
++ bumps the ``[tool.coverage.report] fail_under`` floor 93 → 94.
+See ``release-notes-v0.5.5.md`` for the full closure summary +
+verification commands + the 5-loop rollup table.
+
 v0.5.4 patch (Loop 4 of v0.5.x → v0.6.0 self-improvement series):
 strengthens test quality beyond pure line coverage. The
 ``[tool.mutmut].paths_to_mutate`` declarative surface grows from 1
@@ -159,4 +175,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.4"
+    assert popolaloom.__version__ == "0.5.5"

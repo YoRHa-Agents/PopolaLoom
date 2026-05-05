@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.5.4"
+version = "0.5.5"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -171,7 +171,15 @@ omit = ["src/popolaloom/_vendored/*"]
 # tests/daemon/test_server_coverage.py (NEW), and
 # tests/lark/test_listener_coverage.py (NEW), lifting coverage
 # 92.56 → 93.37 % and locking in the new floor (per release-notes-v0.5.2.md).
-fail_under = 93
+# v0.5.5: bumped to 94 after Loop 5's final coverage push lifted default-
+# lane coverage 93.94 → 94.60 % via 47 new tests across
+# tests/cli/test_init_interactive.py (NEW),
+# tests/test_evaluation_mutation_kills.py (NEW),
+# tests/test_vendored_arktower_migrations.py (NEW), and
+# tests/test_coverage_v055_push.py (NEW). The new floor is the post-
+# v0.5.5 Phase-2-prelude-polish gate; v0.6.0 may revisit it once the
+# multi-agent dispatch surface lands (per release-notes-v0.5.5.md).
+fail_under = 94
 show_missing = true
 skip_covered = false
 exclude_lines = [
@@ -223,10 +231,30 @@ strict = true
 # blocked by the src/ + editable layout friction (carried forward from
 # v0.3.4). The expectation is when mutmut becomes runnable the four
 # modules together will hit ≥ 80 % aggregate kill rate.
+#
+# v0.5.5 (Loop 5 of v0.5.x → v0.6.0) closes the v0.5.4 future-work
+# bullet by promoting `evaluation/runner.py` from candidate to declared
+# mutation surface (5 modules total now). Rationale:
+#   - evaluation/runner.py — the 8-dim PopolaLoom-nines scorer
+#     orchestrator; collects evidence from NDJSON event logs, calls
+#     each :class:`DimensionScorer`, folds into a weighted composite.
+#     A regression in `_score_<dim>()` boundary handling (zero /
+#     partial / full evidence) silently corrupts every reported nines
+#     score, which downstream `evolution/dual_gate.py` consumes as the
+#     outer-gate Δ ≥ 0.02 input. Coverage 89 % at v0.5.4 — Loop 5 adds
+#     boundary tests in `tests/test_evaluation_mutation_kills.py`
+#     targeting the placeholder-vs-measured score boundaries the live
+#     mutmut run would prod first.
+# Live mutmut runs remain blocked by the same src-layout / editable-
+# install friction documented in evidence/mutmut-baseline.md (carried
+# forward from v0.3.4 + v0.5.4); v0.5.5 is a declarative-only +
+# targeted-test bump. The expectation when mutmut becomes runnable is
+# that the five modules together hit ≥ 80 % aggregate kill rate.
 paths_to_mutate = [
     "src/popolaloom/daemon/state.py",
     "src/popolaloom/daemon/event_log.py",
     "src/popolaloom/cli/init_cmd.py",
     "src/popolaloom/cli/doctor_cmd.py",
+    "src/popolaloom/evaluation/runner.py",
 ]
 tests_dir = ["tests/"]

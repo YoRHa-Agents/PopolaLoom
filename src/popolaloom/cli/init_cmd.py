@@ -6,6 +6,15 @@ matrix (per Q5-2 lock); the reference implementation lives at
 ``/root/miniforge/lib/python3.12/site-packages/devolaflow/init_project.py``
 (read-only).
 
+v0.5.5 (Loop 5 of v0.5.x → v0.6.0 self-improvement) adds an
+``--interactive`` flag to the root ``popola init`` callback for
+human-driven setup: when set, walks the operator through a wizard
+(detect IDEs → confirm install per IDE → choose scope → confirm
+plan → execute) using :func:`typer.confirm` + :func:`typer.prompt`
+for I/O. The flag is mutually-deferential with the verb subcommands
+(``init`` with no verb + ``--interactive`` enters the wizard; verbs
+take their flags as before).
+
 Verb matrix (8 rows, mirrored from the locked plan §4):
 
 +----+--------------------------------+------------------------------------+
@@ -533,9 +542,28 @@ def init_callback(
         "--dry-run",
         help="Print every path that would be written without touching disk.",
     ),
+    interactive: bool = typer.Option(
+        False,
+        "--interactive",
+        help=(
+            "Walk through an interactive setup wizard (detect IDEs → confirm "
+            "per-IDE install → choose scope → confirm plan → execute). "
+            "Other modifiers (mode, target, --list, --dry-run when combined) "
+            "are ignored once --interactive is set; the wizard collects them "
+            "from the operator instead."
+        ),
+    ),
 ) -> None:
-    """Top-level callback: handle ``--list`` and the no-subcommand auto-detect path."""
+    """Top-level callback: handle ``--list``, ``--interactive``, and auto-detect."""
     cwd = Path.cwd()
+    if interactive:
+        if ctx.invoked_subcommand is not None:
+            raise typer.BadParameter(
+                "--interactive cannot be combined with a verb subcommand"
+            )
+        _run_interactive_wizard(cwd)
+        raise typer.Exit(code=0)
+
     if list_only:
         if ctx.invoked_subcommand is not None:
             raise typer.BadParameter(
@@ -558,6 +586,128 @@ def init_callback(
             _install_local(cwd, no_compile=False, with_examples=False, dry_run=dry_run)
         elif target in {"cursor", "claude", "copilot", "codex"}:
             _install_target(target, scope="project", cwd=cwd, dry_run=dry_run)
+
+
+# ── interactive wizard ──────────────────────────────────────────────────
+
+
+_IDE_TARGETS_FOR_WIZARD: tuple[str, ...] = ("cursor", "claude", "copilot", "codex")
+"""Order in which the wizard prompts about IDE targets.
+
+The order matches the table printed by ``popola init --list`` so the
+wizard's UX feels consistent with the discovery surface. ``local`` is
+prompted last (after the IDE round) because scaffolding the
+``.local/`` workspace is a project-shape decision rather than an IDE
+integration.
+"""
+
+
+def _run_interactive_wizard(cwd: Path) -> None:
+    """Walk the operator through an interactive setup.
+
+    Steps (per the v0.5.5 L5.B contract):
+
+    1. Detect IDEs in ``cwd`` and ``$HOME``.
+    2. For each IDE target (cursor / claude / copilot / codex):
+       - Prompt: "Install for <IDE>? [Y/n]" — default Yes when the
+         IDE was auto-detected, default No otherwise.
+       - When Yes (and the IDE supports both scopes), prompt:
+         "Global or project-local? [G/p]" — default Project when the
+         project marker exists, default Global otherwise.  Copilot
+         skips this prompt (project-only by design).
+    3. Prompt: "Scaffold .local/ workspace? [Y/n]" — default Yes when
+       the directory is missing.
+    4. Show the install plan and prompt: "Proceed? [Y/n]".
+    5. When confirmed, dispatch each chosen install verb.
+
+    All I/O goes through :func:`typer.confirm` and :func:`typer.prompt`;
+    tests inject stdin via ``CliRunner.invoke(..., input="...")`` per
+    Typer's testing docs.
+
+    The wizard never honours ``--dry-run`` directly: it's a separate
+    UX surface (operators driving the wizard explicitly want writes).
+    Tests should patch ``Path.home`` + ``Path.cwd`` to a tmp dir to
+    keep the developer's real config untouched.
+    """
+    detected = set(_auto_detect(cwd))
+
+    typer.echo("PopolaLoom interactive setup wizard")
+    typer.echo("-----------------------------------")
+    if detected:
+        typer.echo(f"Auto-detected: {', '.join(sorted(detected))}")
+    else:
+        typer.echo("Auto-detected: (none — defaults will favor cursor)")
+
+    plan: list[tuple[str, str]] = []
+    for ide in _IDE_TARGETS_FOR_WIZARD:
+        default_yes = ide in detected or (ide == "cursor" and not detected)
+        prompt_label = f"Install for {ide.capitalize()}?"
+        if not typer.confirm(prompt_label, default=default_yes):
+            continue
+        if ide == "copilot":
+            scope = "project"
+        else:
+            scope = _prompt_scope(ide=ide, default_project=ide in detected)
+        plan.append((ide, scope))
+
+    install_local_choice = typer.confirm(
+        "Scaffold .local/ workspace?",
+        default=not (cwd / ".local").is_dir(),
+    )
+
+    if not plan and not install_local_choice:
+        typer.echo("\nNothing selected. Wizard exiting without changes.")
+        return
+
+    typer.echo("\nInstall plan:")
+    for ide, scope in plan:
+        path = _resolve_target_path_for_wizard(ide, scope=scope, cwd=cwd)
+        typer.echo(f"  - {ide} ({scope}) → {path}")
+    if install_local_choice:
+        typer.echo(f"  - local (project) → {cwd / '.local'}")
+
+    if not typer.confirm("\nProceed with this plan?", default=True):
+        typer.echo("Aborted by operator. No changes written.")
+        return
+
+    typer.echo("")
+    for ide, scope in plan:
+        _install_target(ide, scope=scope, cwd=cwd, dry_run=False)
+    if install_local_choice:
+        _install_local(cwd, no_compile=False, with_examples=False, dry_run=False)
+    typer.echo("\nInteractive setup complete.")
+
+
+def _prompt_scope(*, ide: str, default_project: bool) -> str:
+    """Prompt the operator for ``global`` vs ``project`` scope.
+
+    Returns the literal string ``"global"`` or ``"project"``.  Anything
+    that doesn't parse as G/g/global is treated as project (mirrors the
+    DevolaFlow wizard's "default-friendly" parser; we deliberately avoid
+    raising on free-text since the wizard is meant for humans).
+    """
+    default_label = "P" if default_project else "G"
+    raw = typer.prompt(
+        f"  Scope for {ide} [G=global / P=project]",
+        default=default_label,
+    )
+    token = (raw or "").strip().lower()
+    if token in {"g", "global"}:
+        return "global"
+    return "project"
+
+
+def _resolve_target_path_for_wizard(ide: str, *, scope: str, cwd: Path) -> Path:
+    """Return the install path the wizard will write for the chosen ide+scope."""
+    if ide == "cursor":
+        return cursor_target_path(scope, cwd=cwd)
+    if ide == "claude":
+        return claude_target_path(scope, cwd=cwd)
+    if ide == "copilot":
+        return copilot_target_path(cwd=cwd)
+    if ide == "codex":
+        return codex_target_path()
+    raise typer.BadParameter(f"unknown wizard target: {ide!r}")
 
 
 def _resolve_scope(global_: bool, project: bool, *, default: str = "project") -> str:
