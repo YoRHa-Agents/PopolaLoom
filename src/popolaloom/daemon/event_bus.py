@@ -53,7 +53,6 @@ from popolaloom._vendored.arktower.core.task_service import (
 
 if TYPE_CHECKING:
     from popolaloom._vendored.arktower.core.models import TaskEvent
-
     from popolaloom.daemon.event_log import EventLog
 
 

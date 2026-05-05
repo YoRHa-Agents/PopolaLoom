@@ -25,10 +25,14 @@ from datetime import UTC, datetime
 from pathlib import Path
 
 import pytest
-from arktower.core.event_bus import EventBus
-from arktower.core.models import TaskEvent, TaskStatus, Trigger
-from arktower.core.task_service import TASK_TRANSITION_EVENT
 
+from popolaloom._vendored.arktower.core.event_bus import EventBus
+from popolaloom._vendored.arktower.core.models import (
+    TaskEvent,
+    TaskStatus,
+    Trigger,
+)
+from popolaloom._vendored.arktower.core.task_service import TASK_TRANSITION_EVENT
 from popolaloom.daemon import EventLog, PopolaEventBusBridge
 
 

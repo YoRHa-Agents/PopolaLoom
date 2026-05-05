@@ -4,6 +4,134 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.3] — 2026-05-05
+
+**Patch — Loop 3 of the v0.5.x → v0.6.0 self-improvement series.**
+Closes the three CI red-build items surfaced after the Loop 2
+(`feat(v0.5.2)`) push lit up the GitHub-hosted runner: (1) bare
+`from arktower.X import Y` imports in two test files that the dev
+VM (with `pip install -e /home/agent/reference/ArkTower`) can resolve
+but the hosted runner cannot since v0.5.0 vendored ArkTower under
+`popolaloom._vendored.arktower`; (2) 11 ruff errors — 10 of them in
+the read-only `src/popolaloom/_vendored/arktower/` upstream snapshot
++ 1 `I001` (import block ordering) in our own
+`src/popolaloom/daemon/event_bus.py` `if TYPE_CHECKING:` block; (3)
+the `--cli-flag KEY=VAL` adapter-passthrough docs gap the v0.5.0
+functional test (`/tmp/popolaloom-skill-functional-test.md`) flagged
+as the highest-value undocumented user surface. The patch stays
+inside the v0.5.0 envelope: 0 new src/ modules, 0 ADRs, 0
+dependency changes, version `0.5.2 → 0.5.3`. See
+[`release-notes-v0.5.3.md`](release-notes-v0.5.3.md) for the full
+write-up + verification commands.
+
+### Fixed
+
+- **`arktower` bare imports → vendored path** —
+  [`tests/test_event_bus.py`](tests/test_event_bus.py) and
+  [`tests/test_repository.py`](tests/test_repository.py) had 5
+  remaining `from arktower.X import Y` imports (ArkTower 0.1.0
+  upstream layout) that the GitHub-hosted runner could not resolve
+  because v0.5.0 (D5.7 LOCKED Path B) removed the
+  `arktower @ file:///home/agent/reference/ArkTower` direct
+  reference and vendored the relevant subset under
+  `popolaloom._vendored.arktower`. The dev VM still has a transient
+  `pip install -e /home/agent/reference/ArkTower` which masked the
+  gap locally; the hosted runner does not. v0.5.3 rewrites all 5
+  sites to `from popolaloom._vendored.arktower.X import Y` so the
+  test collection step on the runner stops crashing with
+  `ModuleNotFoundError: No module named 'arktower'`.
+  `git grep "^from arktower" tests/ src/popolaloom/` (excluding
+  `_vendored/`) returns ZERO hits after the fix.
+- **Ruff lint clean** — `ruff check src/popolaloom tests/` had been
+  flagging 11 violations (SIM105, UP017 ×3, UP042 ×4, N818, plus
+  one I001) since v0.5.0 added the vendored ArkTower copy; 10 of 11
+  live in `src/popolaloom/_vendored/arktower/` which
+  [`VENDORING.md`](VENDORING.md) marks read-only. v0.5.3 (a) adds
+  `[tool.ruff] extend-exclude = ["src/popolaloom/_vendored"]` to
+  [`pyproject.toml`](pyproject.toml) — symmetric with the existing
+  `[tool.coverage.run] omit = ["src/popolaloom/_vendored/*"]` rule
+  that already exempts the vendored copy from our coverage gate;
+  (b) fixes the lone owned-code `I001` violation in
+  [`src/popolaloom/daemon/event_bus.py`](src/popolaloom/daemon/event_bus.py)
+  by removing the stray blank line inside the `if TYPE_CHECKING:`
+  first-party import group. After the fix, `ruff check
+  src/popolaloom tests/` exits 0.
+
+### Changed
+
+- **`pyproject.toml`** —
+  - `[project] version = "0.5.2" → "0.5.3"`.
+  - `[tool.ruff] extend-exclude = ["src/popolaloom/_vendored"]`
+    added (4 lines including the docstring comment) so the upstream
+    vendored ArkTower copy stays out of our lint scope. Mirrors
+    the existing coverage exemption.
+- **`src/popolaloom/__init__.py`** — `__version__ 0.5.2 → 0.5.3`.
+- **`src/popolaloom/daemon/event_bus.py`** — removed a single blank
+  line inside the `if TYPE_CHECKING:` import group so isort treats
+  `popolaloom._vendored.arktower.core.models` and
+  `popolaloom.daemon.event_log` as a single first-party group
+  (closes the `I001 Import block is un-sorted or un-formatted`
+  violation reported by ruff).
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** —
+  - Frontmatter `version: 0.5.2 → 0.5.3`,
+    `token_estimate: 2800 → 2950` (Workflow 4 + table row added
+    ~ 2 400 chars / ~ 600 tokens of body content).
+  - **Quick reference** table gets a new row for
+    `popola dispatch ... --cli-flag KEY=VAL` with a
+    `popola dispatch ... --cli=cursor --cli-flag output_format=stream-json`
+    example.
+  - **NEW Workflow 4 — Adapter-specific arg passthrough
+    (`--cli-flag`)** section documenting the actual `--cli-flag
+    KEY=VAL` syntax (the user-spec shorthand `--extra` maps to this
+    real CLI option per `cli/main.py:_parse_cli_flags` (R-012
+    landing)), the JSON-then-string value parser, the supported KEYs
+    per adapter (cursor: `output_format` / `cwd_flag` /
+    `session_id`; claude: `session_id` / `max_turns`; codex:
+    `sandbox`), and 3 concrete worked examples (cursor stream-json
+    + claude session_id pre-allocation + codex sandbox lockdown).
+  - The previous `Workflow 4 — Self-eval (PopolaLoom-nines)` is
+    renumbered to `Workflow 5 — Self-eval (PopolaLoom-nines)`;
+    content unchanged.
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** —
+  drift-detection marker bumped to `0.5.3`.
+- **`tests/test_smoke.py`** — version assertion bumped + a v0.5.3
+  release-note paragraph prepended in the module docstring.
+
+### Added
+
+- [`release-notes-v0.5.3.md`](release-notes-v0.5.3.md) — top-level
+  release notes mirroring the
+  [`release-notes-v0.5.2.md`](release-notes-v0.5.2.md) style.
+  Documents the 3 closures (CI imports / lint / SKILL.md docs),
+  the 1 owned-source line touched (`daemon/event_bus.py:55`), the
+  6 lockstep version files, and the verification command set.
+
+### Verified
+
+- [x] Default-lane `pytest -m "not slow and not nightly and not
+      real_cli and not real_lark" --cov=src/popolaloom
+      --cov-fail-under=93` PASS at **≥ 93 %** (coverage
+      `93.37 %` carried forward from v0.5.2 — no source code
+      changes besides the 1-line `daemon/event_bus.py` blank-line
+      removal).
+- [x] `python -c "import popolaloom; assert popolaloom.__version__
+      == '0.5.3'"` PASS.
+- [x] `ruff check src/popolaloom tests/` exits 0.
+- [x] `git grep "^from arktower" tests/ src/popolaloom/` excluding
+      `_vendored/` returns ZERO hits.
+- [x] `git grep "^import arktower" tests/ src/popolaloom/`
+      excluding `_vendored/` returns ZERO hits.
+- [x] `tests/cli/test_skill_md_canonical.py` passes —
+      frontmatter version is `0.5.3`, body length is ~ 12 460 chars
+      (well within the documented `[8 000, 16 000]` budget).
+- [x] No modifications outside the documented owned-files set
+      (`pyproject.toml`, `src/popolaloom/__init__.py`,
+      `src/popolaloom/daemon/event_bus.py`,
+      `src/popolaloom/skills/popolaloom/{SKILL.md,.popolaloom-version}`,
+      `tests/test_event_bus.py`, `tests/test_repository.py`,
+      `tests/test_smoke.py`, `CHANGELOG.md`,
+      `release-notes-v0.5.3.md`).
+
 ## [0.5.2] — 2026-05-05
 
 **Patch — Loop 2 of the v0.5.x → v0.6.0 self-improvement series.**

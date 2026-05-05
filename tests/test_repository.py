@@ -23,8 +23,12 @@ from pathlib import Path
 from typing import Any
 
 import pytest
-from arktower.core.models import TaskCreate, TaskFilter, TaskStatus
 
+from popolaloom._vendored.arktower.core.models import (
+    TaskCreate,
+    TaskFilter,
+    TaskStatus,
+)
 from popolaloom.daemon import (
     Popolad,
     TaskPersistence,
@@ -254,7 +258,7 @@ def test_rehydrate_from_persistence_loads_in_flight_tasks(
     """
     import asyncio
 
-    from arktower.core.models import Trigger
+    from popolaloom._vendored.arktower.core.models import Trigger
 
     async def _seed() -> tuple[str, str, str]:
         submitted = await persistence.task_service.create_task(
@@ -359,7 +363,7 @@ def test_rehydrate_emits_popolad_recovered_event(
     """
     import asyncio
 
-    from arktower.core.models import Trigger
+    from popolaloom._vendored.arktower.core.models import Trigger
 
     async def _seed() -> str:
         running = await persistence.task_service.create_task(

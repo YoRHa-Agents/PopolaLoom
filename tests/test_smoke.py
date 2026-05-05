@@ -1,5 +1,25 @@
 """Smoke test: verify package import + version string.
 
+v0.5.3 patch (Loop 3 of v0.5.x → v0.6.0 self-improvement series):
+closes the three CI red-build items surfaced by Loop 2's
+``feat(v0.5.2)`` push: (1) the bare ``from arktower.X import Y``
+imports in ``tests/test_event_bus.py`` + ``tests/test_repository.py``
+that the GitHub-hosted runner cannot resolve since v0.5.0 vendored
+ArkTower under ``popolaloom._vendored.arktower`` (the dev VM still
+has a transient ``pip install -e /home/agent/reference/ArkTower``
+which masks the gap locally), (2) eleven ruff lint errors that
+``ruff check src/popolaloom tests/`` flags inside the read-only
+``src/popolaloom/_vendored/arktower/`` upstream snapshot — fixed by
+adding ``[tool.ruff] extend-exclude = ["src/popolaloom/_vendored"]``
+to mirror the existing ``[tool.coverage.run] omit`` rule, plus the
+single owned-code I001 import-sort fix in
+``src/popolaloom/daemon/event_bus.py``, and (3) the
+``--cli-flag KEY=VAL`` adapter-passthrough docs gap that the v0.5.0
+functional test (``/tmp/popolaloom-skill-functional-test.md``)
+flagged as the most-needed undocumented feature.  See
+``release-notes-v0.5.3.md`` for the full closure summary +
+verification commands.
+
 v0.5.2 patch (Loop 2 of v0.5.x → v0.6.0 self-improvement series):
 closes the three v0.5.1 deferred items by (1) aligning
 ``.github/workflows/automerge.yml --cov-fail-under`` from 90 to 92
@@ -115,4 +135,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.2"
+    assert popolaloom.__version__ == "0.5.3"

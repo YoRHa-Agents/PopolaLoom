@@ -1,6 +1,6 @@
 ---
 name: popolaloom
-version: 0.5.2
+version: 0.5.3
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -9,7 +9,7 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola --help"
 tier: 1
-token_estimate: 2800
+token_estimate: 2950
 last_updated: "2026-05-05"
 ---
 
@@ -44,6 +44,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
+| `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
 | `popola list` | 列出非终态任务（含 task_id / cli / state / pid） | `popola list` |
 | `popola list --all` | 含已完成 / 失败 / 取消的所有任务 | `popola list --all` |
 | `popola status <task_id>` | 单任务全字段状态（JSON 加 `--json`） | `popola status cursor-23e74ec18917` |
@@ -127,7 +128,44 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
 4. **`LarkSupervisor` 把 reply 写回 LangGraph state，任务恢复执行**（state 切回 `running`，事件总线发 `state.resumed`）。
 5. **用 `popola attach <task_id> --follow` 在终端同步看到 resume 后的输出**，或等 `LARK_NOTIFY_ON_COMPLETED=1` 后 Lark 卡通知终态。
 
-### Workflow 4 — Self-eval (PopolaLoom-nines)
+### Workflow 4 — Adapter-specific arg passthrough (`--cli-flag`)
+
+每个 agent CLI 有自己的可选参数（cursor 的 `--output-format` / `--session-id`、claude 的 `--max-turns` / `--session-id`、codex 的 `--sandbox` 三档）；PopolaLoom 用统一的 `--cli-flag KEY=VAL` 选项透传，daemon 把 `KEY=VAL` 收进 `extra` dict 后由各 adapter 的 `build_command` 拼成最终 argv。Value 优先按 JSON 解析（`true` / `123` / `"foo"`），解析失败 fall back 到字符串（`output_format=text` 等同 `output_format="text"`），出处 `cli/main.py:_parse_cli_flags`（R-012 落地）。
+
+**支持的 KEY**（按 adapter 列；多余 / 未识别的 KEY 会被 adapter 静默忽略）：
+
+| Adapter | KEY | 类型 | 含义 / 落点 argv |
+|---|---|---|---|
+| `cursor` | `output_format` | str | `text`（默认）/ `stream-json`，落到 `--output-format <val>`（白名单校验，违规直接 ValueError，No Silent Failures） |
+| `cursor` | `cwd_flag` | bool | `true` 时把 `--cwd <cwd>` 注入 argv；默认 `false`（让 supervisor 通过 `Popen(cwd=...)` 控制） |
+| `cursor` | `session_id` | str | 追加 `--session-id <chatId>`，与 `cursor-agent create-chat` 预生成的 chat 复用 |
+| `claude` | `session_id` | str (UUID) | 追加 `--session-id <UUID>`，"先分配 ID 再 spawn" 形态 |
+| `claude` | `max_turns` | int | 追加 `--max-turns <n>`，限对话轮数（防长任务失控） |
+| `codex` | `sandbox` | str | 三档之一: `read-only` / `workspace-write` / `danger-full-access`，落到 `--sandbox <val>`（白名单校验） |
+
+**3 个常见用法**：
+
+1. **Cursor `stream-json` 输出**（让 supervisor 端 NDJSON 解析器逐行消费 cursor 的工具调用事件）：
+   ```bash
+   popola dispatch "design caching layer" --cli=cursor \
+     --cli-flag output_format=stream-json
+   ```
+2. **Claude 先生成会话 UUID 再 spawn**（PopolaLoom 派发器的标准做法 — 让 `task_id` 与 `session_id` 一一对应，便于 attach / handoff 复用）：
+   ```bash
+   SESSION=$(python -c "import uuid;print(uuid.uuid4())")
+   popola dispatch "refactor module X" --cli=claude \
+     --cli-flag session_id="$SESSION" \
+     --cli-flag max_turns=10
+   ```
+3. **Codex 限制 sandbox 到只读模式**（适合 design-only / review-only 派发，防 codex 不小心写文件）：
+   ```bash
+   popola dispatch "review src/foo.py for bugs" --cli=codex \
+     --cli-flag sandbox=read-only
+   ```
+
+> **Tip**：`--cli-flag` 可重复多次（典型用法是 cursor 的 `output_format=stream-json` + `session_id=<chatId>` 同时给）。Value 含空格 / 等号时用 shell 引号 + JSON 字符串：`--cli-flag 'cmd_args="--foo --bar"'`（注意 popolaloom 的 cursor adapter 当前**不**透传任意 cmd_args；需要 cursor-agent 自定义 flag 时走 `popolaloom._vendored` 二开或等 v0.6+ 的 `--passthrough` 项）。
+
+### Workflow 5 — Self-eval (PopolaLoom-nines)
 
 跑 8 维度自评、写 TOML 报告，2 步：
 
