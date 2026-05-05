@@ -168,3 +168,85 @@ tests, observing failure, and reverting).
    targeting **80 %** kill rate aggregate.
 3. Add a CI job (`mutation-quick`) that runs mutmut on a 5-module
    panel weekly and posts the result as a CHANGELOG-tagged report.
+
+## v0.5.4 — surface expansion (Loop 4 of v0.5.x → v0.6.0)
+
+**Date**: 2026-05-05
+**Loop**: 4 (after v0.5.3 import + lint cleanup)
+
+### Why this update
+
+The v0.3.4 round-4 baseline pinned `daemon/state.py` at 100 % inferred
+kill rate against 24 canonical mutations, but `[tool.mutmut]
+paths_to_mutate` still listed only that one module. v0.5.4 is a
+**declarative** expansion of the surface — when mutmut becomes
+runnable (post src-layout fix) the path list will direct the run
+across 4 modules total. The corresponding test additions land in
+this loop so the kill-rate target is met from day one of the live
+run.
+
+### Surface changes
+
+`pyproject.toml [tool.mutmut].paths_to_mutate` grows from 1 to 4
+modules:
+
+| # | Module | Coverage | Why high blast radius |
+|---|--------|----------|-----------------------|
+| 1 | `src/popolaloom/daemon/state.py` | 100 % | Round-4 baseline; FSM core. |
+| 2 | `src/popolaloom/daemon/event_log.py` | 95 % | Append-only NDJSON writer (R-011 fd-held buffered write contract); every task event flows through it; corruption here would cascade across the entire observability surface. |
+| 3 | `src/popolaloom/cli/init_cmd.py` | 91 % | Stage S2 multi-IDE installer dispatcher (8 verbs × 8 modifiers); idempotency contract is consumer-facing; a bad mutation could cause silent overwrite of a developer's hand-edited SKILL.md. |
+| 4 | `src/popolaloom/cli/doctor_cmd.py` | 99 % | Stage S4 aggregate health verb (4 subsystems + roll-up tally); `--json` schema is consumer-facing for CI gates + monitoring scripts; verdict roll-up is the core decision logic for `--strict` exit codes. |
+
+### Targeted test additions (Loop 4)
+
+Total: **63 new default-lane tests** across 4 new test files.
+
+| Module | New test file | Test count | Targeted contracts |
+|--------|---------------|-----------:|---------------------|
+| `cli/init_cmd.py` | `tests/cli/test_init_cmd_edge_cases.py` | 20 | auto-detect with empty / fully-populated IDEs, `--list` BadParameter for verb mix, dry-run for every verb, `--no-with-examples` overrides `--mode=full` (mirror direction of existing test), `_install_target` rejects unknown target, `_write_marker` dry-run + already-exists branches, copilot `--global` warning, `_scaffold_path` dry-run dir + file branches, `_resolve_scope` default branch. |
+| `cli/doctor_cmd.py` | `tests/cli/test_doctor_cmd_edge_cases.py` | 13 | `_probe_daemon` end-to-end success path (line 254 — uncovered prior), `--json` envelope schema stability (5 top-level keys + 4 verdict sub-keys + 4 canonical row keys), `_roll_up` monotonicity + OFF-demote-to-OK, `--strict` red summary path, ArkTower OK happy path (positive control), Lark notify on/off literal pinning, daemon FAIL detail string. |
+| `cli/popolad.py` | `tests/cli/test_popolad_cmd.py` | 23 | `start` refuses live-PID, recovers from corrupt-PID, removes stale socket, surfaces premature subprocess exit + bind timeout; `stop` no-PID-file, no-PID-but-stale-socket, dead-PID cleanup, unreadable PID file, live-process SIGTERM path, SIGKILL escalation; `status` corrupt-PID-error, no-socket exit-1, JSON envelope keys, unreachable socket, non-200 health, fully-up zero-exit; `_pid_alive`, `_can_connect`, `_cleanup_files` helpers. |
+| `daemon/state.py` | `tests/daemon/test_state_mutation_kills.py` | 7 | PENDING ↔ RUNNING transition atomic against concurrent reads; `update(state=None)` no-op for state field but still writes other fields; post-update terminal handle visibility (race window); `cancel_escalated_to_sigkill` flip True → False with explicit-only-when-not-None semantics; `list_active` excludes mid-stream terminal handles; `register` duplicate-raises-atomically; `update` returns same handle object stored in dict (identity preservation). |
+
+### Expected aggregate kill rate
+
+When mutmut becomes runnable across the 4-module path list, the
+expected aggregate kill rate is **≥ 80 %**, derived as:
+
+| Module | Baseline coverage | Mutation classes | Round-2 boost |
+|--------|------------------:|------------------|---------------|
+| `daemon/state.py` | 100 % (round-4) | 24 canonical mutations enumerated above | + 7 round-2 contracts (race + identity + transitions) |
+| `daemon/event_log.py` | 95 % | append + close + tail + fsync + worker — full v0.2.2 NFR-3 + v0.2.3 chaos coverage already in place | declarative addition; no test additions in Loop 4 (existing coverage is sufficient for ≥ 80 %) |
+| `cli/init_cmd.py` | 91 % → expected 95 % after Loop 4 | + 20 edge cases + helper-direct unit tests | scope conflict + auto-detect + idempotency + dry-run all pinned |
+| `cli/doctor_cmd.py` | 99 % → expected 100 % after Loop 4 | + 13 edge cases | JSON schema stability + verdict roll-up + literal-equality on notify on/off |
+
+### Carry-over limitations
+
+1. **Live `mutmut run` still blocked.** The src-layout / editable-
+   install friction documented in the v0.3.4 baseline section is
+   unchanged. mutmut 3.5 still copies the source tree to `mutants/`
+   + chdir's there before pytest, which clashes with our
+   `pip install -e .` resolution. The carry-over fix path remains
+   pinned for v0.6.0 (vendoring approach: drop editable + reinstall
+   inside the mutant copy per run).
+2. **`evaluation/runner.py` deferred.** The v0.3.4 future-work bullet
+   listed `evaluation/runner.py` as a candidate; v0.5.4 holds it back
+   because it has 89 % coverage with several integration paths that
+   need a live daemon, which makes mutmut runs even more friction-
+   prone than the modules we did add. Pinned for v0.6.0 alongside
+   the layout fix.
+
+### Verification (when mutmut becomes runnable)
+
+```bash
+mutmut run                  # mutate + test the 4 modules
+mutmut results              # report kill rate per module
+mutmut show <id>            # inspect a survivor
+```
+
+The expectation:
+- `daemon/state.py`: ≥ 95 % kill (round-4 baseline + Loop 4 round-2).
+- `daemon/event_log.py`: ≥ 80 % kill (existing NFR-3 + chaos suite).
+- `cli/init_cmd.py`: ≥ 80 % kill (Loop 4 edge cases).
+- `cli/doctor_cmd.py`: ≥ 85 % kill (Loop 4 edge cases + verdict roll-up).
+- **Aggregate: ≥ 80 %** across the 4 modules.

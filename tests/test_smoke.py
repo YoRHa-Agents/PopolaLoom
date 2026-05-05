@@ -1,5 +1,29 @@
 """Smoke test: verify package import + version string.
 
+v0.5.4 patch (Loop 4 of v0.5.x → v0.6.0 self-improvement series):
+strengthens test quality beyond pure line coverage. The
+``[tool.mutmut].paths_to_mutate`` declarative surface grows from 1
+module (`daemon/state.py` round-4 baseline) to 4 modules — adds
+``daemon/event_log.py`` (R-011 fd-held NDJSON appender; high blast
+radius), ``cli/init_cmd.py`` (S2 multi-IDE installer; idempotency
+contract), and ``cli/doctor_cmd.py`` (S4 aggregate health verb;
+``--json`` schema is consumer-facing). Three new edge-case test
+files target previously-undertested branches the live mutmut run
+would prod first: ``tests/cli/test_init_cmd_edge_cases.py`` (20
+cases — auto-detect / dry-run / scope conflict / idempotency
+permutations), ``tests/cli/test_doctor_cmd_edge_cases.py`` (13
+cases — ``_probe_daemon`` end-to-end success path + ``--json``
+schema stability + ``_roll_up`` monotonicity + literal pinning),
+``tests/cli/test_popolad_cmd.py`` (23 cases — start refuses live-
+PID + recovers from corrupt-PID, stop SIGTERM/SIGKILL escalation,
+status JSON envelope + non-200 health). Round-2 mutation kills for
+``daemon/state.py`` land in
+``tests/daemon/test_state_mutation_kills.py`` (7 cases — race
+window, identity preservation, atomic transitions). Plus version
+bump to 0.5.4 + ``evidence/mutmut-baseline.md`` v0.5.4 section.
+See ``release-notes-v0.5.4.md`` for the full closure summary +
+verification commands.
+
 v0.5.3 patch (Loop 3 of v0.5.x → v0.6.0 self-improvement series):
 closes the three CI red-build items surfaced by Loop 2's
 ``feat(v0.5.2)`` push: (1) the bare ``from arktower.X import Y``
@@ -135,4 +159,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.3"
+    assert popolaloom.__version__ == "0.5.4"

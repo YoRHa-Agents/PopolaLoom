@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.5.3"
+version = "0.5.4"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -194,12 +194,39 @@ strict = true
 [tool.mutmut]
 # v0.3.4 round 4 — mutation testing baseline (per testing-matrix.md §6).
 # Live mutmut 3.5 invocation is currently blocked by our src/ layout
-# (see evidence/mutmut-baseline.md for analysis); v0.3.4 ships a MANUAL
+# (see evidence/mutmut-baseline.md for analysis); v0.3.4 shipped a MANUAL
 # mutation-analysis ledger + targeted mutation-killing tests that lift
 # the inferred kill rate on daemon/state.py from ~70 % → ≥ 90 %.
 # v0.4.x will revisit live mutmut once the mutants/ vs src/ layering
 # friction is solved (mutmut 3.5 changes CWD before invoking pytest,
-# which clashes with our editable install; pinned to a known target
-# module here so the future re-enablement is mechanical).
-paths_to_mutate = ["src/popolaloom/daemon/state.py"]
+# which clashes with our editable install; pinned to known target
+# modules here so the future re-enablement is mechanical).
+#
+# v0.5.4 (Loop 4 of v0.5.x → v0.6.0) declarative surface expansion: the
+# `paths_to_mutate` list grows from 1 module to 4. Rationale:
+#   - daemon/state.py — round-4 baseline (100 % inferred kill on 24
+#     canonical mutations per evidence/mutmut-baseline.md).
+#   - daemon/event_log.py — append-only NDJSON writer with fd-held
+#     buffered write contract (R-011 fix); high blast radius if buggy
+#     (every task event flows through it). Coverage 95 % at v0.5.4.
+#   - cli/init_cmd.py — Stage S2 multi-IDE installer dispatcher (8
+#     verbs × 8 modifiers; idempotency contract). Coverage 91 %; round-4
+#     edge tests in tests/cli/test_init_cmd_edge_cases.py target the
+#     conflict-resolution + auto-detect-empty + dry-run permutations
+#     mutmut would prod next.
+#   - cli/doctor_cmd.py — Stage S4 aggregate health verb (4 subsystems
+#     + roll-up tally). Coverage 99 %; round-4 edge tests in
+#     tests/cli/test_doctor_cmd_edge_cases.py target the verdict
+#     roll-up + JSON schema stability + WARN-vs-FAIL exit-code
+#     boundary.
+# This is a declarative path expansion ONLY; live mutmut runs are still
+# blocked by the src/ + editable layout friction (carried forward from
+# v0.3.4). The expectation is when mutmut becomes runnable the four
+# modules together will hit ≥ 80 % aggregate kill rate.
+paths_to_mutate = [
+    "src/popolaloom/daemon/state.py",
+    "src/popolaloom/daemon/event_log.py",
+    "src/popolaloom/cli/init_cmd.py",
+    "src/popolaloom/cli/doctor_cmd.py",
+]
 tests_dir = ["tests/"]

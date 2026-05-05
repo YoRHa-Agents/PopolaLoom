@@ -4,6 +4,99 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.4] — 2026-05-05
+
+**Patch — Loop 4 of the v0.5.x → v0.6.0 self-improvement series.**
+Strengthens test quality beyond pure line coverage by expanding the
+`[tool.mutmut].paths_to_mutate` declarative surface from 1 module
+(`daemon/state.py` round-4 baseline) to 4 modules (adds
+`daemon/event_log.py` — R-011 fd-held NDJSON appender; high blast
+radius + `cli/init_cmd.py` — Stage S2 multi-IDE installer dispatcher
++ `cli/doctor_cmd.py` — Stage S4 aggregate health verb), plus 63
+new default-lane edge-case tests across 4 new test files targeting
+the previously-undertested branches the live mutmut run would prod
+first. Round-2 mutation kills land for `daemon/state.py` to lock in
+the race-window + identity-preservation contracts. Live mutmut runs
+remain blocked by the src-layout / editable-install friction
+documented in `evidence/mutmut-baseline.md` (carry-over from
+v0.3.4); this is a declarative + targeted-test bump. The patch
+stays inside the v0.5.0 envelope: 0 new src/ modules, 0 ADRs, 0
+dependency changes, version `0.5.3 → 0.5.4`. See
+[`release-notes-v0.5.4.md`](release-notes-v0.5.4.md) for the full
+write-up + verification commands.
+
+### Added
+
+- **`tests/cli/test_init_cmd_edge_cases.py`** (NEW, 20 cases) —
+  closes the 91 % → ~ 95 % coverage gap on `cli/init_cmd.py` and
+  pins the auto-detect dispatcher (no IDEs / `.github` / `~/.codex`
+  / `.local`-absent), `--list` BadParameter for verb mix, dry-run
+  for every verb, `--no-with-examples` overrides `--mode=full`
+  (mirror direction of the existing core-override test),
+  `_install_target` rejects unknown target, `_write_marker`
+  dry-run + already-exists branches, copilot `--global` warning,
+  `_scaffold_path` dry-run dir + file branches, `_resolve_scope`
+  default branch, four-IDE `init all` second-run all-SKIP.
+- **`tests/cli/test_doctor_cmd_edge_cases.py`** (NEW, 13 cases) —
+  closes line 254 (`_probe_daemon` end-to-end success path) on
+  `cli/doctor_cmd.py`, pins the `--json` envelope schema (5
+  top-level keys + 4 verdict sub-keys + 4 canonical row keys),
+  locks `_roll_up` monotonicity + OFF-demote-to-OK, pins the Lark
+  notify on/off literal-equality check, confirms `--strict` red
+  summary path on FAIL, adds positive control for `_audit_arktower`
+  when migrations exist + match.
+- **`tests/cli/test_popolad_cmd.py`** (NEW, 23 cases) — closes the
+  89 % → ~ 96 % gap on `cli/popolad.py` covering `start` / `stop` /
+  `status` conditional branches: `start` refuses live-PID +
+  recovers from corrupt-PID, removes stale socket, surfaces
+  premature subprocess exit + bind-timeout terminate; `stop`
+  no-PID-file (with + without stale-socket cleanup), dead-PID
+  cleanup, unreadable PID file, live-process SIGTERM path, SIGKILL
+  escalation; `status` corrupt-PID-error in JSON payload, no-socket
+  exit-1, JSON envelope keys, unreachable socket via mocked client,
+  non-200 health status code in payload, fully-up zero-exit;
+  `_pid_alive` (zero / negative / dead / live), `_can_connect`
+  (HTTPError swallow), `_cleanup_files` helpers.
+- **`tests/daemon/test_state_mutation_kills.py`** (NEW, 7 cases) —
+  round-2 mutation kills for `daemon/state.py` extending the v0.3.4
+  round-4 baseline: PENDING ↔ RUNNING transition atomic against
+  concurrent reads, `update(state=None)` no-op for state field but
+  still writes other fields, post-update terminal handle visibility
+  (race window between writer's commit + reader's get),
+  `cancel_escalated_to_sigkill` flip True → False with
+  explicit-only-when-not-None semantics, `list_active` excludes
+  mid-stream terminal handles, `register` duplicate-raises-atomically
+  without partial write, `update` returns the same object stored
+  in dict (identity preservation).
+
+### Changed
+
+- **`pyproject.toml [tool.mutmut].paths_to_mutate`** — list grows
+  from 1 entry (`daemon/state.py`) to 4 (`daemon/state.py`,
+  `daemon/event_log.py`, `cli/init_cmd.py`, `cli/doctor_cmd.py`).
+  In-line comment block grows by ~ 20 lines documenting each
+  module's rationale + the carry-over live-mutmut-blocked status.
+- **`evidence/mutmut-baseline.md`** — appended "v0.5.4 — surface
+  expansion (Loop 4 of v0.5.x → v0.6.0)" section catalogues the
+  4-module path list, 63 new tests across 4 new test files, the
+  per-module expected kill-rate target (≥ 80 % aggregate), and
+  the carry-over limitations.
+- Version `0.5.3 → 0.5.4` in `pyproject.toml`,
+  `src/popolaloom/__init__.py`, SKILL.md frontmatter,
+  `.popolaloom-version`, and `tests/test_smoke.py`.
+
+### Deferred (to v0.6.0)
+
+- **Live `mutmut run` activation** — carry-over from v0.3.4 +
+  v0.5.4. The src-layout / editable-install friction is unchanged;
+  v0.5.4 is a declarative path expansion only. Pinned for v0.6.0.
+- **`evaluation/runner.py` mutation surface** — v0.3.4 listed it
+  as a candidate; held back because of integration paths that need
+  a live daemon. Pinned for v0.6.0.
+- **Real Lark supervisor lifecycle test** — carry-over from v0.5.3.
+- **`--cli-flag cmd_args="--trust"` adapter passthrough** — carry-
+  over from v0.5.3. Sized + tracked for v0.6.0.
+
 ## [0.5.3] — 2026-05-05
 
 **Patch — Loop 3 of the v0.5.x → v0.6.0 self-improvement series.**
