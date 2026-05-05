@@ -46,13 +46,13 @@ from collections.abc import Callable
 from datetime import UTC, datetime
 from typing import TYPE_CHECKING
 
-from arktower.core.event_bus import EventBus  # type: ignore[import-untyped]
-from arktower.core.task_service import (  # type: ignore[import-untyped]
+from popolaloom._vendored.arktower.core.event_bus import EventBus
+from popolaloom._vendored.arktower.core.task_service import (
     TASK_TRANSITION_EVENT,
 )
 
 if TYPE_CHECKING:
-    from arktower.core.models import TaskEvent  # type: ignore[import-untyped]
+    from popolaloom._vendored.arktower.core.models import TaskEvent
 
     from popolaloom.daemon.event_log import EventLog
 

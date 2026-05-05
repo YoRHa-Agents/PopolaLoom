@@ -19,11 +19,18 @@ classifiers = [
 ]
 
 # 运行时依赖 (出处: spec.md §5)
-# arktower 走本地 editable; LangGraph + checkpoint-sqlite 是图引擎; pydantic v2 是 schema;
-# fastapi+uvicorn 提供 REST/WS; typer/rich 提供 CLI; mcp 是 Anthropic MCP SDK;
-# nicegui 留给 Day 7 web 增量页面; textual 留给 Day 7 TUI。
+# v0.5.0 Stage S1 (D5.7 LOCKED Path B): the previous
+# `arktower @ file:///home/agent/reference/ArkTower` direct reference is
+# removed. ArkTower's relevant subset (TaskService + EventBus + 005 migration
+# scaffolding + the four schema migrations) is now vendored under
+# `popolaloom._vendored.arktower` so `pip install popolaloom` works on a
+# fresh machine without an ArkTower clone. See VENDORING.md at the repo
+# root for the refresh procedure.
+# LangGraph + checkpoint-sqlite is the graph engine; pydantic v2 is the
+# schema layer; fastapi+uvicorn provides REST/WS; typer/rich the CLI;
+# mcp is the Anthropic MCP SDK; nicegui is reserved for the Day 7 web
+# pages; textual is reserved for the Day 7 TUI.
 dependencies = [
-    "arktower @ file:///home/agent/reference/ArkTower",
     "langgraph>=0.6",
     "langgraph-checkpoint-sqlite",
     "pydantic>=2",
@@ -64,12 +71,22 @@ dev = [
 popola = "popolaloom.cli.main:app"
 
 [tool.hatch.metadata]
-# arktower 通过 file:// URL 引用本地 editable 仓库,
-# hatchling 默认禁止 direct references,在此明确放行 (出处: spec.md §5.1)。
+# v0.5.0 Stage S1 (D5.7 LOCKED Path B): no direct-reference deps remain
+# (the previous `arktower @ file://...` pin was replaced by a vendored
+# copy under `popolaloom._vendored.arktower`). The setting is kept at
+# `true` so future v0.5.x patches can reintroduce a direct reference if
+# ArkTower lands on PyPI under a different distribution name and we want
+# to pin during the transition.
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/popolaloom"]
+# Hatchling packages every file under `src/popolaloom` (including the
+# vendored ArkTower SQL migrations under
+# `src/popolaloom/_vendored/arktower/migrations/`) so
+# `popolaloom._vendored.arktower.cli.deps.migrations_dir()` resolves
+# to a real on-disk directory after a wheel install. Verified via
+# `unzip -l <wheel>` in v0.5.0 Stage S1 acceptance.
 
 [tool.ruff]
 target-version = "py311"
@@ -98,9 +115,15 @@ markers = [
 # Coverage 采集配置 (出处: testing-matrix.md §6.2 配置原则)
 # - branch = true — Tier 1 主战场是 branch coverage, 必须开
 # - parallel = true — slow / nightly / default 多 lane CI 合并 .coverage 文件
+# - omit = ["src/popolaloom/_vendored/**"] — v0.5.0 Stage S1 (D5.7 Path B):
+#   the vendored ArkTower subset under `popolaloom._vendored.arktower/`
+#   is upstream code with its own test suite (see VENDORING.md). We do
+#   not author tests for it, so we exclude it from PopolaLoom's coverage
+#   gate to keep the metric focused on first-party code.
 source = ["src/popolaloom"]
 branch = true
 parallel = true
+omit = ["src/popolaloom/_vendored/*"]
 
 [tool.coverage.report]
 # Coverage 阈值 (出处: testing-matrix.md §6.1 版本递进)

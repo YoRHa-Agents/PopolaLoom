@@ -52,11 +52,11 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import TYPE_CHECKING
 
-from arktower.core.event_bus import EventBus  # type: ignore[import-untyped]
-from arktower.core.task_service import TaskService  # type: ignore[import-untyped]
-from arktower.store.connection import DatabaseConnection  # type: ignore[import-untyped]
-from arktower.store.migration import MigrationRunner  # type: ignore[import-untyped]
-from arktower.store.sqlite_repository import (  # type: ignore[import-untyped]
+from popolaloom._vendored.arktower.core.event_bus import EventBus
+from popolaloom._vendored.arktower.core.task_service import TaskService
+from popolaloom._vendored.arktower.store.connection import DatabaseConnection
+from popolaloom._vendored.arktower.store.migration import MigrationRunner
+from popolaloom._vendored.arktower.store.sqlite_repository import (
     SqliteTaskRepository,
 )
 
@@ -114,7 +114,7 @@ def _arktower_migrations_dir() -> Path | None:
         )
 
     try:
-        from arktower.cli.deps import (  # type: ignore[import-untyped]
+        from popolaloom._vendored.arktower.cli.deps import (
             migrations_dir as _ark_migrations_dir,
         )
 
@@ -122,7 +122,10 @@ def _arktower_migrations_dir() -> Path | None:
         if candidate.is_dir():
             return candidate
     except Exception:
-        logger.debug("arktower.cli.deps.migrations_dir() unavailable", exc_info=True)
+        logger.debug(
+            "popolaloom._vendored.arktower.cli.deps.migrations_dir() unavailable",
+            exc_info=True,
+        )
 
     if _ARKTOWER_MIGRATIONS_FALLBACK.is_dir():
         return _ARKTOWER_MIGRATIONS_FALLBACK

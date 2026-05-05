@@ -4,6 +4,37 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [Unreleased]
+
+### Fixed
+
+- `pip install popolaloom` now works on a fresh machine that does not
+  contain a local `/home/agent/reference/ArkTower` clone. The previous
+  `arktower @ file:///home/agent/reference/ArkTower` direct reference
+  in [`pyproject.toml`](pyproject.toml) made the wheel un-installable
+  anywhere except this development host (per
+  [v0.5.0 plan §3 D5.7](.local/memory/specs/popolaloom/v0.5.0-plan.md)
+  and the v0.5.0 research dossier §F.5 anomaly 2). v0.5.0 Stage S1
+  resolves this by **vendoring** the minimal ArkTower subset PopolaLoom
+  uses at runtime (TaskService, EventBus, MigrationRunner,
+  SqliteTaskRepository, the supporting Pydantic models, and the four
+  schema migrations) into `popolaloom._vendored.arktower`, removing the
+  direct reference from `pyproject.toml` entirely. Refresh procedure
+  documented in [`VENDORING.md`](VENDORING.md). (Stage S1 of v0.5.0;
+  D5.7 LOCKED Path B because the upstream `arktower` package is not
+  published on PyPI.)
+
+### Changed
+
+- `pyproject.toml` no longer lists `arktower @ file://...` under the
+  `dependencies` array. The `[tool.hatch.metadata]
+  allow-direct-references = true` setting is preserved against possible
+  future re-introduction of a transitional pin if/when ArkTower lands
+  on PyPI.
+- `[tool.coverage.run]` excludes `src/popolaloom/_vendored/*` from the
+  coverage gate (vendored code is upstream code with its own tests; we
+  measure first-party coverage only).
+
 ## [0.4.1] — 2026-05-05
 
 **Phase 1 close-out / Lark proactive-notification minor.** Closes the

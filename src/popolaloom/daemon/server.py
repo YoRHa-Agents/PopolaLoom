@@ -892,12 +892,15 @@ class Popolad:
             tuple ``(arktower_task_id, persisted)``.
         """
         try:
-            from arktower.core.models import (  # type: ignore[import-untyped]
+            from popolaloom._vendored.arktower.core.models import (
                 Task as ArkTask,
             )
-            from arktower.core.models import TaskCreate
+            from popolaloom._vendored.arktower.core.models import TaskCreate
         except ImportError:
-            logger.warning("arktower not importable; skipping Task model construction")
+            logger.warning(
+                "popolaloom._vendored.arktower not importable; "
+                "skipping Task model construction"
+            )
             return None, False
 
         if self._persistence is not None:
@@ -1234,9 +1237,14 @@ class Popolad:
             return 0
 
         try:
-            from arktower.core.models import TaskFilter, TaskStatus
+            from popolaloom._vendored.arktower.core.models import (
+                TaskFilter,
+                TaskStatus,
+            )
         except ImportError:
-            logger.warning("arktower not importable; skipping rehydrate")
+            logger.warning(
+                "popolaloom._vendored.arktower not importable; skipping rehydrate"
+            )
             return 0
 
         non_terminal = [
