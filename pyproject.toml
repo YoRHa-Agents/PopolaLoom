@@ -80,13 +80,28 @@ popola = "popolaloom.cli.main:app"
 allow-direct-references = true
 
 [tool.hatch.build.targets.wheel]
+# `packages = ["src/popolaloom"]` makes hatchling treat that prefix as
+# the wheel root and ship every nested file (including non-Python data),
+# which covers the two non-source trees we depend on at runtime:
+#
+#   1. `src/popolaloom/_vendored/arktower/migrations/*.sql` — the
+#      vendored ArkTower SQL migrations (Stage S1 of v0.5.0); without
+#      these on disk
+#      `popolaloom._vendored.arktower.cli.deps.migrations_dir()` would
+#      raise after a wheel install.
+#   2. `src/popolaloom/skills/popolaloom/{SKILL.md,.popolaloom-version}`
+#      — the canonical PopolaLoom Skill (Stage S3 of v0.5.0); the
+#      `popola init` installer (Stage S2) reads this via
+#      `importlib.resources.files('popolaloom').joinpath('skills',
+#      'popolaloom', 'SKILL.md')` (see `cli/_skill_source.py`) and
+#      copies it into the per-IDE install target.  The hidden
+#      `.popolaloom-version` marker mirrors DevolaFlow's
+#      `.devola-flow-version` (research §A.5) and is the
+#      drift-detection input for `popola doctor` (Stage S4).
+#
+# Verified via `unzip -l <wheel> | grep -E 'skills|migrations'` in
+# v0.5.0 Stage S1 + S3 acceptance.
 packages = ["src/popolaloom"]
-# Hatchling packages every file under `src/popolaloom` (including the
-# vendored ArkTower SQL migrations under
-# `src/popolaloom/_vendored/arktower/migrations/`) so
-# `popolaloom._vendored.arktower.cli.deps.migrations_dir()` resolves
-# to a real on-disk directory after a wheel install. Verified via
-# `unzip -l <wheel>` in v0.5.0 Stage S1 acceptance.
 
 [tool.ruff]
 target-version = "py311"

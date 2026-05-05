@@ -101,18 +101,32 @@ def test_codex_target_path_honors_codex_home_env(
     assert overridden == custom / "skills" / "popolaloom" / "SKILL.md"
 
 
-def test_skill_source_resolver_returns_stub_for_s2() -> None:
-    """Stage S2 ships without the canonical SKILL.md → the resolver
-    falls back to the placeholder stub and flags it as not-real.
+def test_skill_source_resolver_returns_real_skill_for_s3() -> None:
+    """Stage S3 ships the canonical wheel-bundled SKILL.md → the resolver
+    flips from the S2 placeholder stub to the real content and flags it
+    as ``is_real=True``.
+
+    Mirrors the (S2-era) docstring "placeholder stub" expectation but
+    inverts the assertion direction now that the canonical SKILL.md
+    lives at ``src/popolaloom/skills/popolaloom/SKILL.md`` (per the
+    Stage S3 acceptance contract).  ``render_stub()`` is still exercised
+    so the byte-stable fallback shape stays covered for future
+    wheel-corruption regressions.
     """
     canonical = canonical_source_path()
-    assert canonical is None, (
-        "Stage S2 must NOT bundle a wheel SKILL.md (S3 owns content); "
-        f"unexpected canonical path: {canonical}"
+    assert canonical is not None, (
+        "Stage S3 must bundle the canonical SKILL.md; canonical_source_path() "
+        "returned None — verify the wheel includes "
+        "popolaloom/skills/popolaloom/SKILL.md."
     )
+    assert canonical.is_file()
 
     content, is_real = resolve_skill_source()
-    assert is_real is False
-    assert is_real_skill(content) is False
-    assert content == render_stub()
-    assert "Stage S2 placeholder" in content
+    assert is_real is True
+    assert is_real_skill(content) is True
+    assert "Stage S2 placeholder" not in content
+    assert content.startswith("---\nname: popolaloom\n")
+
+    stub = render_stub()
+    assert "Stage S2 placeholder" in stub
+    assert is_real_skill(stub) is False

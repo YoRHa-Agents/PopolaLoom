@@ -214,13 +214,30 @@ def test_init_list_prints_table_no_writes(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """`popola init --list` prints a table and writes nothing."""
+    """`popola init --list` prints a table and writes nothing.
+
+    Stage S3 of v0.5.0 flipped the resolver from the placeholder stub
+    to the wheel-bundled canonical SKILL.md.  The assertion now reads
+    "wheel-bundled (S3+)" and checks the byte count is well above the
+    ~ 1 193-byte stub threshold (canonical body is ~ 10 KB).
+    """
     cwd, _fake_home = isolated_home
     result = runner.invoke(init_app, ["--list"])
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
     assert "popola init — detected targets" in out
-    assert "placeholder stub (S2)" in out
+    assert "wheel-bundled (S3+)" in out
+    assert "placeholder stub (S2)" not in out
+    skill_bytes_line = next(
+        (line for line in out.splitlines() if "Skill bytes:" in line),
+        "",
+    )
+    assert skill_bytes_line, "expected a 'Skill bytes:' summary line"
+    bytes_int = int(skill_bytes_line.split(":", 1)[1].strip())
+    assert bytes_int > 5_000, (
+        f"canonical SKILL.md should be > 5 KB; got {bytes_int} bytes "
+        "(was the resolver still hitting the S2 stub?)"
+    )
     assert not (cwd / ".cursor").exists()
     assert not (cwd / ".local").exists()
 
