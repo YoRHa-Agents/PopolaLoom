@@ -62,17 +62,24 @@ app = typer.Typer(
 
 
 def _register_subcommand_groups() -> None:
-    """Attach the popolad + eval + init subcommand groups to the root app.
+    """Attach the popolad + eval + init + skill subcommand groups + doctor verb.
 
     Registered here (not in :mod:`popolaloom.cli.__init__`) so that
     ``python -m popolaloom.cli.main`` invocations get the same surface
     as ``popola`` (the console_script entry).  Splitting the imports
     into a helper avoids module-level circular imports during the
     Typer app construction.
+
+    v0.5.0 Stage S4: registers the new ``popola skill`` subcommand
+    group (``install`` / ``doctor`` / ``upgrade``) and the standalone
+    ``popola doctor`` aggregate-health verb (single command, not a
+    subcommand group, per plan §S4.E).
     """
+    from popolaloom.cli.doctor_cmd import doctor_command
     from popolaloom.cli.eval import app as eval_app
     from popolaloom.cli.init_cmd import app as init_app
     from popolaloom.cli.popolad import app as popolad_app
+    from popolaloom.cli.skill_cmd import app as skill_app
 
     app.add_typer(popolad_app, name="popolad", help="Manage popolad daemon process")
     app.add_typer(
@@ -81,6 +88,12 @@ def _register_subcommand_groups() -> None:
         help="PopolaLoom self-evaluation (8-dim nines runner)",
     )
     app.add_typer(init_app, name="init")
+    app.add_typer(
+        skill_app,
+        name="skill",
+        help="Install / audit / upgrade the PopolaLoom Skill",
+    )
+    app.command(name="doctor")(doctor_command)
 
 
 _register_subcommand_groups()

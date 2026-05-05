@@ -23,12 +23,30 @@ Workspace rule "No Silent Failures": skill missing is ALWAYS logged
 (via ``logger.warning``) AND surfaced to callers via the
 :class:`SkillCheckResult` return so the dispatcher can write a
 ``skill.missing`` envelope to the per-task event log.
+
+v0.5.0 Stage S4 extension — :data:`SKILL_TARGETS` registry
+-----------------------------------------------------------
+
+Stage S4 introduces ``popola skill install / doctor / upgrade`` (CLI
+verbs at :mod:`popolaloom.cli.skill_cmd`) and ``popola doctor`` (the
+aggregate health probe at :mod:`popolaloom.cli.doctor_cmd`). All three
+new verbs and the underlying library APIs in
+:mod:`popolaloom.evolution.skill_install` /
+:mod:`popolaloom.evolution.skill_doctor` /
+:mod:`popolaloom.evolution.skill_upgrade` consume a single shared
+registry of (target × scope → SKILL.md path) resolvers exposed here as
+:data:`SKILL_TARGETS`.  The legacy ``CURSOR_SKILL_PATH`` /
+``CLAUDE_SKILL_PATH`` tuples — which describe the devola-flow skill
+detection paths used during evolution-round dispatch — remain at the
+top of the module as aliases so v0.3 / v0.4 callers continue to work
+without import changes.
 """
 
 from __future__ import annotations
 
 import logging
 import os
+from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -39,10 +57,159 @@ logger = logging.getLogger(__name__)
 
 
 CURSOR_SKILL_PATH: tuple[str, ...] = (".cursor", "skills", "devola-flow", "SKILL.md")
-"""Relative path components for the cursor-agent skill location."""
+"""Relative path components for the cursor-agent skill location.
+
+Legacy v0.3.0 alias: refers to the *devola-flow* SKILL.md path, used by
+:func:`check_skill_present` at evolution-round dispatch time.  The new
+v0.5.0 ``popola skill install`` registry (for the *popolaloom* skill)
+lives at :data:`SKILL_TARGETS` below.
+"""
 
 CLAUDE_SKILL_PATH: tuple[str, ...] = (".claude", "skills", "devola-flow", "SKILL.md")
-"""Relative path components for the claude code skill location."""
+"""Relative path components for the claude code skill location.
+
+Legacy v0.3.0 alias — see :data:`CURSOR_SKILL_PATH`.
+"""
+
+
+# ── v0.5.0 Stage S4 — SKILL_TARGETS registry (popolaloom skill) ──────────
+#
+# Each registry value is a zero-argument callable returning the absolute
+# Path to that target's ``SKILL.md`` install location.  Callables (rather
+# than pre-computed Path constants) keep the registry test-friendly:
+# ``Path.home()`` and ``Path.cwd()`` are resolved at lookup time, so
+# ``monkeypatch.setattr(Path, "home", ...)`` in test fixtures works
+# without re-importing the module.
+#
+# The four targets mirror the ``popola init`` verb matrix locked in plan
+# §S2 (cursor / claude / codex / copilot); supported scopes per target:
+#
+#   cursor   — global (~/.cursor/...)         + project (<cwd>/.cursor/...)
+#   claude   — global (~/.claude/...)         + project (<cwd>/.claude/...)
+#   codex    — global ($CODEX_HOME or ~/.codex/...) — codex has no project scope
+#   copilot  — project (<cwd>/.github/copilot-instructions.md) — single-file, project-only
+#
+# Operators occasionally pass ``--global`` to a target that only supports
+# project (e.g. ``popola skill install --target=copilot --global``); the
+# CLI verb resolves this to ``project`` and prints a warning, mirroring
+# the ``popola init copilot`` fallback.
+
+
+_POPOLALOOM_SKILL_RELATIVE: tuple[str, ...] = ("skills", "popolaloom", "SKILL.md")
+"""Path components appended under each IDE's home / project root."""
+
+
+def _cursor_global_target() -> Path:
+    return Path.home() / ".cursor" / Path(*_POPOLALOOM_SKILL_RELATIVE)
+
+
+def _cursor_project_target() -> Path:
+    return Path.cwd() / ".cursor" / Path(*_POPOLALOOM_SKILL_RELATIVE)
+
+
+def _claude_global_target() -> Path:
+    return Path.home() / ".claude" / Path(*_POPOLALOOM_SKILL_RELATIVE)
+
+
+def _claude_project_target() -> Path:
+    return Path.cwd() / ".claude" / Path(*_POPOLALOOM_SKILL_RELATIVE)
+
+
+def _codex_global_target() -> Path:
+    """Resolve the codex SKILL.md install path.
+
+    Honours ``$CODEX_HOME`` per the Codex CLI convention; falls back to
+    ``~/.codex`` when unset (mirrors :func:`popolaloom.cli.init_cmd.codex_target_path`).
+    """
+    codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
+    return codex_home / Path(*_POPOLALOOM_SKILL_RELATIVE)
+
+
+def _copilot_project_target() -> Path:
+    return Path.cwd() / ".github" / "copilot-instructions.md"
+
+
+SKILL_TARGETS: dict[str, dict[str, Callable[[], Path]]] = {
+    "cursor": {
+        "global": _cursor_global_target,
+        "project": _cursor_project_target,
+    },
+    "claude": {
+        "global": _claude_global_target,
+        "project": _claude_project_target,
+    },
+    "codex": {
+        "global": _codex_global_target,
+    },
+    "copilot": {
+        "project": _copilot_project_target,
+    },
+}
+"""Registry of popolaloom-skill install targets keyed by ``target`` × ``scope``.
+
+Shape: ``dict[str, dict[str, Callable[[], Path]]]`` — each leaf is a
+zero-argument callable that returns the absolute :class:`Path` to that
+target's ``SKILL.md`` (or, for copilot, the single-file
+``copilot-instructions.md``).  Callables are resolved at lookup time so
+test fixtures that patch :meth:`Path.home` / :meth:`Path.cwd` see fresh
+values without needing to re-import this module.
+
+Consumed by:
+
+* :func:`popolaloom.evolution.skill_install.install_skill`
+* :func:`popolaloom.evolution.skill_doctor.check_skill_health`
+* :func:`popolaloom.evolution.skill_upgrade.upgrade_skill`
+* The Typer ``popola skill {install,doctor,upgrade}`` verbs at
+  :mod:`popolaloom.cli.skill_cmd`.
+* The aggregated ``popola doctor`` health probe at
+  :mod:`popolaloom.cli.doctor_cmd`.
+
+The ``popola init`` family (Stage S2 — :mod:`popolaloom.cli.init_cmd`)
+predates this registry and uses its own per-IDE path resolvers; both
+sets agree on the canonical install paths but operate independently
+so that a refactor to the install verbs cannot accidentally break the
+init-time scaffolder (and vice versa).
+"""
+
+
+def resolve_target_path(target: str, scope: str) -> Path:
+    """Resolve ``(target, scope)`` against :data:`SKILL_TARGETS`.
+
+    Args:
+        target: one of ``cursor`` / ``claude`` / ``codex`` / ``copilot``.
+        scope: ``global`` or ``project`` (codex supports only ``global``,
+            copilot supports only ``project``; passing the unsupported
+            scope raises :class:`KeyError`).
+
+    Returns:
+        Path: absolute path to that target's ``SKILL.md``.
+
+    Raises:
+        KeyError: when ``target`` is unknown OR the ``(target, scope)``
+            pair is not in the registry.  Per workspace rule "No Silent
+            Failures" the caller must handle the exception explicitly
+            rather than getting a fallback path.
+    """
+    if target not in SKILL_TARGETS:
+        valid = ", ".join(sorted(SKILL_TARGETS))
+        raise KeyError(
+            f"unknown skill target {target!r}; valid targets: {valid}"
+        )
+    scope_table = SKILL_TARGETS[target]
+    if scope not in scope_table:
+        valid_scopes = ", ".join(sorted(scope_table))
+        raise KeyError(
+            f"target {target!r} does not support scope {scope!r}; "
+            f"valid scopes for this target: {valid_scopes}"
+        )
+    return scope_table[scope]()
+
+
+def supported_scopes(target: str) -> list[str]:
+    """Return the list of scopes registered for ``target`` (sorted alphabetically)."""
+    if target not in SKILL_TARGETS:
+        return []
+    return sorted(SKILL_TARGETS[target])
 
 
 @dataclass(frozen=True)
@@ -241,8 +408,11 @@ def emit_skill_check_event(
 __all__ = [
     "CLAUDE_SKILL_PATH",
     "CURSOR_SKILL_PATH",
+    "SKILL_TARGETS",
     "SkillCheckResult",
     "check_skill_present",
     "emit_skill_check_event",
     "prepend_workflow_context",
+    "resolve_target_path",
+    "supported_scopes",
 ]

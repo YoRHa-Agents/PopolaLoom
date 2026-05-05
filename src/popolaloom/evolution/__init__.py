@@ -146,13 +146,46 @@ class WorkflowContext(BaseModel):
 
 __all__ = [
     "DEFAULT_GATE_THRESHOLD",
+    "DoctorReport",
+    "InstallOutcome",
     "MAX_REINFORCEMENT_RULES",
     "MAX_ROUNDS",
+    "SKILL_TARGETS",
+    "UpgradeOutcome",
     "WorkflowContext",
+    "check_skill_health",
     "dual_gate",
+    "install_all_skills",
+    "install_skill",
     "reinforcement",
+    "skill_doctor",
     "skill_inject",
+    "skill_install",
+    "skill_upgrade",
+    "upgrade_skill",
 ]
 
 
-from popolaloom.evolution import dual_gate, reinforcement, skill_inject  # noqa: E402
+# v0.5.0 Stage S4: re-export the new skill install / doctor / upgrade
+# library APIs alongside the v0.3.0 dual_gate / reinforcement / skill_inject
+# stack so callers can do ``from popolaloom.evolution import install_skill``
+# without reaching into individual sub-modules.  Imports stay at the bottom
+# of the file (after the WorkflowContext class definition) so the
+# sub-modules can ``from popolaloom.evolution import WorkflowContext``
+# without triggering a partial-import cycle.
+from popolaloom.evolution import (  # noqa: E402
+    dual_gate,
+    reinforcement,
+    skill_doctor,
+    skill_inject,
+    skill_install,
+    skill_upgrade,
+)
+from popolaloom.evolution.skill_doctor import DoctorReport, check_skill_health  # noqa: E402
+from popolaloom.evolution.skill_inject import SKILL_TARGETS  # noqa: E402
+from popolaloom.evolution.skill_install import (  # noqa: E402
+    InstallOutcome,
+    install_all_skills,
+    install_skill,
+)
+from popolaloom.evolution.skill_upgrade import UpgradeOutcome, upgrade_skill  # noqa: E402
