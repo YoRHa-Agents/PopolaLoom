@@ -46,11 +46,16 @@ from popolaloom.lark.supervisor import LarkSupervisor
 
 __all__ = [
     "LARK_FOOTER",
+    "LARK_NOTIFICATION_LOG_KEYS",
     "LarkListener",
     "LarkSupervisor",
+    "NotificationOutcome",
     "build_card_payload",
     "build_card_send_argv",
     "is_lark_runtime_available",
+    "lark_allowed_responders",
+    "lark_target_open_id",
+    "send_terminal_notification",
 ]
 
 
@@ -94,3 +99,14 @@ def lark_allowed_responders() -> list[str]:
     if target:
         return [target]
     return []
+
+
+# v0.4.1 Stage L2.A — re-export the proactive notifier surface AFTER the
+# helper functions above are defined, so ``notifier`` can import them at
+# module load without hitting a partially-initialised package
+# (circular-import-safe).
+from popolaloom.lark.notifier import (  # noqa: E402
+    LARK_NOTIFICATION_LOG_KEYS,
+    NotificationOutcome,
+    send_terminal_notification,
+)

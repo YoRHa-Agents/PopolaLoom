@@ -4,6 +4,89 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.4.1] — 2026-05-05
+
+**Phase 1 close-out / Lark proactive-notification minor.** Closes the
+v0.4.0 "Known limitations" Lark trio (research §G.2 #1-#5) by wiring
+the daemon to emit terminal-state cards on every COMPLETED / FAILED /
+CANCELED transition and by repairing the latent ``task.canceled``
+contract bug consumed by ``evaluation/runner.py``. See
+[`release-notes-v0.4.1.md`](release-notes-v0.4.1.md) for the full
+write-up + verification commands.
+
+### Fixed
+
+- `task.canceled` NDJSON event is now emitted from the supervisor
+  wait-thread (was previously absent — the runner expected it,
+  see research §F.3). Affects `evaluation/runner.py`'s
+  `lark_send_total` accuracy and the `dispatch_isolation` nines
+  sub-score (no longer pollutes cancel as failure).
+- `Popolad._on_subprocess_exit` no longer clobbers `state=CANCELED`
+  with `state=FAILED` when a subprocess exit follows immediately
+  after `cancel_task` (carry-over from L1; was the second half of
+  the contract gap that v0.4.0 left open).
+
+### Added
+
+- 5 new Lark card builders for task terminal states + skill-missing
+  warnings: `build_completion_card`, `build_failure_card`,
+  `build_canceled_card`, `build_cancel_escalated_card`,
+  `build_skill_missing_card` in
+  `src/popolaloom/lark/card_templates.py`. All include the mandatory
+  来源标注 footer via `footer_with_origin_note`.
+- `popolaloom.lark.notifier.send_terminal_notification(...)` —
+  proactive Lark notification on every task terminal state. Returns
+  `NotificationOutcome` (frozen dataclass) so v0.5.0 `popola doctor`
+  can introspect the result. Exports the
+  `LARK_NOTIFICATION_LOG_KEYS = ("lark.send.ok", "lark.send.failed")`
+  constant for downstream NDJSON consumers.
+- `LarkSupervisor` is now started by default at daemon construction
+  (`_build_default_popolad` in `src/popolaloom/daemon/main.py`) when
+  `lark-cli` is on PATH AND `LARK_HITL_TARGET_OPEN_ID` (or the new
+  `LARK_NOTIFY_TARGET_OPEN_ID`) is set; missing env vars / binary
+  log a single `lark.supervisor.skipped reason=...` INFO line and
+  skip silently (Lark stays optional).
+- 5 new env vars: `LARK_NOTIFY_TARGET_OPEN_ID`,
+  `LARK_NOTIFY_ON_COMPLETED` (default `1`),
+  `LARK_NOTIFY_ON_FAILED` (`1`),
+  `LARK_NOTIFY_ON_CANCELED` (`1`),
+  `LARK_NOTIFY_ON_CANCEL_ESCALATED` (`0`),
+  `LARK_NOTIFY_PROMPT_TRUNCATE` (`200`).
+- `kind: Literal["hitl","terminal","notification"]` parameter on
+  `send_lark_card` (default `"hitl"` preserves backward-compat); now
+  also carried in the NDJSON `lark.send.{ok,failed}` event payload
+  via the new optional `event_log=` parameter.
+- `card_payload=` parameter on `send_lark_card` so terminal builders
+  (which produce dicts directly, not from a `HITLPrompt`) can route
+  through the same retry / timeout / NDJSON pipeline.
+- `Popolad.attach_loop(loop)` + `Popolad.lark_supervisor` accessor
+  on the daemon facade for cross-thread asyncio scheduling and
+  graceful introspection.
+
+### Tests
+
+- 23 new default-lane tests (15 from L1 + 8 mandatory L2 + 20
+  coverage extras for the new modules). Default-lane suite now at
+  **1023 pass / 0 fail / 18 skipped**. Coverage stays ≥ 91 % at
+  **91.38 %** (was 91.36 % in v0.4.0; the L2 modules push back the
+  L1-induced dip and a touch beyond).
+
+### Verified
+
+- [x] Default-lane `pytest -m "not slow and not nightly and not
+      real_cli and not real_lark" --cov=src/popolaloom
+      --cov-fail-under=91` PASS at **91.38 %**.
+- [x] `python -c "import popolaloom; assert popolaloom.__version__
+      == '0.4.1'"` PASS.
+- [x] No regression in v0.4.0 cancel / supervisor / lark tests.
+- [x] All 5 new card builders embed the workspace-rule footer
+      (asserted by `test_all_5_builders_serialize_with_footer`).
+- [x] All skip / failure paths in the new notifier and supervisor
+      wiring log explicit reasons (workspace rule "No Silent
+      Failures" — verified by 6 caplog assertions in
+      `tests/lark/test_notifier.py` and `tests/daemon/
+      test_lark_supervisor_wiring.py`).
+
 ## [0.4.0] - 2026-05-04
 
 **Phase 1 GA release** — closes the v0.0.1 → v0.4.0 journey.  See

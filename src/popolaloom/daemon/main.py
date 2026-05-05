@@ -151,6 +151,16 @@ def _build_default_popolad(events_dir: Path) -> Any:
     - A :class:`PopolaEventBusBridge` subscribed to ArkTower's
       :class:`EventBus` so ``TASK_TRANSITION`` propagates as
       ``task.transition`` NDJSON events.
+    - v0.4.1 Stage L2.C: a :class:`LarkSupervisor` wrapping a
+      :class:`LarkListener` when ``lark-cli`` is on PATH AND
+      ``LARK_HITL_TARGET_OPEN_ID`` (or ``LARK_NOTIFY_TARGET_OPEN_ID``)
+      is set. The supervisor is started as a background asyncio task
+      on the currently-running loop (this function is called from
+      :func:`main` which is itself async), so the daemon does not
+      block on lark-cli during construction. When env vars or the
+      binary are missing the wiring is skipped with a single INFO log
+      (``lark.supervisor.skipped reason=...``) per workspace rule
+      "No Silent Failures" — Lark is always optional.
     """
     from popolaloom.adapters import build_command
     from popolaloom.daemon.event_bus import PopolaEventBusBridge
@@ -170,7 +180,245 @@ def _build_default_popolad(events_dir: Path) -> Any:
         )
         popolad._event_bus_bridge = bridge
         bridge.subscribe()
+
+    _maybe_wire_lark_supervisor(popolad)
     return popolad
+
+
+def _maybe_wire_lark_supervisor(popolad: Any) -> None:
+    """Construct + schedule a :class:`LarkSupervisor` when env vars opt in.
+
+    v0.4.1 Stage L2.C: the daemon supervises ``lark-cli event consume``
+    automatically when both gating conditions are met:
+
+    1. :func:`popolaloom.lark.is_lark_runtime_available` returns ``True``
+       (i.e. ``lark-cli`` is on the daemon's PATH).
+    2. :func:`popolaloom.lark.lark_target_open_id` resolves a non-empty
+       Lark open_id (i.e. ``LARK_HITL_TARGET_OPEN_ID`` is set; the new
+       ``LARK_NOTIFY_TARGET_OPEN_ID`` is consulted by
+       :mod:`popolaloom.lark.notifier` for outbound notifications, but
+       the listener target is the existing HITL env var because the
+       inbound side reuses the same chat).
+
+    Either condition false → log INFO ``lark.supervisor.skipped
+    reason=...`` and return without touching ``popolad``.
+
+    The supervisor's :meth:`LarkSupervisor.start` is async; we capture
+    the running loop and schedule the start as a background task via
+    :meth:`asyncio.AbstractEventLoop.create_task` so this function
+    stays sync (the chaos tests in
+    ``tests/matrix/chaos/test_chaos_uds_socket_*.py`` mock
+    ``_build_default_popolad`` to return a MagicMock and expect a
+    sync return shape — making this async would break them).
+
+    Per workspace rule "No Silent Failures": LarkSupervisor.start
+    failures are logged + bubbled into the supervisor's ``on_event``
+    stream (which the supervisor itself surfaces); they do NOT abort
+    daemon startup because Lark is optional.
+    """
+    from popolaloom.lark import is_lark_runtime_available, lark_target_open_id
+
+    if not is_lark_runtime_available():
+        logger.info("lark.supervisor.skipped reason=lark_cli_unavailable")
+        return
+    target = lark_target_open_id()
+    if target is None:
+        logger.info(
+            "lark.supervisor.skipped reason=lark_target_open_id_unset"
+        )
+        return
+
+    from popolaloom.lark import lark_allowed_responders
+    from popolaloom.lark.listener import DEFAULT_EVENTS, LarkListener
+    from popolaloom.lark.supervisor import LarkSupervisor
+
+    callbacks = _build_lark_callbacks(popolad)
+    listener = LarkListener(
+        callbacks=callbacks,
+        allowed_responders=lark_allowed_responders(),
+        events=DEFAULT_EVENTS,
+    )
+    supervisor = LarkSupervisor(
+        listener=listener,
+        on_event=_make_supervisor_event_logger(),
+    )
+    popolad._lark_supervisor = supervisor
+
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        logger.warning(
+            "lark.supervisor.skipped reason=no_running_loop "
+            "(LarkSupervisor.start could not be scheduled; tests must "
+            "call it manually)"
+        )
+        return
+
+    if hasattr(popolad, "attach_loop"):
+        popolad.attach_loop(loop)
+    loop.create_task(_safe_supervisor_start(supervisor))
+    logger.info(
+        "lark.supervisor.scheduled target=%s events=%s",
+        target,
+        ",".join(DEFAULT_EVENTS),
+    )
+
+
+async def _safe_supervisor_start(supervisor: Any) -> None:
+    """Wrap :meth:`LarkSupervisor.start` with No-Silent-Failures logging.
+
+    The supervisor itself catches listener-startup failures and
+    surfaces them via its ``on_event`` callback, so this wrapper only
+    needs to guard against unexpected exceptions in the start
+    coroutine (e.g. ``lark-cli`` binary disappeared between PATH check
+    and exec). Logged + swallowed: daemon must keep serving even when
+    Lark is broken.
+    """
+    try:
+        await supervisor.start()
+    except Exception:
+        logger.exception("lark.supervisor.start_failed; daemon continues without Lark")
+
+
+def _build_lark_callbacks(popolad: Any) -> Any:
+    """Build :class:`LarkEventCallbacks` that route into the HITL store.
+
+    When :attr:`Popolad.hitl_store` is wired (v0.3.0 F4.C — set later
+    by :func:`popolaloom.daemon.rpc.create_app` lifespan or by tests)
+    incoming card-action / text-feedback events are folded via
+    :meth:`HITLStore.fold_reply` so the HITL prompt is marked
+    answered. When ``hitl_store`` is ``None`` (early in daemon boot
+    or in tests that don't wire HITL) the callbacks log at DEBUG and
+    drop — this matches the v0.3.0 contract where unwired channels
+    are silent observers, not errors.
+
+    The callbacks always log the receipt of an event so operators
+    grepping daemon logs can confirm the listener is alive even before
+    HITL is wired (per workspace rule "No Silent Failures": every drop
+    has an explicit reason in the log).
+    """
+    from popolaloom.hitl import HITLReply
+    from popolaloom.lark.listener import LarkEventCallbacks
+
+    async def on_card_action(
+        event: dict[str, Any], parsed: tuple[str, str]
+    ) -> None:
+        hitl_id, option_id = parsed
+        store = getattr(popolad, "hitl_store", None)
+        if store is None:
+            logger.debug(
+                "lark.listener.card_action: hitl_store unwired; dropping "
+                "hitl_id=%s option=%s",
+                hitl_id,
+                option_id,
+            )
+            return
+        sender = _extract_sender_open_id(event)
+        reply = HITLReply(
+            hitl_id=hitl_id,
+            option_id=option_id,
+            via="lark",
+            responder=sender,
+        )
+        try:
+            await asyncio.to_thread(store.fold_reply, reply)
+        except Exception:
+            logger.exception(
+                "lark.listener.card_action: fold_reply raised hitl_id=%s",
+                hitl_id,
+            )
+
+    async def on_text_feedback(
+        event: dict[str, Any], parsed: dict[str, str]
+    ) -> None:
+        hitl_id = parsed.get("hitl_id", "")
+        option_id = parsed.get("option_id", "")
+        store = getattr(popolad, "hitl_store", None)
+        if store is None:
+            logger.debug(
+                "lark.listener.text_feedback: hitl_store unwired; dropping "
+                "hitl_id=%s option=%s",
+                hitl_id,
+                option_id,
+            )
+            return
+        sender = _extract_sender_open_id(event)
+        reply = HITLReply(
+            hitl_id=hitl_id,
+            option_id=option_id,
+            via="lark",
+            reason=parsed.get("reason"),
+            responder=sender,
+        )
+        try:
+            await asyncio.to_thread(store.fold_reply, reply)
+        except Exception:
+            logger.exception(
+                "lark.listener.text_feedback: fold_reply raised hitl_id=%s",
+                hitl_id,
+            )
+
+    async def on_unauthorized(event: dict[str, Any], sender: str) -> None:
+        header = event.get("header")
+        event_id = header.get("event_id") if isinstance(header, dict) else None
+        logger.warning(
+            "lark.listener.unauthorized sender=%s event_id=%s",
+            sender,
+            event_id,
+        )
+
+    return LarkEventCallbacks(
+        on_card_action=on_card_action,
+        on_text_feedback=on_text_feedback,
+        on_unauthorized=on_unauthorized,
+    )
+
+
+def _extract_sender_open_id(event: dict[str, Any]) -> str | None:
+    """Best-effort sender open_id extraction (mirrors listener's helper).
+
+    Inlined here to avoid pulling in the listener module's private
+    helper (``listener._extract_sender_open_id``); keeps the daemon
+    main file self-contained for the wiring path.
+    """
+    inner = event.get("event") if isinstance(event.get("event"), dict) else event
+    if not isinstance(inner, dict):
+        return None
+    sender = inner.get("sender")
+    if isinstance(sender, dict):
+        sender_id = sender.get("sender_id")
+        if isinstance(sender_id, dict):
+            oid = sender_id.get("open_id")
+            if isinstance(oid, str) and oid:
+                return oid
+        oid = sender.get("open_id")
+        if isinstance(oid, str) and oid:
+            return oid
+    operator = inner.get("operator")
+    if isinstance(operator, dict):
+        oid = operator.get("open_id")
+        if isinstance(oid, str) and oid:
+            return oid
+    return None
+
+
+def _make_supervisor_event_logger() -> Any:
+    """Build a :class:`LarkSupervisor` ``on_event`` logger callback.
+
+    The supervisor emits one of ``listener.started`` /
+    ``listener.died`` / ``listener.restarted`` /
+    ``listener.escalated`` per lifecycle event; we surface them at
+    INFO so operators grep ``lark.supervisor.event`` to track listener
+    health alongside the existing ``lark.send.*`` envelopes (v0.3.3
+    round-3 lark_health real fixture pattern).
+    """
+    async def _on_event(event: dict[str, str]) -> None:
+        logger.info(
+            "lark.supervisor.event %s",
+            " ".join(f"{k}={v}" for k, v in event.items()),
+        )
+
+    return _on_event
 
 
 async def main(

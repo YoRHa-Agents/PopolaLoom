@@ -20,6 +20,7 @@ the card body by :func:`build_card_payload` (see :data:`LARK_FOOTER`).
 
 from __future__ import annotations
 
+import json
 import logging
 import subprocess
 import time
@@ -125,18 +126,23 @@ def render_lark_card(prompt: HITLPrompt) -> dict[str, Any]:
 
 
 def send_lark_card(
-    prompt: HITLPrompt,
+    prompt: HITLPrompt | None,
     target_open_id: str | None = None,
     *,
     runner: Any = None,
     backoff_s: tuple[float, ...] = _RETRY_BACKOFF_S,
     timeout_s: float = 10.0,
     kind: LarkCardKind = "hitl",
+    card_payload: dict[str, Any] | None = None,
+    event_log: Any = None,
 ) -> LarkSendResult:
     """Send the rendered card via ``lark-cli im +send --card`` (with retry).
 
     Args:
-        prompt: HITL prompt to send.
+        prompt: HITL prompt to send. May be ``None`` when the caller
+            already has a pre-built ``card_payload`` (v0.4.1 Stage L2
+            :mod:`popolaloom.lark.notifier` path — terminal cards do
+            not have a HITLPrompt, only a card builder output).
         target_open_id: Lark user open_id receiver; defaults to
             :func:`lark_target_open_id`.  When None and env var
             ``LARK_HITL_TARGET_OPEN_ID`` is unset, returns a non-OK
@@ -159,9 +165,23 @@ def send_lark_card(
             - ``"notification"`` (reserved for v0.5.0)
 
             Default ``"hitl"`` preserves backward-compat for every
-            v0.3.0 caller; never changes argv or NDJSON envelopes (v0.4.1
-            Stage L1 is logging-only — Stage L2 will extend the NDJSON
-            envelope with a ``kind`` field per research §F.1).
+            v0.3.0 caller; never changes argv shape but the NDJSON
+            envelope now carries the same ``kind`` field whenever
+            ``event_log`` is provided (v0.4.1 Stage L2.D).
+        card_payload: pre-built Lark card v2 dict (typically from
+            :func:`popolaloom.lark.card_templates.build_completion_card`
+            / :func:`build_failure_card` / etc.). When provided, the
+            argv builder uses this instead of rendering ``prompt``;
+            this is how terminal-notification cards skip the HITLPrompt
+            shape entirely.
+        event_log: optional :class:`popolaloom.daemon.event_log.EventLog`
+            (or any object with an ``append(event_type, data)`` method)
+            into which ``lark.send.ok`` / ``lark.send.failed`` NDJSON
+            envelopes are written so :mod:`popolaloom.evaluation.runner`
+            (and v0.5.0 ``popola doctor``) can compute Lark delivery
+            health from per-task NDJSON. The envelope payload includes
+            the ``kind`` field added in v0.4.1 Stage L2.D so terminal
+            notifications and HITL sends are filterable downstream.
 
     Returns:
         LarkSendResult: details of the attempt (success or failure).
@@ -173,12 +193,32 @@ def send_lark_card(
             kind,
             "<unset>",
         )
+        _emit_send_event(
+            event_log,
+            ok=False,
+            kind=kind,
+            target="<unset>",
+            attempts=0,
+            message_id="",
+            error="target_unset",
+        )
         return LarkSendResult(
             ok=False,
             error="LARK_HITL_TARGET_OPEN_ID unset; lark renderer disabled",
             attempts=0,
         )
-    argv = build_card_send_argv(prompt, target)
+    if card_payload is not None:
+        if prompt is not None:
+            argv = build_card_send_argv(prompt, target, card_payload=card_payload)
+        else:
+            argv = _build_terminal_send_argv(card_payload, target)
+    else:
+        if prompt is None:
+            raise ValueError(
+                "send_lark_card requires either prompt or card_payload "
+                "(both None)"
+            )
+        argv = build_card_send_argv(prompt, target)
 
     if runner is None:
         runner = subprocess.run
@@ -209,6 +249,15 @@ def send_lark_card(
                 target,
                 attempt,
             )
+            _emit_send_event(
+                event_log,
+                ok=False,
+                kind=kind,
+                target=target,
+                attempts=attempt,
+                message_id="",
+                error=last_error,
+            )
             return LarkSendResult(
                 ok=False,
                 error=last_error,
@@ -237,6 +286,15 @@ def send_lark_card(
                     msg_id,
                     attempt,
                 )
+                _emit_send_event(
+                    event_log,
+                    ok=True,
+                    kind=kind,
+                    target=target,
+                    attempts=attempt,
+                    message_id=msg_id,
+                    error=None,
+                )
                 return LarkSendResult(
                     ok=True,
                     message_id=msg_id,
@@ -262,6 +320,15 @@ def send_lark_card(
         len(backoff_s),
         last_error,
     )
+    _emit_send_event(
+        event_log,
+        ok=False,
+        kind=kind,
+        target=target,
+        attempts=len(backoff_s),
+        message_id="",
+        error=last_error,
+    )
     return LarkSendResult(
         ok=False,
         error=last_error,
@@ -270,6 +337,105 @@ def send_lark_card(
         stdout=last_stdout,
         stderr=last_stderr,
     )
+
+
+def _build_terminal_send_argv(
+    card_payload: dict[str, Any], target_open_id: str
+) -> list[str]:
+    """Build the ``lark-cli im +send`` argv for a pre-built terminal card.
+
+    Terminal cards (v0.4.1 Stage L2) carry a ``task_id`` inside the
+    button.value JSON instead of a HITL prompt id, so the metadata
+    flag is keyed by ``task_id`` for parity with HITL's
+    ``--metadata-key hitl_id=<uuid>`` shape (see
+    :func:`popolaloom.lark.card_templates.build_card_send_argv`).
+    Falls back to ``task_id=unknown`` when no button value is present
+    (e.g. cards rendered with no actions); the lark-cli CLI tolerates
+    arbitrary metadata keys.
+    """
+    task_id = _extract_task_id_from_card(card_payload) or "unknown"
+    return [
+        "lark-cli",
+        "im",
+        "+send",
+        "--as", "bot",
+        "--target-id", target_open_id,
+        "--card", json.dumps(card_payload, ensure_ascii=False),
+        "--metadata-key", f"task_id={task_id}",
+    ]
+
+
+def _extract_task_id_from_card(card_payload: dict[str, Any]) -> str | None:
+    """Pluck the first button's ``value.task_id`` from a terminal card.
+
+    Returns ``None`` when no action block / no task_id is found —
+    the caller falls back to a placeholder so argv construction never
+    raises for malformed input (No Silent Failures: malformed cards
+    still go out, just with a generic metadata tag).
+    """
+    body = card_payload.get("body") if isinstance(card_payload, dict) else None
+    elements = body.get("elements") if isinstance(body, dict) else None
+    if not isinstance(elements, list):
+        return None
+    for el in elements:
+        if not isinstance(el, dict) or el.get("tag") != "action":
+            continue
+        actions = el.get("actions")
+        if not isinstance(actions, list):
+            continue
+        for action in actions:
+            if not isinstance(action, dict):
+                continue
+            value = action.get("value")
+            if isinstance(value, dict):
+                tid = value.get("task_id")
+                if isinstance(tid, str) and tid:
+                    return tid
+    return None
+
+
+def _emit_send_event(
+    event_log: Any,
+    *,
+    ok: bool,
+    kind: LarkCardKind,
+    target: str,
+    attempts: int,
+    message_id: str,
+    error: str | None,
+) -> None:
+    """Write a ``lark.send.{ok,failed}`` NDJSON envelope when ``event_log`` is set.
+
+    No-op when ``event_log is None`` so v0.3.0-style HITL callers (that
+    don't pass an event_log) are not forced to provide one. The
+    ``kind`` field (v0.4.1 Stage L2.D) is always included so
+    :mod:`popolaloom.evaluation.runner` and the v0.5.0
+    ``popola doctor`` can disambiguate HITL vs terminal vs notification
+    sends without re-deriving from the log message.
+
+    Per workspace rule "No Silent Failures": exceptions from the
+    underlying ``event_log.append`` are caught + logged but do not
+    propagate (the user already saw the daemon-side log line — losing
+    the NDJSON envelope is not worth crashing the wait-thread).
+    """
+    if event_log is None:
+        return
+    event_type = "lark.send.ok" if ok else "lark.send.failed"
+    payload: dict[str, Any] = {
+        "kind": kind,
+        "target": target,
+        "attempts": attempts,
+    }
+    if message_id:
+        payload["message_id"] = message_id
+    if error is not None:
+        payload["error"] = error
+    try:
+        event_log.append(event_type, payload)
+    except Exception:
+        logger.exception(
+            "lark.send: failed to append %s envelope to event_log", event_type
+        )
 
 
 def parse_reply(card_action_event: dict[str, Any]) -> HITLReply | None:

@@ -1,5 +1,15 @@
 """Smoke test: verify package import + version string.
 
+v0.4.1 minor (Phase 1 close-out): the proactive Lark notification
+patch — the supervisor wait-thread now emits ``task.canceled``
+(closing the latent contract bug from v0.4.0 research §F.3), 5 new
+card builders cover the terminal-state taxonomy, ``lark/notifier.py``
+sends the cards on every COMPLETED/FAILED/CANCELED transition, and
+``_build_default_popolad`` auto-starts ``LarkSupervisor`` when env
+vars opt in.  See ``release-notes-v0.4.1.md`` for the full set of
+closures, the 23 new default-lane tests (15 L1 + 8 L2), coverage
+delta (91.36 % → 91.38 %), and v0.5.0 hand-off contract.
+
 v0.4.0 GA release: closes the v0.0.1 → v0.4.0 phase 1 journey.  All
 14 R-series issues (R-001..R-014) closed across v0.2.0 + v0.3.0 + the
 v0.3.x self-evolution rounds.  See ``release-notes-v0.4.0.md`` for the
@@ -55,4 +65,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.4.0"
+    assert popolaloom.__version__ == "0.4.1"

@@ -166,6 +166,19 @@ class Popolad:
         # may inject directly).  When None, /hitl/answer returns 503 so
         # callers know HITL is not wired up rather than failing silently.
         self._hitl_store: Any = None
+        # v0.4.1 Stage L2.B/L2.C: optional asyncio loop reference, used by
+        # ``_on_subprocess_exit`` to schedule the Lark proactive
+        # notifier coroutine from the supervisor wait-thread; and a slot
+        # for the LarkSupervisor instance the daemon owns when env vars
+        # opt in. Both default ``None`` so unit tests that construct
+        # :class:`Popolad` outside an asyncio context (no running loop)
+        # still work — the notifier scheduler simply skips with an
+        # explicit log line per workspace rule "No Silent Failures".
+        try:
+            self._loop: asyncio.AbstractEventLoop | None = asyncio.get_running_loop()
+        except RuntimeError:
+            self._loop = None
+        self._lark_supervisor: Any = None
         if event_bus_bridge is not None:
             event_bus_bridge.subscribe()
 
@@ -207,6 +220,35 @@ class Popolad:
     def hitl_store(self, value: Any) -> None:
         """Inject a :class:`popolaloom.hitl.HITLStore` (used by daemon main + tests)."""
         self._hitl_store = value
+
+    def attach_loop(self, loop: asyncio.AbstractEventLoop) -> None:
+        """Bind the daemon's main asyncio loop for cross-thread scheduling.
+
+        v0.4.1 Stage L2.B: :meth:`_on_subprocess_exit` runs in the
+        supervisor wait-thread (NOT on the asyncio loop), so the Lark
+        proactive notifier coroutine has to be scheduled via
+        :func:`asyncio.run_coroutine_threadsafe`. The daemon's
+        :func:`popolaloom.daemon.main.main` (and the rpc.py lifespan
+        for daemon-process construction) calls this once at startup
+        when the loop is known. Tests may also call it manually.
+
+        Idempotent: subsequent calls overwrite the stored reference
+        (matches v0.3.0 ``hitl_store`` setter semantics — last writer
+        wins, no race protection because lifespan runs once).
+        """
+        self._loop = loop
+
+    @property
+    def lark_supervisor(self) -> Any:
+        """v0.4.1 Stage L2.C: the daemon-owned :class:`LarkSupervisor` (or ``None``).
+
+        Set by :func:`popolaloom.daemon.main._build_default_popolad`
+        when ``LARK_HITL_TARGET_OPEN_ID`` (or ``LARK_NOTIFY_TARGET_OPEN_ID``)
+        is configured AND ``lark-cli`` is on PATH; otherwise stays
+        ``None``. Tests may inject a stub directly via the underlying
+        attribute for verification.
+        """
+        return self._lark_supervisor
 
     def event_log_for_arktower_id(self, ark_task_id: str) -> EventLog | None:
         """Resolve an ArkTower task id → :class:`EventLog` for the popola task.
@@ -917,10 +959,38 @@ class Popolad:
         诊断性 ghost_exit 必须立即 fsync 到磁盘以保证 forensic 可读 (避免
         bug report 时 daemon 崩溃后丢失 ghost_exit 行); 若是临时构造的
         EventLog (任务不在 ``self._event_logs`` 里), 还要 close 释放 fd。
+
+        v0.4.1 Stage L2.B (carry-over fix from L1): consult StateStore
+        BEFORE deciding the new state — if the handle is already
+        :attr:`TaskState.CANCELED` (set by :meth:`cancel_task` before
+        SIGTERM/SIGKILL), do NOT clobber with COMPLETED/FAILED. The
+        supervisor wait-thread already emits the right NDJSON event
+        (``task.canceled`` with ``sigkill_escalated``); this guard is
+        the StateStore-side mirror so :meth:`get_status` and
+        :meth:`list_all` keep returning ``CANCELED`` after the
+        subprocess actually exits.
+
+        v0.4.1 Stage L2.B (notifier hook): after the StateStore update
+        succeeds, schedule the Lark proactive notifier coroutine on
+        :attr:`_loop` via :func:`asyncio.run_coroutine_threadsafe` so
+        the wait-thread does not block on ``lark-cli``. When
+        :attr:`_loop` is ``None`` (test path, or daemon constructed
+        outside an asyncio context) the schedule step is skipped with
+        an explicit INFO log per workspace rule "No Silent Failures".
         """
-        new_state = TaskState.COMPLETED if exit_code == 0 else TaskState.FAILED
+        existing = self._state.get(task_id)
+        already_canceled = (
+            existing is not None and existing.state == TaskState.CANCELED
+        )
+        if already_canceled:
+            new_state = TaskState.CANCELED
+        else:
+            new_state = TaskState.COMPLETED if exit_code == 0 else TaskState.FAILED
         try:
-            self._state.update(task_id, state=new_state, exit_code=exit_code)
+            if already_canceled:
+                self._state.update(task_id, exit_code=exit_code)
+            else:
+                self._state.update(task_id, state=new_state, exit_code=exit_code)
         except KeyError:
             logger.warning(
                 "on_exit for unknown task_id=%s exit_code=%d; emitting state.ghost_exit",
@@ -945,6 +1015,55 @@ class Popolad:
                 event_log.close()
             else:
                 event_log.fsync()
+            return
+
+        self._schedule_lark_terminal_notification(task_id, new_state, exit_code)
+
+    def _schedule_lark_terminal_notification(
+        self,
+        task_id: str,
+        terminal_state: TaskState,
+        exit_code: int,
+    ) -> None:
+        """Schedule :func:`send_terminal_notification` on the daemon's loop.
+
+        Helper extracted from :meth:`_on_subprocess_exit` so the
+        scheduling decision (loop available vs not) is tested in
+        isolation. When :attr:`_loop` is ``None`` (e.g. unit tests
+        constructing :class:`Popolad` outside asyncio) the call is
+        skipped with an explicit INFO log; the notifier itself logs
+        every skip / failure case so this method's job is purely
+        cross-thread dispatch.
+
+        Per workspace rule "No Silent Failures": cross-thread
+        scheduling exceptions are caught + logged but do NOT propagate
+        — losing a notification card is not worth crashing the
+        wait-thread (which would orphan the per-task subprocess
+        bookkeeping and cause downstream cancel storms).
+        """
+        loop = self._loop
+        if loop is None or loop.is_closed():
+            logger.info(
+                "lark.notify.unscheduled task_id=%s state=%s reason=no_loop",
+                task_id,
+                terminal_state,
+            )
+            return
+        try:
+            from popolaloom.lark.notifier import send_terminal_notification
+
+            asyncio.run_coroutine_threadsafe(
+                send_terminal_notification(
+                    self, task_id, terminal_state, exit_code
+                ),
+                loop,
+            )
+        except Exception:
+            logger.exception(
+                "lark.notify.schedule_failed task_id=%s state=%s",
+                task_id,
+                terminal_state,
+            )
 
     # -- graph integration (Stage B) --------------------------------------
 
