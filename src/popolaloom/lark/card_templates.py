@@ -30,10 +30,17 @@ from typing import Any
 from popolaloom.hitl import HITLPrompt, HITLTrigger
 
 __all__ = [
+    "HEADER_COLOR_BY_TERMINAL_TRIGGER",
     "HEADER_COLOR_BY_TRIGGER",
     "LARK_FOOTER",
+    "LARK_NOTIFY_PROMPT_TRUNCATE",
+    "build_canceled_card",
+    "build_cancel_escalated_card",
     "build_card_payload",
     "build_card_send_argv",
+    "build_completion_card",
+    "build_failure_card",
+    "build_skill_missing_card",
     "extract_action_value",
     "extract_button_value",
     "footer_with_origin_note",
@@ -59,7 +66,11 @@ HEADER_COLOR_BY_TRIGGER: dict[HITLTrigger, str] = {
 The 5 base trigger types map to severity colors so the human can
 prioritise at a glance.  Lark v2 cards support: ``blue``, ``wathet``,
 ``turquoise``, ``green``, ``yellow``, ``orange``, ``red``, ``carmine``,
-``violet``, ``purple``, ``indigo``, ``grey`` (we use 5 of the 12)."""
+``violet``, ``purple``, ``indigo``, ``grey``.  v0.3.0 used 5 of the 12
+(``blue`` / ``yellow`` / ``red`` / ``purple``); v0.4.1 Stage L1.B
+extends the **palette** with ``green`` (task.completed) and
+``orange`` (task.cancel_escalated) for the new terminal-event card
+builders below — see :data:`HEADER_COLOR_BY_TERMINAL_TRIGGER`."""
 
 _HEADER_TITLE_BY_TRIGGER: dict[HITLTrigger, str] = {
     "info_request": "PopolaLoom · 需要回答",
@@ -68,6 +79,46 @@ _HEADER_TITLE_BY_TRIGGER: dict[HITLTrigger, str] = {
     "destructive_op": "PopolaLoom · 危险操作确认",
     "ambiguous_input": "PopolaLoom · 多候选选择",
 }
+
+
+HEADER_COLOR_BY_TERMINAL_TRIGGER: dict[str, str] = {
+    "task.completed": "green",
+    "task.failed": "red",
+    "task.canceled": "yellow",
+    "task.cancel_escalated": "orange",
+    "skill.missing": "yellow",
+}
+"""Per-terminal-trigger header color (v0.4.1 Stage L1.B).
+
+Mirrors :data:`HEADER_COLOR_BY_TRIGGER` shape but keyed by the
+NDJSON event type that produced the card (consumed by
+:mod:`popolaloom.lark.notifier` in Stage L2).  The 5 keys cover the
+proactive-notification taxonomy from research §E.2.3:
+
+- ``task.completed`` → green (success)
+- ``task.failed`` → red (failure)
+- ``task.canceled`` → yellow (user-initiated cancel, no SIGKILL)
+- ``task.cancel_escalated`` → orange (cancel needed SIGKILL escalation)
+- ``skill.missing`` → yellow (Skill detection found a gap)
+"""
+
+
+_HEADER_TITLE_BY_TERMINAL_TRIGGER: dict[str, str] = {
+    "task.completed": "PopolaLoom · 任务完成",
+    "task.failed": "PopolaLoom · 任务失败",
+    "task.canceled": "PopolaLoom · 任务已取消",
+    "task.cancel_escalated": "PopolaLoom · 取消升级 SIGKILL",
+    "skill.missing": "PopolaLoom · Skill 检测缺失",
+}
+
+
+LARK_NOTIFY_PROMPT_TRUNCATE: int = 200
+"""Maximum :attr:`prompt_summary` length displayed in terminal cards.
+
+Per research §E.2.4 ``LARK_NOTIFY_PROMPT_TRUNCATE``; over-long prompts
+are truncated to this many characters and suffixed with ``…`` so the
+card body stays scrollable on mobile and the JSON envelope stays
+under Lark's per-message size cap."""
 
 
 def footer_with_origin_note(body: str) -> str:
@@ -211,6 +262,315 @@ def extract_action_value(value: dict[str, Any] | str) -> tuple[str, str]:
     if hitl_id is None or option_id is None:
         raise ValueError(f"extract_action_value: malformed button value: {value!r}")
     return hitl_id, option_id
+
+
+def _truncate_prompt(prompt_summary: str, limit: int = LARK_NOTIFY_PROMPT_TRUNCATE) -> str:
+    """Truncate ``prompt_summary`` to ``limit`` chars + ``…`` if longer.
+
+    Pure function — does not mutate state, raises only on type errors
+    that the caller should already have prevented (No Silent Failures:
+    a non-string ``prompt_summary`` is the caller's bug, not ours).
+    """
+    if not isinstance(prompt_summary, str):
+        raise TypeError(
+            f"_truncate_prompt: expected str, got {type(prompt_summary).__name__}"
+        )
+    if len(prompt_summary) <= limit:
+        return prompt_summary
+    return prompt_summary[:limit] + "…"
+
+
+def _terminal_card_envelope(
+    *,
+    trigger: str,
+    body_text: str,
+    actions: list[dict[str, Any]] | None = None,
+) -> dict[str, Any]:
+    """Build the common card-v2 envelope shared by all 5 terminal builders.
+
+    The body always contains a ``div`` rendered as ``lark_md`` with the
+    workspace-rule footer appended (No Silent Failures: missing trigger
+    falls back to ``grey`` + ``"PopolaLoom · 通知"``, with explicit log).
+    Caller is responsible for pre-formatting ``body_text`` (newlines,
+    bullet lists, etc.); this helper only concatenates the footer and
+    optionally appends the action div.
+    """
+    color = HEADER_COLOR_BY_TERMINAL_TRIGGER.get(trigger, "grey")
+    title = _HEADER_TITLE_BY_TERMINAL_TRIGGER.get(trigger, "PopolaLoom · 通知")
+    elements: list[dict[str, Any]] = [
+        {
+            "tag": "div",
+            "text": {
+                "tag": "lark_md",
+                "content": footer_with_origin_note(body_text),
+            },
+        },
+    ]
+    if actions:
+        elements.append({"tag": "action", "actions": list(actions)})
+    return {
+        "schema": "2.0",
+        "config": {"wide_screen_mode": True},
+        "header": {
+            "title": {"tag": "plain_text", "content": title},
+            "template": color,
+        },
+        "body": {"elements": elements},
+    }
+
+
+def _ack_button(task_id: str) -> dict[str, Any]:
+    """Build the ``[确认]`` button — used by all 5 terminal cards."""
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "确认"},
+        "type": "default",
+        "value": {"task_id": task_id, "action": "ack"},
+    }
+
+
+def _view_log_button(task_id: str) -> dict[str, Any]:
+    """Build the ``[查看日志]`` button — used by completion + failure cards."""
+    return {
+        "tag": "button",
+        "text": {"tag": "plain_text", "content": "查看日志"},
+        "type": "primary",
+        "value": {"task_id": task_id, "action": "view_log"},
+    }
+
+
+def build_completion_card(
+    task_id: str,
+    cli: str,
+    prompt_summary: str,
+    exit_code: int,
+    started_at: str,
+    completed_at: str,
+    latest_event_index: int,
+) -> dict[str, Any]:
+    """Build a green ``task.completed`` notification card (v0.4.1 Stage L1.B).
+
+    Header: ``PopolaLoom · 任务完成`` (green).  Body lists task_id /
+    cli / truncated prompt / exit_code / started_at / completed_at /
+    latest_event_index.  Actions: ``[查看日志]`` + ``[确认]`` buttons
+    whose ``value`` is ``{"task_id": ..., "action": "view_log" | "ack"}``.
+
+    Args:
+        task_id: popola internal task id (button value payload).
+        cli: adapter name (``cursor`` / ``claude`` / ``codex`` / etc.).
+        prompt_summary: prompt text — truncated to
+            :data:`LARK_NOTIFY_PROMPT_TRUNCATE` chars + ``…`` if longer.
+        exit_code: subprocess exit code (always ``0`` on the happy path
+            but kept as int so the renderer is total — No Silent Failures
+            if a caller passes a wrong value, the human sees it).
+        started_at: ISO 8601 dispatch timestamp (callers usually pass
+            ``handle.started_at.isoformat(timespec="milliseconds")``).
+        completed_at: ISO 8601 terminal-event timestamp.
+        latest_event_index: count of NDJSON events on the per-task log
+            (so the operator can correlate ``popola tail`` output).
+
+    Returns:
+        dict[str, Any]: card v2 JSON ready to ``json.dumps``.
+    """
+    body_text = (
+        f"**Task**: `{task_id}` · **CLI**: `{cli}`\n\n"
+        f"**Prompt**: {_truncate_prompt(prompt_summary)}\n\n"
+        f"**Exit code**: `{exit_code}`\n"
+        f"**Started**: {started_at}\n"
+        f"**Completed**: {completed_at}\n"
+        f"**Events**: {latest_event_index}"
+    )
+    actions = [_view_log_button(task_id), _ack_button(task_id)]
+    return _terminal_card_envelope(
+        trigger="task.completed",
+        body_text=body_text,
+        actions=actions,
+    )
+
+
+def build_failure_card(
+    task_id: str,
+    cli: str,
+    prompt_summary: str,
+    exit_code: int,
+    last_stderr_lines: list[str],
+    started_at: str,
+    failed_at: str,
+) -> dict[str, Any]:
+    """Build a red ``task.failed`` notification card (v0.4.1 Stage L1.B).
+
+    Header: ``PopolaLoom · 任务失败`` (red).  Body lists task_id / cli /
+    truncated prompt / exit_code / started_at / failed_at + a markdown
+    code block of ``last_stderr_lines`` (empty list renders as
+    ``"(no stderr captured)"``).  Actions: ``[查看日志]`` + ``[确认]``.
+
+    Args:
+        task_id: popola internal task id.
+        cli: adapter name.
+        prompt_summary: prompt text (truncated to 200 chars).
+        exit_code: non-zero subprocess exit code.
+        last_stderr_lines: tail of stderr (caller can clip to ~10 lines
+            before calling; we serialise as a code block as-is).
+        started_at: ISO 8601 dispatch timestamp.
+        failed_at: ISO 8601 failure timestamp.
+
+    Returns:
+        dict[str, Any]: card v2 JSON ready to ``json.dumps``.
+    """
+    if not isinstance(last_stderr_lines, list):
+        raise TypeError(
+            f"build_failure_card: last_stderr_lines must be list, "
+            f"got {type(last_stderr_lines).__name__}"
+        )
+    if last_stderr_lines:
+        stderr_block = "```\n" + "\n".join(str(line) for line in last_stderr_lines) + "\n```"
+    else:
+        stderr_block = "_(no stderr captured)_"
+    body_text = (
+        f"**Task**: `{task_id}` · **CLI**: `{cli}`\n\n"
+        f"**Prompt**: {_truncate_prompt(prompt_summary)}\n\n"
+        f"**Exit code**: `{exit_code}`\n"
+        f"**Started**: {started_at}\n"
+        f"**Failed**: {failed_at}\n\n"
+        f"**Last stderr**:\n{stderr_block}"
+    )
+    actions = [_view_log_button(task_id), _ack_button(task_id)]
+    return _terminal_card_envelope(
+        trigger="task.failed",
+        body_text=body_text,
+        actions=actions,
+    )
+
+
+def build_canceled_card(
+    task_id: str,
+    cli: str,
+    prompt_summary: str,
+    escalated_to_sigkill: bool,
+    started_at: str,
+    canceled_at: str,
+) -> dict[str, Any]:
+    """Build a yellow ``task.canceled`` notification card (v0.4.1 Stage L1.B).
+
+    Header: ``PopolaLoom · 任务已取消`` (yellow).  Body lists task_id /
+    cli / truncated prompt / escalated_to_sigkill flag / started_at /
+    canceled_at.  Actions: 1 × ``[确认]`` button.
+
+    Args:
+        task_id: popola internal task id.
+        cli: adapter name.
+        prompt_summary: prompt text (truncated to 200 chars).
+        escalated_to_sigkill: ``True`` iff cancel had to escalate SIGTERM
+            → SIGKILL (taken from
+            :attr:`TaskHandle.cancel_escalated_to_sigkill`).
+        started_at: ISO 8601 dispatch timestamp.
+        canceled_at: ISO 8601 cancel timestamp.
+
+    Returns:
+        dict[str, Any]: card v2 JSON ready to ``json.dumps``.
+    """
+    escalated_label = "是 (SIGTERM → SIGKILL)" if escalated_to_sigkill else "否 (SIGTERM only)"
+    body_text = (
+        f"**Task**: `{task_id}` · **CLI**: `{cli}`\n\n"
+        f"**Prompt**: {_truncate_prompt(prompt_summary)}\n\n"
+        f"**SIGKILL escalated**: {escalated_label}\n"
+        f"**Started**: {started_at}\n"
+        f"**Canceled**: {canceled_at}"
+    )
+    actions = [_ack_button(task_id)]
+    return _terminal_card_envelope(
+        trigger="task.canceled",
+        body_text=body_text,
+        actions=actions,
+    )
+
+
+def build_cancel_escalated_card(
+    task_id: str,
+    cli: str,
+    prompt_summary: str,
+    exit_code: int,
+    sigterm_at: str,
+    sigkill_at: str,
+) -> dict[str, Any]:
+    """Build an orange ``task.cancel_escalated`` notification (v0.4.1 Stage L1.B).
+
+    Header: ``PopolaLoom · 取消升级 SIGKILL`` (orange).  Body lists
+    task_id / cli / truncated prompt / exit_code / sigterm_at /
+    sigkill_at.  Actions: 1 × ``[确认]`` button.
+
+    Args:
+        task_id: popola internal task id.
+        cli: adapter name.
+        prompt_summary: prompt text (truncated to 200 chars).
+        exit_code: subprocess exit code (typically ``-9`` after SIGKILL).
+        sigterm_at: ISO 8601 timestamp when SIGTERM was sent.
+        sigkill_at: ISO 8601 timestamp when SIGKILL was sent.
+
+    Returns:
+        dict[str, Any]: card v2 JSON ready to ``json.dumps``.
+    """
+    body_text = (
+        f"**Task**: `{task_id}` · **CLI**: `{cli}`\n\n"
+        f"**Prompt**: {_truncate_prompt(prompt_summary)}\n\n"
+        f"**Exit code**: `{exit_code}` (SIGKILL escalation path)\n"
+        f"**SIGTERM at**: {sigterm_at}\n"
+        f"**SIGKILL at**: {sigkill_at}"
+    )
+    actions = [_ack_button(task_id)]
+    return _terminal_card_envelope(
+        trigger="task.cancel_escalated",
+        body_text=body_text,
+        actions=actions,
+    )
+
+
+def build_skill_missing_card(
+    skill_name: str,
+    expected_paths: list[str],
+    detected_paths: list[str],
+) -> dict[str, Any]:
+    """Build a yellow ``skill.missing`` notification card (v0.4.1 Stage L1.B).
+
+    Header: ``PopolaLoom · Skill 检测缺失`` (yellow).  Body lists the
+    skill name plus 2 markdown bullet lists: expected / detected
+    install paths.  Action: 1 × ``[确认]`` button.
+
+    Args:
+        skill_name: the skill that's missing (used as the button
+            ``value.task_id`` so the listener can route the ack —
+            terminal card actions don't have a per-task id; we reuse
+            the field for parity with the other 4 builders).
+        expected_paths: list of paths the daemon expected to find.
+        detected_paths: list of paths actually present on disk.
+
+    Returns:
+        dict[str, Any]: card v2 JSON ready to ``json.dumps``.
+    """
+    if not isinstance(expected_paths, list) or not isinstance(detected_paths, list):
+        raise TypeError(
+            "build_skill_missing_card: expected_paths and detected_paths "
+            "must be list[str]"
+        )
+
+    def _format_paths(paths: list[str]) -> str:
+        if not paths:
+            return "_(none)_"
+        return "\n".join(f"- `{p}`" for p in paths)
+
+    body_text = (
+        f"**Skill**: `{skill_name}`\n\n"
+        f"**Expected paths** ({len(expected_paths)}):\n"
+        f"{_format_paths(expected_paths)}\n\n"
+        f"**Detected paths** ({len(detected_paths)}):\n"
+        f"{_format_paths(detected_paths)}"
+    )
+    actions = [_ack_button(skill_name)]
+    return _terminal_card_envelope(
+        trigger="skill.missing",
+        body_text=body_text,
+        actions=actions,
+    )
 
 
 def build_card_send_argv(

@@ -153,7 +153,7 @@ class Popolad:
         self._persistence = persistence
         self._event_bus_bridge = event_bus_bridge
         self._state = StateStore()
-        self._supervisor = Supervisor()
+        self._supervisor = Supervisor(state_store=self._state)
         self._event_logs: dict[str, EventLog] = {}
         self._event_logs_lock = threading.Lock()
         if use_graph is None:
@@ -616,6 +616,18 @@ class Popolad:
         v0.2.0 Stage A 简化实现: 仅 SIGTERM (与 SIGKILL fallback) 加事件
         log; Stage E 会与 ArkTower advance_task(CANCELED) 联动。
 
+        v0.4.1 Stage L1.A: state-first ordering — :attr:`TaskState.CANCELED`
+        is set on the StateStore **before** SIGTERM goes out, and
+        :attr:`TaskHandle.cancel_escalated_to_sigkill` is set
+        **before** the SIGKILL syscall. This guarantees the supervisor
+        wait-thread (now consulting :class:`StateStore`) reads an
+        accurate verdict regardless of which side wins the proc.wait
+        race, and the resulting NDJSON terminal event is always
+        ``task.canceled`` with the correct ``sigkill_escalated`` field
+        — closing the [research §F.3](
+        ../../../.local/memory/research/v0.5.0-skill-install-lark-research.md)
+        contract bug consumed by ``evaluation/runner.py:325-331``.
+
         Args:
             task_id: 已注册的 task_id。
             sigterm_grace_s: SIGTERM 后等待秒数, 超时 SIGKILL。
@@ -647,6 +659,17 @@ class Popolad:
 
         with self._event_logs_lock:
             event_log = self._event_logs.get(task_id)
+
+        try:
+            self._state.update(
+                task_id,
+                state=TaskState.CANCELED,
+                cancel_escalated_to_sigkill=False,
+            )
+        except KeyError:
+            logger.warning(
+                "cancel: task %s vanished from state store before signal", task_id
+            )
 
         try:
             _os.kill(pid, _signal.SIGTERM)
@@ -681,6 +704,15 @@ class Popolad:
             _time.sleep(0.05)
         else:
             try:
+                self._state.update(
+                    task_id, cancel_escalated_to_sigkill=True
+                )
+            except KeyError:
+                logger.warning(
+                    "cancel: task %s vanished before SIGKILL escalation marker",
+                    task_id,
+                )
+            try:
                 _os.kill(pid, _signal.SIGKILL)
                 escalated = True
                 if event_log is not None:
@@ -689,12 +721,22 @@ class Popolad:
                         {"task_id": task_id, "pid": pid, "signal": "SIGKILL"},
                     )
             except ProcessLookupError:
-                pass
+                try:
+                    self._state.update(
+                        task_id, cancel_escalated_to_sigkill=False
+                    )
+                except KeyError:
+                    logger.warning(
+                        "cancel: task %s vanished while reverting escalation marker",
+                        task_id,
+                    )
 
         try:
             self._state.update(task_id, state=TaskState.CANCELED)
         except KeyError:
-            logger.warning("cancel: task %s vanished from state store", task_id)
+            logger.warning(
+                "cancel: task %s vanished from state store", task_id
+            )
 
         return {
             "task_id": task_id,

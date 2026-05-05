@@ -73,6 +73,16 @@ class TaskHandle:
         persisted: 是否成功持久化到 ArkTower SQLite (R-008 修复)。
             ``True`` 当 task_service.create_task 成功; ``False`` 当
             未注入 repo / arktower 不可 import / create 抛异常。
+        cancel_escalated_to_sigkill: v0.4.1 (Stage L1.A) — 标记
+            :meth:`Popolad.cancel_task` 是否在 SIGTERM grace window
+            内升级到了 SIGKILL。供 :class:`Supervisor` 的 wait 线程在
+            emit ``task.canceled`` 终态事件时填充
+            ``data.sigkill_escalated`` 字段, 闭合 [research §F.3](
+            ../../../.local/memory/research/v0.5.0-skill-install-lark-research.md)
+            消费侧 (`evaluation/runner.py:325-331`) 的 ``task.canceled``
+            计数契约 + 让 v0.4.1 Stage L2 通知卡能区分"用户主动取消"
+            vs "升级 SIGKILL 强杀"两类。默认 ``False``;
+            :meth:`cancel_task` 仅在 SIGKILL 真发出时翻转。
     """
 
     task_id: str
@@ -86,6 +96,7 @@ class TaskHandle:
     cmd: list[str] = field(default_factory=list)
     completed_at: datetime | None = None
     persisted: bool = False
+    cancel_escalated_to_sigkill: bool = False
 
     def is_terminal(self) -> bool:
         """``True`` iff this task is in a terminal state (no further transitions)."""
@@ -130,8 +141,15 @@ class StateStore:
         exit_code: int | None = None,
         completed_at: datetime | None = None,
         persisted: bool | None = None,
+        cancel_escalated_to_sigkill: bool | None = None,
     ) -> TaskHandle:
         """Update mutable fields on a registered handle and return the new value.
+
+        v0.4.1 Stage L1.A: ``cancel_escalated_to_sigkill`` exposed so
+        :meth:`Popolad.cancel_task` can mark the SIGKILL escalation
+        *before* sending the signal — the supervisor wait-thread
+        consults this flag right before emitting the ``task.canceled``
+        terminal event so its ``data.sigkill_escalated`` is accurate.
 
         Raises:
             KeyError: 当 ``task_id`` 未注册。
@@ -152,6 +170,8 @@ class StateStore:
                 handle.completed_at = datetime.now(UTC)
             if persisted is not None:
                 handle.persisted = persisted
+            if cancel_escalated_to_sigkill is not None:
+                handle.cancel_escalated_to_sigkill = cancel_escalated_to_sigkill
             return handle
 
     def list_active(self) -> list[TaskHandle]:

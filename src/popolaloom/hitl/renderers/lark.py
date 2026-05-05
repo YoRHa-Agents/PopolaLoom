@@ -23,7 +23,7 @@ from __future__ import annotations
 import logging
 import subprocess
 import time
-from typing import Any
+from typing import Any, Literal
 
 from popolaloom.hitl import HITLPrompt, HITLReply
 from popolaloom.lark import lark_target_open_id
@@ -40,8 +40,22 @@ from popolaloom.lark.listener import (
 
 logger = logging.getLogger(__name__)
 
+LarkCardKind = Literal["hitl", "terminal", "notification"]
+"""v0.4.1 Stage L1.C — channel-of-origin tag for outbound Lark cards.
+
+- ``"hitl"``: human-in-the-loop prompt (v0.3.0 default; ``send_lark_card``
+  callers from :mod:`popolaloom.hitl` use this).
+- ``"terminal"``: terminal-event notification card (Stage L2's
+  :mod:`popolaloom.lark.notifier` will use this for
+  ``task.completed``/``task.failed``/``task.canceled`` cards).
+- ``"notification"``: generic out-of-band notice (reserved; no caller in
+  v0.4.1 — kept in the literal so adding callers in v0.5.0 doesn't break
+  the type alias).
+"""
+
 __all__ = [
     "LARK_FOOTER",
+    "LarkCardKind",
     "LarkSendResult",
     "parse_reply",
     "render_lark_card",
@@ -117,6 +131,7 @@ def send_lark_card(
     runner: Any = None,
     backoff_s: tuple[float, ...] = _RETRY_BACKOFF_S,
     timeout_s: float = 10.0,
+    kind: LarkCardKind = "hitl",
 ) -> LarkSendResult:
     """Send the rendered card via ``lark-cli im +send --card`` (with retry).
 
@@ -133,12 +148,31 @@ def send_lark_card(
             satisfies this).
         backoff_s: retry backoff schedule.
         timeout_s: per-attempt subprocess timeout.
+        kind: v0.4.1 Stage L1.C — origin tag emitted in success / failure
+            log lines (``lark.send.ok kind=<kind> target=<target>`` /
+            ``lark.send.failed kind=<kind> target=<target>``) so
+            terminal-notification (Stage L2) and HITL traffic can be
+            disambiguated when grepping daemon logs. Valid values:
+
+            - ``"hitl"`` (default; v0.3.0-compatible)
+            - ``"terminal"`` (Stage L2 :mod:`lark.notifier` callers)
+            - ``"notification"`` (reserved for v0.5.0)
+
+            Default ``"hitl"`` preserves backward-compat for every
+            v0.3.0 caller; never changes argv or NDJSON envelopes (v0.4.1
+            Stage L1 is logging-only — Stage L2 will extend the NDJSON
+            envelope with a ``kind`` field per research §F.1).
 
     Returns:
         LarkSendResult: details of the attempt (success or failure).
     """
     target = target_open_id or lark_target_open_id()
     if not target:
+        logger.warning(
+            "lark.send.failed kind=%s target=%s reason=target_unset",
+            kind,
+            "<unset>",
+        )
         return LarkSendResult(
             ok=False,
             error="LARK_HITL_TARGET_OPEN_ID unset; lark renderer disabled",
@@ -169,6 +203,12 @@ def send_lark_card(
         except FileNotFoundError as exc:
             last_error = f"lark-cli not found: {exc}"
             logger.error("send_lark_card: lark-cli binary missing")
+            logger.warning(
+                "lark.send.failed kind=%s target=%s reason=cli_missing attempts=%d",
+                kind,
+                target,
+                attempt,
+            )
             return LarkSendResult(
                 ok=False,
                 error=last_error,
@@ -190,6 +230,13 @@ def send_lark_card(
                     attempt,
                     msg_id,
                 )
+                logger.info(
+                    "lark.send.ok kind=%s target=%s message_id=%s attempt=%d",
+                    kind,
+                    target,
+                    msg_id,
+                    attempt,
+                )
                 return LarkSendResult(
                     ok=True,
                     message_id=msg_id,
@@ -208,6 +255,13 @@ def send_lark_card(
         if attempt < len(backoff_s):
             time.sleep(backoff_s[attempt - 1])
 
+    logger.warning(
+        "lark.send.failed kind=%s target=%s attempts=%d error=%s",
+        kind,
+        target,
+        len(backoff_s),
+        last_error,
+    )
     return LarkSendResult(
         ok=False,
         error=last_error,

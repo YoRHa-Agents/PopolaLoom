@@ -31,9 +31,12 @@ import subprocess
 import threading
 from collections.abc import Callable
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any
 
 from popolaloom.daemon.event_log import EventLog
+
+if TYPE_CHECKING:
+    from popolaloom.daemon.state import StateStore
 
 logger = logging.getLogger(__name__)
 
@@ -53,9 +56,20 @@ class Supervisor:
     Day-1 实现是纯 ``subprocess.Popen`` + ``threading``; 不引入 asyncio
     以避免与上层 popolad 的事件循环耦合 (上层 Stage Impl-3 的 LangGraph
     + uvicorn 是 asyncio, 我们只需保证 ``spawn()`` 立即返回, 不阻塞)。
+
+    v0.4.1 Stage L1.A: optionally accepts a :class:`StateStore`
+    reference at construction time so the wait-thread can emit
+    ``task.canceled`` (instead of ``task.failed``) when
+    :meth:`Popolad.cancel_task` has marked the handle as
+    :attr:`TaskState.CANCELED` before sending SIGTERM. The reference
+    is **stored as an instance attribute** rather than threaded
+    through :meth:`spawn` so v0.3.x callers (and their test mocks
+    of ``spawn``) keep their signature unchanged — workspace rule
+    "No Silent Failures" honoured by an explicit log when the store
+    lookup itself fails.
     """
 
-    def __init__(self) -> None:
+    def __init__(self, state_store: StateStore | None = None) -> None:
         self._workers: dict[str, list[threading.Thread]] = {}
         self._lock = threading.Lock()
         self._line_counts: dict[str, dict[str, int]] = {}
@@ -66,6 +80,18 @@ class Supervisor:
         the count only grows), and we use it for ``stream.truncated`` event
         ``actual_lines`` reporting on join timeout (R-007 fix).
         """
+        self._state_store: StateStore | None = state_store
+
+    @property
+    def state_store(self) -> StateStore | None:
+        """v0.4.1 Stage L1.A: optional :class:`StateStore` injected at __init__.
+
+        Read by the wait-thread terminal-event emitter; ``None`` falls
+        back to the v0.4.0 two-way ``task.completed``/``task.failed``
+        path (preserving backward-compat for any caller that constructs
+        :class:`Supervisor` without injecting the store).
+        """
+        return self._state_store
 
     def spawn(
         self,
@@ -132,7 +158,15 @@ class Supervisor:
         )
         wait_thread = threading.Thread(
             target=self._wait_and_finalize,
-            args=(task_id, proc, event_log, stdout_thread, stderr_thread, on_exit),
+            args=(
+                task_id,
+                proc,
+                event_log,
+                stdout_thread,
+                stderr_thread,
+                on_exit,
+                self._state_store,
+            ),
             name=f"popolad-wait-{task_id}",
             daemon=True,
         )
@@ -191,21 +225,33 @@ class Supervisor:
         stdout_thread: threading.Thread,
         stderr_thread: threading.Thread,
         on_exit: Callable[[str, int], None] | None,
+        state_store: StateStore | None = None,
     ) -> None:
         """阻塞等子进程退出, 然后写终态事件 + 调 on_exit 回调.
 
         v0.2.0 R-007 fix: drain join timeout = ``_DRAIN_JOIN_TIMEOUT_S`` (30s),
         超时则在终态事件之前 emit ``stream.truncated`` event 含
         ``{stream, actual_lines, reason: 'join_timeout_30s'}``.
+
+        v0.4.1 Stage L1.A: 终态事件三元化 — 若 ``state_store`` 注入且对应
+        :class:`TaskHandle` 已被 :meth:`Popolad.cancel_task` 标记为
+        :attr:`TaskState.CANCELED`, 改 emit ``task.canceled`` 含
+        ``{task_id, exit_code, pid, sigkill_escalated: bool}`` 字段; 否则
+        保持 v0.4.0 的 ``task.completed`` (exit_code == 0) /
+        ``task.failed`` (else) 二元路径。
         """
         try:
             exit_code = proc.wait()
         except Exception as exc:  # noqa: BLE001
             logger.exception("proc.wait failed for task %s", task_id)
-            event_log.append(
-                "task.failed",
-                {"task_id": task_id, "exit_code": -1, "error": repr(exc)},
+            terminal_type, terminal_data = self._resolve_terminal_event(
+                task_id=task_id,
+                pid=proc.pid,
+                exit_code=-1,
+                state_store=state_store,
             )
+            terminal_data["error"] = repr(exc)
+            event_log.append(terminal_type, terminal_data)
             if on_exit is not None:
                 self._safe_on_exit(on_exit, task_id, -1)
             return
@@ -217,14 +263,93 @@ class Supervisor:
         if stderr_thread.is_alive():
             self._emit_stream_truncated(task_id, "stderr", event_log)
 
-        event_type = "task.completed" if exit_code == 0 else "task.failed"
-        event_log.append(
-            event_type,
-            {"task_id": task_id, "exit_code": exit_code, "pid": proc.pid},
+        terminal_type, terminal_data = self._resolve_terminal_event(
+            task_id=task_id,
+            pid=proc.pid,
+            exit_code=exit_code,
+            state_store=state_store,
         )
+        event_log.append(terminal_type, terminal_data)
 
         if on_exit is not None:
             self._safe_on_exit(on_exit, task_id, exit_code)
+
+    @staticmethod
+    def _resolve_terminal_event(
+        *,
+        task_id: str,
+        pid: int,
+        exit_code: int,
+        state_store: StateStore | None,
+    ) -> tuple[str, dict[str, Any]]:
+        """Decide the terminal event type + payload for a single subprocess exit.
+
+        v0.4.1 Stage L1.A: returns ``("task.canceled", {sigkill_escalated})``
+        when the :class:`StateStore` says the handle is already
+        :attr:`TaskState.CANCELED` (set by :meth:`Popolad.cancel_task`
+        *before* it sent SIGTERM/SIGKILL); otherwise falls back to v0.4.0
+        ``task.completed`` / ``task.failed`` two-way split.
+
+        StateStore lookup failures are logged at WARNING and downgraded
+        to the legacy two-way path (No Silent Failures workspace rule —
+        we record the failure rather than inventing a verdict).
+        """
+        canceled_payload = Supervisor._maybe_canceled_terminal(
+            task_id=task_id,
+            pid=pid,
+            exit_code=exit_code,
+            state_store=state_store,
+        )
+        if canceled_payload is not None:
+            return canceled_payload
+
+        event_type = "task.completed" if exit_code == 0 else "task.failed"
+        return (
+            event_type,
+            {"task_id": task_id, "exit_code": exit_code, "pid": pid},
+        )
+
+    @staticmethod
+    def _maybe_canceled_terminal(
+        *,
+        task_id: str,
+        pid: int,
+        exit_code: int,
+        state_store: StateStore | None,
+    ) -> tuple[str, dict[str, Any]] | None:
+        """Return ``("task.canceled", payload)`` iff state_store says CANCELED.
+
+        Helper extracted from :meth:`_resolve_terminal_event` so the
+        deferred ``TaskState`` import lives in one place; returns
+        ``None`` when no override applies (caller falls back to the
+        legacy two-way emit).
+        """
+        if state_store is None:
+            return None
+        try:
+            from popolaloom.daemon.state import TaskState
+
+            handle = state_store.get(task_id)
+        except Exception:
+            logger.exception(
+                "state_store.get failed for task=%s; falling back to legacy "
+                "task.completed/task.failed terminal event",
+                task_id,
+            )
+            return None
+        if handle is None or handle.state != TaskState.CANCELED:
+            return None
+        return (
+            "task.canceled",
+            {
+                "task_id": task_id,
+                "exit_code": exit_code,
+                "pid": pid,
+                "sigkill_escalated": bool(
+                    handle.cancel_escalated_to_sigkill
+                ),
+            },
+        )
 
     def _emit_stream_truncated(
         self,
