@@ -4,6 +4,107 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.5.1] — 2026-05-05
+
+**Patch — Loop 1 of the v0.5.x → v0.6.0 self-improvement series.**
+Closes the three GA-blockers surfaced by the v0.5.0 functional test
+(`/tmp/popolaloom-skill-functional-test.md`) + the CI red-build
+investigation on PRs #1 / #2 / #3. The patch stays inside the
+v0.5.0 envelope: no new modules, no new ADRs, no `pyproject.toml`
+dependency change, version `0.5.0` → `0.5.1`, default-lane coverage
+**`91.15 %` → `92.56 %`**. See
+[`release-notes-v0.5.1.md`](release-notes-v0.5.1.md) for the full
+write-up.
+
+### Fixed
+
+- **CI runner-writable** —
+  [`.github/workflows/ci.yml`](.github/workflows/ci.yml) (default +
+  slow + lint jobs) and
+  [`.github/workflows/automerge.yml`](.github/workflows/automerge.yml)
+  no longer fail with `Permission denied` on GitHub-hosted runners.
+  The hardcoded `mkdir -p /home/agent/reference` (which assumed the
+  developer-VM filesystem layout) is now guarded by a `[ -w /home ]`
+  writability check; both `mkdir` and the legacy ArkTower clone
+  soft-fail with `2>/dev/null || true` so the install step proceeds
+  to `pip install -e ".[dev]"`. ArkTower has been vendored under
+  `src/popolaloom/_vendored/arktower/` since v0.5.0 — the legacy
+  clone path is kept only for the v0.4.x baseline path-of-least-
+  surprise. Identical wording is used at all 4 sites (default + slow
+  + lint + automerge) for grep-ability:
+  `git grep "\\[ -w /home \\]" .github/` returns ≥ 4 hits.
+
+### Changed
+
+- **Coverage gate** — `[tool.coverage.report] fail_under` raised
+  from **91 → 92** to lock in the new floor. The Loop 1 push closed
+  the 0.85 pp gap that was tracked as known-limitation #1 in
+  [`release-notes-v0.4.0.md`](release-notes-v0.4.0.md) and rolled
+  forward through v0.4.1 + v0.5.0.
+- **`pyproject.toml`** — `version 0.5.0 → 0.5.1`.
+- **`src/popolaloom/__init__.py`** — `__version__ 0.5.0 → 0.5.1`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.5.0 → 0.5.1` (lockstep with package version per the
+  existing
+  `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`
+  contract).
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** —
+  drift-detection marker bumped to `0.5.1`.
+- **`tests/test_smoke.py`** — version assertion bumped + a v0.5.1
+  release-note paragraph prepended in the module docstring.
+
+### Added
+
+- [`release-notes-v0.5.1.md`](release-notes-v0.5.1.md) — top-level
+  release notes mirroring the
+  [`release-notes-v0.4.1.md`](release-notes-v0.4.1.md) style.
+  Documents the 3 closures (CI green, coverage push, version bump),
+  the 90 new default-lane tests, the verification command set, and
+  the known limitations carried forward.
+- **`tests/cli/test_main_error_paths.py`** (NEW) — 42 cases covering
+  every documented error path of `popola dispatch` / `popola
+  status` / `popola list` / `popola attach` / `popola cancel` /
+  `popola probe` plus the `_consume_sse` / `_wait_for_terminal` /
+  `_format_event` / `_summarize_data` / `list-cli` helpers.
+  Pure `unittest.mock` HTTP doubles — no real `popolad` daemon
+  required, default lane.
+- **`tests/daemon/test_rpc_error_paths.py`** (NEW) — 36 cases
+  driving the FastAPI app via `httpx.ASGITransport`. Covers the
+  `dispatch` / `status` / `cancel` 404/400/409 ramps, the
+  `relay` / `supervise` / `federate` ValueError + RuntimeError +
+  generic-Exception branches, the `hitl/answer` + `hitl/pending`
+  503-when-store-missing branches, the `attach_stream` 404
+  ramp, the `_read_tail` / `_format_sse` / `_apply_evolution_round_prepend`
+  helpers, the `_build_default_popolad` factory, and the lifespan
+  startup-rehydrate / shutdown-cancel / shutdown-bridge error
+  swallowers.
+- **`tests/cli/test_doctor_cmd.py`** — extended with 12 new cases
+  covering the `_probe_daemon` ConnectError / HTTPError / OSError /
+  non-200 / non-JSON ramps, the skill-DRIFT branch (frontmatter
+  version mismatch), the arktower module-import-failure branch
+  (ImportError ramp via `__import__` interception), the arktower
+  migration-WARN branch (missing 005/006 SQL files), the WARN-only
+  summary-yellow branch in `_render_terminal`, and the
+  `collect_doctor_aggregate` direct unit invocation path.
+
+### Verified
+
+- [x] Default-lane `pytest -m "not slow and not nightly and not
+      real_cli and not real_lark" --cov=src/popolaloom
+      --cov-fail-under=92` PASS at **≥ 92 %**
+      (1194 tests pass / 18 skipped / 0 failed; coverage `92.56 %`).
+- [x] `python -c "import popolaloom; assert popolaloom.__version__
+      == '0.5.1'"` PASS.
+- [x] `git grep "\\[ -w /home \\]" .github/ | wc -l` = `4`
+      (default + slow + lint + automerge install steps all guarded).
+- [x] No modifications outside the documented owned-files set
+      (`.github/workflows/{ci,automerge}.yml`, `pyproject.toml`,
+      `src/popolaloom/__init__.py`,
+      `src/popolaloom/skills/popolaloom/{SKILL.md,.popolaloom-version}`,
+      `tests/test_smoke.py`, the 2 new test files + the
+      doctor-cmd extension, `CHANGELOG.md`,
+      `release-notes-v0.5.1.md`).
+
 ## [0.5.0] — 2026-05-05
 
 **Phase 2 prelude — Skill + multi-IDE installer + `popola doctor`.**

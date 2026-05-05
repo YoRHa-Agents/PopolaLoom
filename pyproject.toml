@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.5.0"
+version = "0.5.1"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -155,7 +155,11 @@ omit = ["src/popolaloom/_vendored/*"]
 # Original v0.4.0 target was 92; the remaining 0.64 pp gap (mostly
 # CLI / RPC integration error paths that need a live daemon) is
 # tracked for v0.4.1 in release-notes-v0.4.0.md "Known limitations".
-fail_under = 91
+# v0.5.1: bumped to 92 after Loop 1 added 90 default-lane tests across
+# tests/cli/test_main_error_paths.py (NEW), tests/daemon/test_rpc_error_paths.py
+# (NEW) + tests/cli/test_doctor_cmd.py extensions, lifting coverage
+# 91.15 → 92.56 % and locking in the new floor (per release-notes-v0.5.1.md).
+fail_under = 92
 show_missing = true
 skip_covered = false
 exclude_lines = [

@@ -1,5 +1,18 @@
 """Smoke test: verify package import + version string.
 
+v0.5.1 patch (Loop 1 of v0.5.x → v0.6.0 self-improvement series):
+unblocks GitHub-hosted CI by replacing the hardcoded
+``mkdir -p /home/agent/reference`` (which fails with Permission
+denied on the runner user) with a ``[ -w /home ]`` writability
+guard in ``ci.yml`` + ``automerge.yml``; lifts default-lane
+coverage 91.15 % → 92.56 % via 90 new error-path tests across
+``tests/cli/test_main_error_paths.py`` (NEW), ``tests/daemon/
+test_rpc_error_paths.py`` (NEW), and the doctor-cmd test
+extensions; raises the ``[tool.coverage.report] fail_under`` gate
+from 91 to 92 to lock in the new floor.  See
+``release-notes-v0.5.1.md`` for the full closure summary +
+verification commands.
+
 v0.5.0 release (Phase 2 prelude): user-facing Skill interaction
 surface + DevolaFlow-style multi-IDE installer.  Closes the v0.4.0
 "Known limitations" §4 (Skill install / `popola init` / multi-IDE)
@@ -81,4 +94,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.0"
+    assert popolaloom.__version__ == "0.5.1"

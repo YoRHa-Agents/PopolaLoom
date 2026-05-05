@@ -7,6 +7,6 @@ CLI 之上提供依赖图、HITL、attach/resume 与跨终端存活的一等公�
 参见 .local/memory/specs/popolaloom/spec.md 中 §1 项目使命。
 """
 
-__version__ = "0.5.0"
+__version__ = "0.5.1"
 
 __all__ = ["__version__"]

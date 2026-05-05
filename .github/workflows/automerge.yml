@@ -48,9 +48,13 @@ jobs:
       - name: Install package + dev deps
         run: |
           python -m pip install --upgrade pip
-          if [ ! -d /home/agent/reference/ArkTower ]; then
-            mkdir -p /home/agent/reference
-            git clone --depth 1 https://github.com/YoRHa-Agents/ArkTower /home/agent/reference/ArkTower || true
+          # ArkTower is vendored under src/popolaloom/_vendored/arktower/ since v0.5.0,
+          # so no separate install is needed. The legacy clone path remains for the
+          # v0.4.x baseline; we only attempt it if the dev VM path exists OR we can
+          # write to /home/agent (which the GitHub-hosted runner cannot).
+          if [ -w /home ] && [ ! -d /home/agent/reference/ArkTower ]; then
+            mkdir -p /home/agent/reference 2>/dev/null || true
+            git clone --depth 1 https://github.com/YoRHa-Agents/ArkTower /home/agent/reference/ArkTower 2>/dev/null || true
           fi
           pip install -e ".[dev]"
           pip install pyyaml
