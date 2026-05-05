@@ -78,11 +78,18 @@ jobs:
         continue-on-error: true
         run: |
           set -o pipefail
+          ## v0.6.0 (Phase 2 step 1 / consolidation): bumped from 92 → 94
+          ## to align with `pyproject.toml [tool.coverage.report] fail_under
+          ## = 94` (set in v0.5.5 Loop 5). Without this, the auto-merge gate
+          ## would green-light a PR sitting at 92.x % even though the
+          ## project pyproject already required 94 %. Documented as Loop 5
+          ## known-limitation #2 in release-notes-v0.5.5.md and closed by
+          ## L6.A in release-notes-v0.6.0.md.
           if pytest -m "not slow and not nightly and not real_cli and not real_lark" \
               --cov=popolaloom \
               --cov-report=term-missing \
               --cov-report=json:coverage.json \
-              --cov-fail-under=92 | tee pytest.log; then
+              --cov-fail-under=94 | tee pytest.log; then
             echo "test_pass=true" >> "$GITHUB_OUTPUT"
           else
             echo "test_pass=false" >> "$GITHUB_OUTPUT"

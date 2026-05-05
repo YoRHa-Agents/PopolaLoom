@@ -53,7 +53,8 @@ v0.0.1 → v0.5.0 rollup.
 | **v0.5.3**: vendored arktower CI imports + ruff lint clean + SKILL.md `--cli-flag` docs | ✅ live |
 | **v0.5.4**: mutmut declarative surface 1 → 4 modules + 63 edge-case + mutation-kill tests; coverage 93.37 % → 93.94 % | ✅ live |
 | **v0.5.5**: `popola init --interactive` wizard + mutmut surface 4 → 5 + vendored migration tests + coverage 93.94 % → 94.60 % | ✅ live |
-| 1360+ default-lane tests / **≥ 94 %** coverage (post-v0.5.5) | ✅ live |
+| **v0.6.0**: v0.5.x consolidation + auto-merge gate align (92 → 94) + cursor `cli_args` / `cmd_args` passthrough (`--trust`, `--no-color`, …) | ✅ live |
+| 1380+ default-lane tests / **≥ 94 %** coverage (post-v0.6.0; cumulative +279 tests / +3.47 pp across the v0.5.x → v0.6.0 chain) | ✅ live |
 
 ## Loop-driven self-improvement (v0.5.x → v0.6.0)
 

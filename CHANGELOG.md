@@ -4,6 +4,89 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.0] — 2026-05-06
+
+**Minor — v0.5.x → v0.6.0 self-improvement consolidation (Phase 2 step
+1).** Closes the v0.5.x 5-loop patch chain (v0.5.1 through v0.5.5) by
+shipping the two carry-over deliverables Loop 5 explicitly deferred —
+`automerge.yml --cov-fail-under` 92 → 94 alignment and cursor adapter
+`extra["cli_args"]` (alias `cmd_args`) passthrough — plus the
+comprehensive release notes that turn the loop chain into a citable
+artefact. **No breaking changes.** No new daemon primitives, no new
+public Python APIs, no schema changes; pure additive consolidation of
+the +279 default-lane tests / +3.47 pp coverage / +5 mutmut modules /
++1 CLI flag the v0.5.x chain accumulated. See
+[`release-notes-v0.6.0.md`](release-notes-v0.6.0.md) for the full
+write-up + verification commands + the 5-loop journey rollup.
+
+### Added
+
+- **`tests/adapters/test_cursor_extra_passthrough.py`** (NEW, 15 cases)
+  — pins the new cursor adapter `cli_args` / `cmd_args` passthrough
+  contract: 5 happy-paths (string / list / alias / shlex split /
+  quoted compound token), 3 argv-positioning contracts (before
+  prompt / after `--output-format` / composes with `session_id` +
+  `cwd_flag`), 3 No-Silent-Failures branches (int / list-with-non-
+  string / dict raise `ValueError`), 4 empty / no-op / legacy-shape
+  / canonical-wins-over-alias contracts.
+- **`release-notes-v0.6.0.md`** (NEW, ~ 236 lines) — comprehensive
+  v0.5.x → v0.6.0 self-evolution write-up: per-loop closure table,
+  cumulative metrics, L6.A / L6.B / L6.C closures, known-limitation
+  hand-off to v0.6.x, verification commands, migration guide, and
+  commit-by-commit ledger across the 5-loop chain.
+
+### Changed
+
+- **`src/popolaloom/adapters/cursor.py`** — closes the L6.B
+  carry-over: `CursorAdapter.build_command` now reads
+  `extra["cli_args"]` (canonical) or `extra["cmd_args"]` (alias for
+  back-compat with the v0.5.3 SKILL.md Workflow 4 example) and
+  appends each token to argv between the `--print --output-format
+  <fmt>` core flags and the `<prompt>` positional. Accepts either
+  `list[str]` (preferred — explicit token list) or `str` (split via
+  `shlex.split` so quoted compound tokens survive). The new
+  `_normalize_cli_args(value)` private helper enforces No Silent
+  Failures: a non-list-non-str value (or a list with non-string
+  elements) raises `ValueError` with a key-pinned message instead
+  of silently flowing into argv. Module docstring + `build_command`
+  signature docstring extended to document the fourth `extra` key
+  alongside `output_format` / `cwd_flag` / `session_id`.
+- **`.github/workflows/automerge.yml`** — closes the L6.A
+  carry-over: `--cov-fail-under=92 → --cov-fail-under=94` to match
+  the project's `pyproject.toml [tool.coverage.report] fail_under =
+  94` (set in v0.5.5 Loop 5). Without this, the auto-merge gate
+  could green-light a PR sitting at 92.x % even though pyproject
+  already required 94. A 7-line inline comment block documents the
+  v0.6.0 rationale + cross-references the closure in the v0.5.5 +
+  v0.6.0 release notes.
+- **`pyproject.toml`** — `[project] version = "0.5.5" → "0.6.0"`. No
+  other build-config changes.
+- **`src/popolaloom/__init__.py`** — `__version__ = "0.5.5" →
+  "0.6.0"`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.5.5 → 0.6.0`. Body unchanged (the v0.5.0 canonical
+  text remains the contract; v0.6.0 adds zero new verbs).
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** —
+  `0.6.0`.
+- **`tests/test_smoke.py`** — version assertion bumped to `0.6.0`.
+- **`README.md`** — Status table grows by 1 row for v0.6.0
+  (consolidation closure summary). The v0.5.x rows + the
+  "Loop-driven self-improvement" section are preserved unchanged.
+- **`CHANGELOG.md`** — this `[0.6.0]` entry at the top.
+
+### Released
+
+- **PopolaLoom v0.6.0** — single-commit minor on
+  `feature/v0.5.0-skill-install`; cumulative across the 5-loop
+  v0.5.x chain + this consolidation: +279 default-lane tests
+  (1104 → 1383), +3.47 pp coverage (91.15 → 94.62), +5 mutmut
+  declarative-surface modules (1 → 5), +1 CLI flag (`popola init
+  --interactive`), all CI green on hosted runners. v0.6.x patch
+  line picks up the deferred items in `release-notes-v0.6.0.md`
+  §"Known limitations" (live `mutmut run` activation, real Lark
+  Tier-3 test creds, `--interactive` wizard `--mode` /
+  `--with-examples` modifiers, 95 % coverage stretch goal).
+
 ## [0.5.5] — 2026-05-06
 
 **Patch — Loop 5 of the v0.5.x → v0.6.0 self-improvement series; the

@@ -175,4 +175,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.5.5"
+    assert popolaloom.__version__ == "0.6.0"
