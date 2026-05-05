@@ -1,0 +1,15 @@
+# serializer version: 1
+# name: test_concurrent_checkpoint_state_snapshot
+  dict({
+    'checkpoint_columns': list([
+      'checkpoint',
+      'checkpoint_id',
+      'checkpoint_ns',
+      'metadata',
+      'parent_checkpoint_id',
+      'thread_id',
+      'type',
+    ]),
+    'distinct_thread_count': 3,
+  })
+# ---

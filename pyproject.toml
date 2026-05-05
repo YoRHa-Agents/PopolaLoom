@@ -1,0 +1,270 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "popolaloom"
+version = "0.6.1"
+description = "Meta-orchestrator over local agent CLIs"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "PopolaLoom Project" }]
+keywords = ["orchestrator", "agent", "cli", "langgraph", "mcp"]
+classifiers = [
+    "Development Status :: 2 - Pre-Alpha",
+    "License :: OSI Approved :: MIT License",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+]
+
+# 运行时依赖 (出处: spec.md §5)
+# v0.5.0 Stage S1 (D5.7 LOCKED Path B): the previous
+# `arktower @ file:///home/agent/reference/ArkTower` direct reference is
+# removed. ArkTower's relevant subset (TaskService + EventBus + 005 migration
+# scaffolding + the four schema migrations) is now vendored under
+# `popolaloom._vendored.arktower` so `pip install popolaloom` works on a
+# fresh machine without an ArkTower clone. See VENDORING.md at the repo
+# root for the refresh procedure.
+# LangGraph + checkpoint-sqlite is the graph engine; pydantic v2 is the
+# schema layer; fastapi+uvicorn provides REST/WS; typer/rich the CLI;
+# mcp is the Anthropic MCP SDK; nicegui is reserved for the Day 7 web
+# pages; textual is reserved for the Day 7 TUI.
+dependencies = [
+    "langgraph>=0.6",
+    "langgraph-checkpoint-sqlite",
+    "pydantic>=2",
+    "fastapi",
+    "uvicorn",
+    "typer",
+    "rich",
+    "mcp",
+    "nicegui",
+    "textual",
+]
+
+[project.optional-dependencies]
+# 开发依赖 (出处: implementation-plan.md Day 0 verify + testing-matrix.md §1+§7+§8+§9)
+# v0.2.1+ 新增 (testing-matrix.md):
+#   hypothesis     — Tier 1 property-based testing (TaskState FSM / NDJSON envelope / HITLPrompt schema)
+#   responses      — Tier 2 HTTP request mocking (CLI httpx → daemon RPC + Lark API mock 雏形)
+#   freezegun      — Tier 2/4 时间冻结 (S4 8h offline + HITL deadline 24h)
+#   syrupy         — Tier 1/2/4/5 snapshot testing (langgraph DAG / Lark card JSON / nines.toml diff)
+#   pytest-benchmark — Tier 3 NFR-1/3/5/8 量化基线 (per testing-matrix.md §9)
+#   pytest-mock    — Tier 1/2 convenient mocker fixture (替代 monkeypatch 重复样板)
+dev = [
+    "pytest",
+    "pytest-asyncio",
+    "pytest-cov",
+    "ruff",
+    "mypy",
+    "hypothesis>=6.100",
+    "responses>=0.25",
+    "freezegun>=1.4",
+    "syrupy>=4.7",
+    "pytest-benchmark>=4.0",
+    "pytest-mock>=3.12",
+]
+
+[project.scripts]
+# Typer CLI 入口 (出处: spec.md §3.1 L0/L1)
+popola = "popolaloom.cli.main:app"
+
+[tool.hatch.metadata]
+# v0.5.0 Stage S1 (D5.7 LOCKED Path B): no direct-reference deps remain
+# (the previous `arktower @ file://...` pin was replaced by a vendored
+# copy under `popolaloom._vendored.arktower`). The setting is kept at
+# `true` so future v0.5.x patches can reintroduce a direct reference if
+# ArkTower lands on PyPI under a different distribution name and we want
+# to pin during the transition.
+allow-direct-references = true
+
+[tool.hatch.build.targets.wheel]
+# `packages = ["src/popolaloom"]` makes hatchling treat that prefix as
+# the wheel root and ship every nested file (including non-Python data),
+# which covers the two non-source trees we depend on at runtime:
+#
+#   1. `src/popolaloom/_vendored/arktower/migrations/*.sql` — the
+#      vendored ArkTower SQL migrations (Stage S1 of v0.5.0); without
+#      these on disk
+#      `popolaloom._vendored.arktower.cli.deps.migrations_dir()` would
+#      raise after a wheel install.
+#   2. `src/popolaloom/skills/popolaloom/{SKILL.md,.popolaloom-version}`
+#      — the canonical PopolaLoom Skill (Stage S3 of v0.5.0); the
+#      `popola init` installer (Stage S2) reads this via
+#      `importlib.resources.files('popolaloom').joinpath('skills',
+#      'popolaloom', 'SKILL.md')` (see `cli/_skill_source.py`) and
+#      copies it into the per-IDE install target.  The hidden
+#      `.popolaloom-version` marker mirrors DevolaFlow's
+#      `.devola-flow-version` (research §A.5) and is the
+#      drift-detection input for `popola doctor` (Stage S4).
+#
+# Verified via `unzip -l <wheel> | grep -E 'skills|migrations'` in
+# v0.5.0 Stage S1 + S3 acceptance.
+packages = ["src/popolaloom"]
+
+[tool.ruff]
+target-version = "py311"
+line-length = 99
+# v0.5.3 (Loop 3 of v0.5.x patch series): exclude the vendored ArkTower
+# subset from ruff to mirror the existing `[tool.coverage.run] omit` rule
+# (line 141). Without this, lint flagged 10 violations in upstream code
+# (SIM105 / UP017 / UP042 / N818) that we are not allowed to modify per
+# VENDORING.md. The extend-exclude form keeps ruff's default ignores
+# (.git, .venv, etc.) intact.
+extend-exclude = ["src/popolaloom/_vendored/**"]
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "N", "W", "UP", "B", "SIM"]
+
+[tool.pytest.ini_options]
+# Pytest 配置 (出处: testing-matrix.md §0.3 marker 一览 + §3 选择性运行)
+# - asyncio_mode = "auto" — pytest-asyncio 自动模式 (Stage Impl-2 起)
+# - testpaths = ["tests"] — 全部 case 在 tests/ 下 (含 matrix/, self_bootstrap/, fixtures/)
+# - markers — testing-matrix.md §0.3 cheat-sheet 7 个 mark + chaos / benchmark
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "slow: tests that take >1s (Tier 3+); skipped by default",
+    "real_graph: tests using real langgraph subgraph (Tier 4)",
+    "e2e: end-to-end project-level tests (Tier 5)",
+    "nightly: tests run nightly only (Tier 5)",
+    "real_cli: tests requiring real cursor/claude/codex binaries",
+    "real_lark: tests requiring real Lark bot credentials",
+]
+
+[tool.coverage.run]
+# Coverage 采集配置 (出处: testing-matrix.md §6.2 配置原则)
+# - branch = true — Tier 1 主战场是 branch coverage, 必须开
+# - parallel = true — slow / nightly / default 多 lane CI 合并 .coverage 文件
+# - omit = ["src/popolaloom/_vendored/**"] — v0.5.0 Stage S1 (D5.7 Path B):
+#   the vendored ArkTower subset under `popolaloom._vendored.arktower/`
+#   is upstream code with its own test suite (see VENDORING.md). We do
+#   not author tests for it, so we exclude it from PopolaLoom's coverage
+#   gate to keep the metric focused on first-party code.
+source = ["src/popolaloom"]
+branch = true
+parallel = true
+omit = ["src/popolaloom/_vendored/*"]
+
+[tool.coverage.report]
+# Coverage 阈值 (出处: testing-matrix.md §6.1 版本递进)
+# fail_under 各版本递增: v0.2.0=75 → v0.2.1=80 → v0.2.2=85 → v0.2.3=90 → v0.4.0=92
+# v0.2.3: bumped to 90 after Tier 4 (real langgraph) + Tier 5 (e2e) + S1-S5 mock complete + HITL/devola-flow schema occupied.
+# v0.3.0: temporarily relaxed to 88 because F1 (8 dim scorers, 400+ LOC) +
+# F2 (3 primitives, 600+ LOC) + F2.5 (3 modules, 500+ LOC) +
+# F4 (HITL/sync/Lark stack, 1500+ LOC) added 4000+ src lines whose subprocess
+# / async paths are exercised in the slow lane (where coverage > 92%).
+# v0.3.1: restored to 90 after round-1 coverage gap-fillers (42 tests across
+# mcp/tools, mcp/elicitation, mcp/server, cycle_convergence, lark/listener,
+# hitl/renderers/cli) lifted default-lane coverage 89.23 → 90.79%.
+# v0.4.0 GA: bumped to 91 after rounds 1-5 lifted coverage 89.23 → 91.36%.
+# Original v0.4.0 target was 92; the remaining 0.64 pp gap (mostly
+# CLI / RPC integration error paths that need a live daemon) is
+# tracked for v0.4.1 in release-notes-v0.4.0.md "Known limitations".
+# v0.5.1: bumped to 92 after Loop 1 added 90 default-lane tests across
+# tests/cli/test_main_error_paths.py (NEW), tests/daemon/test_rpc_error_paths.py
+# (NEW) + tests/cli/test_doctor_cmd.py extensions, lifting coverage
+# 91.15 → 92.56 % and locking in the new floor (per release-notes-v0.5.1.md).
+# v0.5.2: bumped to 93 after Loop 2 added 64 default-lane tests across
+# tests/daemon/test_lark_supervisor_shutdown.py (NEW),
+# tests/daemon/test_server_coverage.py (NEW), and
+# tests/lark/test_listener_coverage.py (NEW), lifting coverage
+# 92.56 → 93.37 % and locking in the new floor (per release-notes-v0.5.2.md).
+# v0.5.5: bumped to 94 after Loop 5's final coverage push lifted default-
+# lane coverage 93.94 → 94.60 % via 47 new tests across
+# tests/cli/test_init_interactive.py (NEW),
+# tests/test_evaluation_mutation_kills.py (NEW),
+# tests/test_vendored_arktower_migrations.py (NEW), and
+# tests/test_coverage_v055_push.py (NEW). The new floor is the post-
+# v0.5.5 Phase-2-prelude-polish gate; v0.6.0 may revisit it once the
+# multi-agent dispatch surface lands (per release-notes-v0.5.5.md).
+fail_under = 94
+show_missing = true
+skip_covered = false
+exclude_lines = [
+    "pragma: no cover",
+    "raise NotImplementedError",
+    "if TYPE_CHECKING:",
+    "if __name__ == .__main__.:",
+    # Protocol method bodies (just `...`) are not executable code; v0.2.3
+    # excludes them so the v0.3.0 90 % gate is achievable without
+    # writing meaningless "test that calls .__class__.method(...)" tests.
+    "^\\s*\\.\\.\\.\\s*$",
+    # Defensive `if exc is ImportError` branches that can only fire when
+    # an optional dep is missing — covered via integration in v0.3.0+.
+]
+
+[tool.mypy]
+# v0.6.1 (CI hotfix): mypy strict mode raises ~12 errors inside the
+# vendored ArkTower subset under `src/popolaloom/_vendored/arktower/`
+# (arg-type mismatches + a `list` shadowing the builtin used as a type
+# annotation in upstream code). Per VENDORING.md we are not allowed
+# to modify vendored sources, so we exclude them from mypy here —
+# this mirrors the existing `[tool.ruff] extend-exclude` (line 115)
+# and `[tool.coverage.run] omit` (line 148) carve-outs for the same
+# tree. The upstream ArkTower repo runs its own type checks and is
+# the source of truth for that code.
+python_version = "3.11"
+strict = true
+exclude = ["src/popolaloom/_vendored/.*"]
+
+[tool.mutmut]
+# v0.3.4 round 4 — mutation testing baseline (per testing-matrix.md §6).
+# Live mutmut 3.5 invocation is currently blocked by our src/ layout
+# (see evidence/mutmut-baseline.md for analysis); v0.3.4 shipped a MANUAL
+# mutation-analysis ledger + targeted mutation-killing tests that lift
+# the inferred kill rate on daemon/state.py from ~70 % → ≥ 90 %.
+# v0.4.x will revisit live mutmut once the mutants/ vs src/ layering
+# friction is solved (mutmut 3.5 changes CWD before invoking pytest,
+# which clashes with our editable install; pinned to known target
+# modules here so the future re-enablement is mechanical).
+#
+# v0.5.4 (Loop 4 of v0.5.x → v0.6.0) declarative surface expansion: the
+# `paths_to_mutate` list grows from 1 module to 4. Rationale:
+#   - daemon/state.py — round-4 baseline (100 % inferred kill on 24
+#     canonical mutations per evidence/mutmut-baseline.md).
+#   - daemon/event_log.py — append-only NDJSON writer with fd-held
+#     buffered write contract (R-011 fix); high blast radius if buggy
+#     (every task event flows through it). Coverage 95 % at v0.5.4.
+#   - cli/init_cmd.py — Stage S2 multi-IDE installer dispatcher (8
+#     verbs × 8 modifiers; idempotency contract). Coverage 91 %; round-4
+#     edge tests in tests/cli/test_init_cmd_edge_cases.py target the
+#     conflict-resolution + auto-detect-empty + dry-run permutations
+#     mutmut would prod next.
+#   - cli/doctor_cmd.py — Stage S4 aggregate health verb (4 subsystems
+#     + roll-up tally). Coverage 99 %; round-4 edge tests in
+#     tests/cli/test_doctor_cmd_edge_cases.py target the verdict
+#     roll-up + JSON schema stability + WARN-vs-FAIL exit-code
+#     boundary.
+# This is a declarative path expansion ONLY; live mutmut runs are still
+# blocked by the src/ + editable layout friction (carried forward from
+# v0.3.4). The expectation is when mutmut becomes runnable the four
+# modules together will hit ≥ 80 % aggregate kill rate.
+#
+# v0.5.5 (Loop 5 of v0.5.x → v0.6.0) closes the v0.5.4 future-work
+# bullet by promoting `evaluation/runner.py` from candidate to declared
+# mutation surface (5 modules total now). Rationale:
+#   - evaluation/runner.py — the 8-dim PopolaLoom-nines scorer
+#     orchestrator; collects evidence from NDJSON event logs, calls
+#     each :class:`DimensionScorer`, folds into a weighted composite.
+#     A regression in `_score_<dim>()` boundary handling (zero /
+#     partial / full evidence) silently corrupts every reported nines
+#     score, which downstream `evolution/dual_gate.py` consumes as the
+#     outer-gate Δ ≥ 0.02 input. Coverage 89 % at v0.5.4 — Loop 5 adds
+#     boundary tests in `tests/test_evaluation_mutation_kills.py`
+#     targeting the placeholder-vs-measured score boundaries the live
+#     mutmut run would prod first.
+# Live mutmut runs remain blocked by the same src-layout / editable-
+# install friction documented in evidence/mutmut-baseline.md (carried
+# forward from v0.3.4 + v0.5.4); v0.5.5 is a declarative-only +
+# targeted-test bump. The expectation when mutmut becomes runnable is
+# that the five modules together hit ≥ 80 % aggregate kill rate.
+paths_to_mutate = [
+    "src/popolaloom/daemon/state.py",
+    "src/popolaloom/daemon/event_log.py",
+    "src/popolaloom/cli/init_cmd.py",
+    "src/popolaloom/cli/doctor_cmd.py",
+    "src/popolaloom/evaluation/runner.py",
+]
+tests_dir = ["tests/"]

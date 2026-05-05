@@ -1,0 +1,130 @@
+# =============================================================================
+# PopolaLoom .gitignore
+#
+# Intentionally NEVER ignored (DevolaFlow tracked surfaces, see bottom note):
+#   .local/**, .rules/**, AGENTS.md, .cursor/rules/**
+# =============================================================================
+
+
+# === OS / IDE ===
+.DS_Store
+Thumbs.db
+*.swp
+*.swo
+*~
+.idea/
+.vscode/
+
+
+# === Cursor IDE (per-user state) ===
+# Ignore everything under .cursor/ (logs, scratch, per-user agent state, etc.),
+# BUT keep the compiled DevolaFlow rules under .cursor/rules/ tracked. The
+# leading-slash-free pattern matches the .cursor folder at any depth, and the
+# negation re-includes the rules subdir so the compile step (devola-init local)
+# can publish .cursor/rules/repo-governance.mdc into version control.
+.cursor/*
+!.cursor/rules/
+
+
+# === Python ===
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+*.egg
+.eggs/
+build/
+dist/
+wheels/
+.venv/
+venv/
+env/
+ENV/
+.python-version
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.tox/
+.coverage
+.coverage.*
+coverage.xml
+htmlcov/
+
+
+# === Node / JS ===
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+.pnpm-debug.log*
+.npm/
+.yarn/
+
+
+# === Env / Secrets ===
+# Ignore .env files (which typically hold API keys / DB URLs / secrets) but
+# always keep .env.example checked in as the canonical schema reference.
+.env
+.env.*
+!.env.example
+
+
+# === Logs / Temp / Scratch ===
+*.log
+*.tmp
+tmp/
+temp/
+*.bak
+
+
+# === PopolaLoom runtime artifacts ===
+# popolad daemon 的运行时产物 (出处: spec.md §10 路径表):
+#   ~/.popola/                       — 用户级 daemon 目录 (sock / pid / events / blobs)
+#   popola.sock                      — repo 内调试 socket
+#   events/                          — NDJSON event log 目录 (CloudEvents 1.0)
+#   state.sqlite                     — LangGraph SqliteSaver 持久化文件
+~/.popola/
+popola.sock
+events/
+state.sqlite
+
+# === PopolaLoom auxiliary build artifacts ===
+arktower.db
+.benchmarks/
+.coverage
+.hypothesis/
+.mypy_cache/
+.pytest_cache/
+.ruff_cache/
+# v0.6.1 (CI hotfix): the auto-merge gate config at
+# .workflow/automerge.yaml is consumed by both the GitHub workflow
+# (`.github/workflows/automerge.yml`) AND the unit-test
+# `tests/test_automerge_gate.py::test_repo_workflow_automerge_yaml_loads_cleanly`,
+# so it MUST be tracked. The surrounding `.workflow/*` block stays
+# ignored so per-checkout scratch artefacts (e.g. evidence JSON the
+# workflow drops alongside) do not pollute git. NOTE: we use
+# `.workflow/*` (glob children) instead of `.workflow/` (the dir
+# itself) because git refuses to re-include a path whose parent dir
+# is excluded — see `man gitignore`.
+.workflow/*
+!.workflow/automerge.yaml
+.cursor/
+
+# =============================================================================
+# DO NOT IGNORE — DevolaFlow tracked surfaces
+# =============================================================================
+# The following paths are produced and consumed by the DevolaFlow toolchain
+# (devola-init local + the .rules/ governance compiler) and MUST remain
+# tracked in git so the workflow is reproducible across clones / CI:
+#
+#   .local/                              — local agent workspace (handoffs,
+#                                          memory, feedbacks, tasks, specs)
+#   .rules/                              — governance source layers
+#   .rules/compile-config.yaml           — compiler config (template seed)
+#   .rules/.compile-hashes.json          — drift-detection hashes (auto-gen)
+#   AGENTS.md                            — compiled corpus for Codex / generic
+#   .cursor/rules/repo-governance.mdc    — compiled corpus for Cursor IDE
+#
+# None of the rules above match these paths. If a future rule starts shadowing
+# them, add an explicit `!path/here` negation in the appropriate section.
+# =============================================================================
