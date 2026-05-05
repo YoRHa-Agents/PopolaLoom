@@ -27,21 +27,33 @@ Spec / ADR references:
 Migration discovery
 -------------------
 
-ArkTower's migrations live at ``<arktower-repo-root>/migrations/`` (NOT
-inside the installed wheel).  We try, in order:
+Since v0.5.0 Stage S1 ArkTower's migrations are vendored under
+``popolaloom._vendored.arktower.migrations/`` and shipped in the wheel.
+We try, in order:
 
-1. ``$POPOLA_ARKTOWER_MIGRATIONS_DIR`` env var (explicit override);
-2. :func:`arktower.cli.deps.migrations_dir` (works for editable installs
-   where the wheel was installed from a working tree);
-3. The well-known reference path ``/home/agent/reference/ArkTower/migrations``
+1. The ``arktower_migrations_dir=`` argument (explicit caller override);
+2. ``$POPOLA_ARKTOWER_MIGRATIONS_DIR`` env var (operator override);
+3. :func:`popolaloom._vendored.arktower.cli.deps.migrations_dir` (the
+   vendored copy — works for both editable installs and wheel installs
+   because the path resolves relative to ``cli/deps.py`` at runtime);
+4. The legacy reference path ``/home/agent/reference/ArkTower/migrations``
    used by v0.2.0 development.
 
-If none of those exist, ``MigrationRunner.run_migrations`` no-ops on the
-missing directory (see ``arktower.store.migration:get_pending_migrations``)
-— the popola_dispatch table will still be created from PopolaLoom's own
-005 migration, but the core ArkTower tables won't exist and the next
-``task_service.create_task`` will raise.  We log a clear warning so the
-operator can fix it.
+v0.6.1 (CI hotfix) refinement: an explicit
+``arktower_migrations_dir=`` whose Path does **not** exist falls
+through to step 3 instead of feeding a phantom dir into
+``MigrationRunner``. This unblocks ``tests/test_repository.py`` on
+GitHub-hosted runners that lack the legacy ``/home/agent/reference``
+clone — the test fixture passes the legacy path explicitly, but with
+the fallback the vendored copy is picked up automatically.
+
+If none of the candidates resolve, ``MigrationRunner.run_migrations``
+no-ops on the missing directory (see
+``arktower.store.migration:get_pending_migrations``) — the
+popola_dispatch table will still be created from PopolaLoom's own
+005 migration, but the core ArkTower tables won't exist and the
+next ``task_service.create_task`` will raise.  We log a clear
+warning so the operator can fix it.
 """
 
 from __future__ import annotations
@@ -220,7 +232,29 @@ def make_persistence(
     connection.connect()
 
     if run_migrations:
-        ark_dir = arktower_migrations_dir or _arktower_migrations_dir()
+        # v0.6.1 (CI hotfix): when the explicit ``arktower_migrations_dir``
+        # does not point to an existing directory, fall through to the
+        # auto-detected location instead of feeding a phantom path into
+        # ``MigrationRunner`` (which silently no-ops on a missing dir, see
+        # ``store/migration.py:get_pending_migrations``). The legacy v0.2.0
+        # development pin ``/home/agent/reference/ArkTower/migrations``
+        # used by ``tests/test_repository.py`` does not exist on GitHub-
+        # hosted runners; without this fallback the four
+        # ``test_repository.py`` cases failed with
+        # ``sqlite3.OperationalError: no such table: tasks`` because no
+        # ArkTower schema migrations were applied. ``_arktower_migrations_dir``
+        # then prefers ``popolaloom._vendored.arktower.cli.deps.migrations_dir``
+        # which resolves to the in-package vendored copy bundled in the
+        # wheel via ``[tool.hatch.build.targets.wheel] packages``.
+        ark_dir: Path | None = arktower_migrations_dir
+        if ark_dir is None or not ark_dir.is_dir():
+            if ark_dir is not None:
+                logger.debug(
+                    "arktower_migrations_dir=%s does not exist; "
+                    "falling back to vendored auto-detection",
+                    ark_dir,
+                )
+            ark_dir = _arktower_migrations_dir()
         popola_dir = popolaloom_migrations_dir or _popolaloom_migrations_dir()
 
         if ark_dir is None:

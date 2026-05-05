@@ -1,0 +1,44 @@
+# PopolaLoom auto-merge gate config — 5 AND conditions (v0.3.0 Stage F3).
+#
+# Schema:        src/popolaloom/gate/automerge.py (AutomergeConfig)
+# Workflow:      .github/workflows/automerge.yml
+# Spec ref:      spec.md §7.3 + roadmap §4.2 + v0.3.0-plan §4 Stage F3
+# Test ref:      tests/test_automerge_gate.py::test_repo_workflow_automerge_yaml_loads_cleanly
+#
+# A PR auto-merges only when ALL of the following are true:
+#   1. inner-gate `devolaflow_composite`  ≥ 0.85   (R-EVO-1)
+#   2. outer-gate `nines_delta`           ≥ +0.02  (R-EVO-2 strict improvement)
+#   3. blocker-severity finding count     ≤ 0      (R-EVO-3)
+#   4. tests pass AND coverage            ≥ 90.0 % (matches `fail_under` floor)
+#   5. every changed path in `required_paths.allowed`
+#      AND no path in `required_paths.blocked`     (R-EVO-5 self-test)
+#
+# `required_paths.blocked` includes `src/popolaloom/gate/**` so the gate
+# refuses any PR that modifies the gate code itself — a human MUST
+# review changes to the gate (defense against a buggy gate green-
+# lighting a change that disables itself).
+
+gate_thresholds:
+  devolaflow_composite: 0.85
+  nines_delta: 0.02
+  blocker_max: 0
+  test_pass: true
+  coverage_min: 90.0
+
+required_paths:
+  allowed:
+    - "src/popolaloom/**/*.py"
+    - "tests/**/*.py"
+    - "*.md"
+    - "docs/**/*.md"
+    - "release-notes-*.md"
+    - "CHANGELOG.md"
+    - "examples/**"
+    - "evidence/**"
+    - "templates/**"
+    - "migrations/*.sql"
+    - ".workflow/automerge.yaml"
+  blocked:
+    - "pyproject.toml"
+    - ".github/workflows/automerge.yml"
+    - "src/popolaloom/gate/**"

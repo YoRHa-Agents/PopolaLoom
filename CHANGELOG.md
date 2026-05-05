@@ -4,6 +4,86 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+## [0.6.1] — 2026-05-06
+
+**Patch — CI hotfix: 3 distinct failures blocking the v0.6.0 PR.**
+Closes the GitHub Actions red build (run id 25392679894) without
+touching any user-facing surface — config-only mypy carve-out, a
+gitignore whitelist line + the previously-shadowed
+`.workflow/automerge.yaml`, and a one-call-site fall-through in
+`daemon/repository.py:make_persistence` that picks up the vendored
+ArkTower migrations on hosted runners that lack the legacy
+`/home/agent/reference/ArkTower` clone. **No breaking changes**, no
+new dependencies, no ADRs, no schema changes; pure CI plumbing fix.
+See [`release-notes-v0.6.1.md`](release-notes-v0.6.1.md) for the
+full closure ledger + verification commands.
+
+### Added
+
+- **`.workflow/automerge.yaml`** (NEW, tracked) — the auto-merge
+  gate's 5 AND condition config (consumed by both
+  `.github/workflows/automerge.yml` AND
+  `tests/test_automerge_gate.py::test_repo_workflow_automerge_yaml_loads_cleanly`).
+  Pins `gate_thresholds.devolaflow_composite=0.85`,
+  `nines_delta=0.02`, `coverage_min=90.0`, plus the
+  `required_paths.blocked` self-test rule that refuses any PR
+  touching `src/popolaloom/gate/**` (R-EVO-5 mitigation).
+- **`release-notes-v0.6.1.md`** (NEW, ~ 50 lines) — compact CI
+  hotfix write-up mirroring the `release-notes-v0.4.1.md` minor
+  style; lists the 3 closures, the verification commands, and the
+  acceptance-criteria check.
+
+### Changed
+
+- **`pyproject.toml`** — `[tool.mypy]` gains `exclude =
+  ["src/popolaloom/_vendored/.*"]`. Mirrors the existing
+  `[tool.ruff] extend-exclude` (line 115) and `[tool.coverage.run]
+  omit` (line 148) carve-outs that already exempt the vendored
+  ArkTower subset from owned-code lint / coverage gates. Without
+  this, mypy strict raised ~12 errors (arg-type mismatches +
+  `list` shadowing the builtin used as a type annotation) inside
+  read-only upstream code we are not allowed to modify per
+  `VENDORING.md`. `[project] version = "0.6.0" → "0.6.1"`.
+- **`.gitignore`** — adds `!.workflow/automerge.yaml` whitelist
+  immediately after the `.workflow/` ignore rule so the auto-merge
+  gate config is tracked while the surrounding `.workflow/`
+  scratch artefacts stay ignored. A 6-line inline comment
+  documents the cross-reference between the workflow consumer and
+  the unit-test consumer.
+- **`src/popolaloom/daemon/repository.py`** — `make_persistence`
+  now treats an explicit `arktower_migrations_dir=` whose
+  `Path.is_dir()` returns `False` as a fall-through cue (rather
+  than feeding a phantom path into `MigrationRunner`, which
+  silently no-ops on a missing dir). The fallback hits
+  `_arktower_migrations_dir()` which prefers the vendored
+  `popolaloom._vendored.arktower.cli.deps.migrations_dir`
+  (resolves relative to the in-package `migrations/` directory
+  bundled with the wheel via `[tool.hatch.build.targets.wheel]`).
+  Without this, the four `tests/test_repository.py` cases fail
+  with `sqlite3.OperationalError: no such table: tasks` on
+  GitHub-hosted runners (the test fixture passes the legacy
+  `/home/agent/reference/ArkTower/migrations` path explicitly and
+  that dir does not exist on the hosted runner). Module + function
+  docstrings updated to document the new fall-through.
+- **`src/popolaloom/__init__.py`** — `__version__ = "0.6.0" →
+  "0.6.1"`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.6.0 → 0.6.1`. Body unchanged.
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** —
+  `0.6.1`.
+- **`tests/test_smoke.py`** — version assertion bumped to `0.6.1`;
+  module docstring grows a v0.6.1 lead paragraph documenting the
+  3-fix closure for future archaeology.
+
+### Released
+
+- **PopolaLoom v0.6.1** — single-commit patch on
+  `feature/v0.5.0-skill-install`; CI green again. `mypy
+  src/popolaloom` exits 0; `ruff check src/popolaloom tests/`
+  exits 0; `pytest tests/test_repository.py
+  tests/test_automerge_gate.py -v` all pass; default lane keeps
+  the `--cov-fail-under=94` floor from v0.5.5.
+
 ## [0.6.0] — 2026-05-06
 
 **Minor — v0.5.x → v0.6.0 self-improvement consolidation (Phase 2 step

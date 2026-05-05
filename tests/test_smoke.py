@@ -1,5 +1,29 @@
 """Smoke test: verify package import + version string.
 
+v0.6.1 patch (CI hotfix — closes 3 distinct CI failures blocking the
+v0.6.0 PR): (1) mypy strict raises ~12 errors inside the vendored
+ArkTower subset under ``src/popolaloom/_vendored/arktower/`` (arg-type
+mismatches + a ``list`` shadowing the builtin used as a type
+annotation in upstream code); resolved by ``[tool.mypy] exclude =
+["src/popolaloom/_vendored/.*"]`` mirroring the existing ruff +
+coverage carve-outs for that tree. (2) ``.workflow/automerge.yaml``
+was matched by the ``.workflow/`` pattern in ``.gitignore`` so the
+auto-merge gate's repo-level config never reached the runner; the
+``test_repo_workflow_automerge_yaml_loads_cleanly`` case asserted the
+file exists. Resolved with a ``!.workflow/automerge.yaml`` whitelist
+line plus the new tracked file documenting the 5 AND conditions.
+(3) ``tests/test_repository.py`` (4 cases) failed with
+``sqlite3.OperationalError: no such table: tasks`` because the test
+fixture passes the legacy ``/home/agent/reference/ArkTower/migrations``
+path explicitly to ``make_persistence(arktower_migrations_dir=...)``
+and that dir does not exist on GitHub-hosted runners. The fix in
+``daemon/repository.py:make_persistence`` falls through to the
+vendored auto-detection when the explicit path's ``Path.is_dir()``
+returns False — ``popolaloom._vendored.arktower.cli.deps.migrations_dir``
+points at the in-package ``migrations/`` directory bundled with the
+wheel. See ``release-notes-v0.6.1.md`` for the full 3-fix closure +
+verification commands.
+
 v0.5.5 patch (Loop 5 — final patch before v0.6.0 consolidation):
 the polish loop. Closes the v0.5.4 carry-overs by (1) refreshing
 ``README.md`` + ``docs/DEMO.md`` to reflect v0.5.{1,2,3,4} closures
@@ -175,4 +199,4 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.6.0"
+    assert popolaloom.__version__ == "0.6.1"

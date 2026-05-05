@@ -96,7 +96,18 @@ arktower.db
 .mypy_cache/
 .pytest_cache/
 .ruff_cache/
-.workflow/
+# v0.6.1 (CI hotfix): the auto-merge gate config at
+# .workflow/automerge.yaml is consumed by both the GitHub workflow
+# (`.github/workflows/automerge.yml`) AND the unit-test
+# `tests/test_automerge_gate.py::test_repo_workflow_automerge_yaml_loads_cleanly`,
+# so it MUST be tracked. The surrounding `.workflow/*` block stays
+# ignored so per-checkout scratch artefacts (e.g. evidence JSON the
+# workflow drops alongside) do not pollute git. NOTE: we use
+# `.workflow/*` (glob children) instead of `.workflow/` (the dir
+# itself) because git refuses to re-include a path whose parent dir
+# is excluded — see `man gitignore`.
+.workflow/*
+!.workflow/automerge.yaml
 .cursor/
 
 # =============================================================================

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.6.0"
+version = "0.6.1"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -196,8 +196,18 @@ exclude_lines = [
 ]
 
 [tool.mypy]
+# v0.6.1 (CI hotfix): mypy strict mode raises ~12 errors inside the
+# vendored ArkTower subset under `src/popolaloom/_vendored/arktower/`
+# (arg-type mismatches + a `list` shadowing the builtin used as a type
+# annotation in upstream code). Per VENDORING.md we are not allowed
+# to modify vendored sources, so we exclude them from mypy here —
+# this mirrors the existing `[tool.ruff] extend-exclude` (line 115)
+# and `[tool.coverage.run] omit` (line 148) carve-outs for the same
+# tree. The upstream ArkTower repo runs its own type checks and is
+# the source of truth for that code.
 python_version = "3.11"
 strict = true
+exclude = ["src/popolaloom/_vendored/.*"]
 
 [tool.mutmut]
 # v0.3.4 round 4 — mutation testing baseline (per testing-matrix.md §6).
