@@ -110,15 +110,27 @@ arktower.db
 !.workflow/automerge.yaml
 .cursor/
 
+
+# === PopolaLoom local agent workspace (v0.7.0+) ===
+# v0.7.0 policy change (per user feedback v0.6.1 item #1): the `.local/`
+# tree — local agent workspace covering handoffs, memory, feedbacks, tasks,
+# specs, eval_reports, and `.agent/` state — is now a *local-only* working
+# surface and is no longer committed to git. Older v0.6.x checkpoints did
+# track these files; from v0.7.0 onward the directory is gitignored. The
+# on-disk files are preserved by intent — only their git-tracked status
+# changes (a one-time `git rm --cached -r .local/` un-tracks them).
+.local/
+
 # =============================================================================
 # DO NOT IGNORE — DevolaFlow tracked surfaces
 # =============================================================================
-# The following paths are produced and consumed by the DevolaFlow toolchain
-# (devola-init local + the .rules/ governance compiler) and MUST remain
-# tracked in git so the workflow is reproducible across clones / CI:
+# v0.7.0 policy change (per user feedback v0.6.1 item #1): `.local/` was
+# previously listed here as a tracked surface, but is now gitignored (see
+# explicit `.local/` ignore rule above). The DevolaFlow toolchain
+# (devola-init local + the .rules/ governance compiler) still produces the
+# surfaces below, which MUST remain tracked in git so the workflow is
+# reproducible across clones / CI:
 #
-#   .local/                              — local agent workspace (handoffs,
-#                                          memory, feedbacks, tasks, specs)
 #   .rules/                              — governance source layers
 #   .rules/compile-config.yaml           — compiler config (template seed)
 #   .rules/.compile-hashes.json          — drift-detection hashes (auto-gen)

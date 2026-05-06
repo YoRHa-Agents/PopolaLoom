@@ -1,0 +1,44 @@
+# Jekyll config for the PopolaLoom GitHub Pages site.
+# Source: docs/ (set in repo Settings → Pages → Source = docs/)
+title: PopolaLoom
+description: >-
+  Meta-orchestrator over local agent CLIs (Cursor / Claude Code /
+  Codex / Kimi / GitHub Copilot). Per-task isolation, persistent
+  process bus, HITL via 5 channels — all on a single popolad UDS
+  daemon. Sibling of ArkTower; built on top of DevolaFlow.
+
+# Theme: jekyll-theme-cayman is one of the GitHub-Pages-supported
+# default themes (https://pages.github.com/themes/) — clean two-
+# column layout, no extra Gemfile / bundle install required for
+# Pages-hosted builds.
+theme: jekyll-theme-cayman
+url: https://YoRHa-Agents.github.io
+baseurl: /PopolaLoom
+
+# Site metadata
+github:
+  repository_url: https://github.com/YoRHa-Agents/PopolaLoom
+  repository_nwo: YoRHa-Agents/PopolaLoom
+
+# Markdown
+markdown: kramdown
+kramdown:
+  syntax_highlighter: rouge
+
+# Build plugins
+plugins:
+  - jekyll-relative-links
+
+# Files to exclude from the Pages build (keep them in git but not
+# rendered as Jekyll pages)
+exclude:
+  - "*.sh"
+  - "*.toml"
+  - "Makefile"
+  - "vendor/"
+  - "node_modules/"
+
+# Render Markdown extensionless links inside docs/ as relative
+relative_links:
+  enabled: true
+  collections: true

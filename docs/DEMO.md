@@ -1,8 +1,46 @@
-# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.5.5)
+# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.7.0)
 
 > 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
-> Skill install + `popola doctor` aggregate health check, and (v0.5.5+)
-> an interactive setup wizard.
+> Skill install + `popola doctor` aggregate health check, an
+> interactive setup wizard (v0.5.5+), and (v0.7.0+) a NEW
+> `install-popola` Skill + a consolidated docs surface.
+
+## v0.7.0 polish (NEW)
+
+The v0.7.0 minor closes the 4 user-feedback items from v0.6.1 in a
+single docs + skill consolidation release. **No source-code logic
+changes** — no daemon primitives, no public Python APIs, no schema
+migrations. The four threads:
+
+1. **`.local/` is now a strictly local-only workspace surface** —
+   gitignored from v0.7.0 onward (NOT deleted; on-disk files are
+   preserved by intent so local agent workflows that read
+   `.local/feedbacks/`, `.local/memory/specs/`, `.local/eval_reports/`,
+   `.local/.agent/` keep working unchanged).
+2. **Single floating release notes** — all 10 per-version release-note
+   files at the repo root (v0.4.0 → v0.6.1) are removed; their content
+   is preserved verbatim in [`CHANGELOG.md`](../CHANGELOG.md). The new
+   [`RELEASE_NOTES.md`](../RELEASE_NOTES.md) at the repo root is
+   overwritten on every release going forward.
+3. **Comprehensive docs refresh** — [`README.md`](../README.md) is
+   rewritten as a polished landing page; new
+   [`docs/QUICKSTART.md`](QUICKSTART.md) (5-minute onboarding) +
+   [`docs/USER_GUIDE.md`](USER_GUIDE.md) (full reference); a
+   GitHub Pages-ready Jekyll site under `docs/index.md` +
+   `docs/_config.yml` (scaffolded; enable in repo Settings → Pages →
+   Source = `docs/`).
+4. **NEW `install-popola` Skill** — at
+   `src/popolaloom/skills/install-popola/SKILL.md` (~165 lines, Tier 1,
+   opt-in). Triggers on `install popola` / `/install-popola` /
+   `安装 popolaloom`. Walks pip install + per-IDE registration +
+   daemon boot + `popola doctor` smoke. Mirrors the conventional
+   `/install-devola-flow` slash-command workflow used to install
+   DevolaFlow globally. From any host agent (Cursor / Claude / Codex /
+   Copilot), say `install popola` and the host walks you through it.
+
+Want the operator-level "what changed" summary? Read
+[`RELEASE_NOTES.md`](../RELEASE_NOTES.md). Want the version-by-version
+archive? Read [`CHANGELOG.md`](../CHANGELOG.md).
 
 ## v0.5.x evolution walkthrough (Loops 1–5)
 
@@ -21,9 +59,9 @@ test / coverage delta for the default lane (per the lane filter
 | 5    | v0.5.5  | `popola init --interactive` wizard + mutmut 4 → 5 + vendored migrations + coverage push | 1321 → 1368 (+47)| 93.94 % → 94.60 % |
 
 Each loop's "Known limitations / deferred" section feeds the next
-loop's first 5 minutes — see the per-version release notes
-(`release-notes-v0.5.{1,2,3,4,5}.md`) for the closure ledger and the
-verification commands.
+loop's first 5 minutes — see [`CHANGELOG.md`](../CHANGELOG.md) for
+the per-version closure ledger (the historical `[0.5.1]` …
+`[0.5.5]` entries) and the verification commands.
 
 ## v0.5.5 interactive wizard (NEW)
 
@@ -126,7 +164,7 @@ emits a 4-section envelope (`skill` / `daemon` / `lark` / `arktower`
 When `lark-cli` is installed AND `LARK_HITL_TARGET_OPEN_ID` is set,
 the daemon proactively sends interactive cards on every terminal
 state (per the v0.4.1 minor; see
-[`release-notes-v0.4.1.md`](../release-notes-v0.4.1.md)):
+[`CHANGELOG.md` §0.4.1](../CHANGELOG.md)):
 
 | Trigger | Default | Card colour |
 |---|---|---|
@@ -367,5 +405,8 @@ and findings list.
   (NFR-1/2/3/5/8/9 + chaos).
 - **Self-bootstrap**: `pytest tests/self_bootstrap -m slow` runs S1..S5.
 - **Evidence ledgers**: `evidence/round-1-evidence.md` … `round-5-evidence.md`.
-- **GA release notes**: [`release-notes-v0.4.0.md`](../release-notes-v0.4.0.md)
-  (after the v0.4.0 bump).
+- **Latest release notes**: [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)
+  (overwritten per release; v0.7.0+ policy).
+- **Historical archive (v0.0.1 → present)**:
+  [`CHANGELOG.md`](../CHANGELOG.md) — search for `## [0.4.0]` for the
+  GA release notes; `[0.4.1]` for the Lark notification minor; etc.

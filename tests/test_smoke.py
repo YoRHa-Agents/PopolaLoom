@@ -1,5 +1,30 @@
 """Smoke test: verify package import + version string.
 
+v0.7.0 minor (closes the 4 user-feedback items from v0.6.1 — see
+``.local/feedbacks/feedback_for_v0.6.1.md``): (1) ``.local/`` is
+gitignored (NOT deleted; on-disk files preserved); (2) ten per-version
+``release-notes-v*.md`` files consolidated into a single floating
+``RELEASE_NOTES.md`` (the historical archive stays in
+``CHANGELOG.md``); (3) comprehensive docs refresh — ``README.md`` +
+``docs/USER_GUIDE.md`` + ``docs/QUICKSTART.md`` + a Jekyll-ready
+GitHub Pages site under ``docs/index.md`` + ``docs/_config.yml`` +
+the ``docs/DEMO.md`` v0.7.0 era refresh; (4) NEW standalone
+``install-popola`` Skill at ``src/popolaloom/skills/install-popola/``
+(``SKILL.md`` + ``.popolaloom-version``; the dash in the directory
+name means this is wheel data resolved via :func:`importlib.resources.files`,
+never imported as a Python package) mirroring
+the conventional ``/install-devola-flow`` workflow used to install
+DevolaFlow globally. The smoke suite gains
+``test_both_skills_resolve_via_importlib`` to assert BOTH the
+canonical ``popolaloom/SKILL.md`` AND the new ``install-popola/
+SKILL.md`` ship in the wheel and resolve via
+``importlib.resources.files('popolaloom') / 'skills' / .../SKILL.md``
+(the same lookup path the ``popola init`` installer uses to read the
+wheel-bundled Skill before copying it into the per-IDE install
+target). See ``RELEASE_NOTES.md`` for the closure ledger +
+verification commands; the historical archive stays in
+``CHANGELOG.md``.
+
 v0.6.1 patch (CI hotfix — closes 3 distinct CI failures blocking the
 v0.6.0 PR): (1) mypy strict raises ~12 errors inside the vendored
 ArkTower subset under ``src/popolaloom/_vendored/arktower/`` (arg-type
@@ -199,4 +224,31 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.6.1"
+    assert popolaloom.__version__ == "0.7.0"
+
+
+def test_both_skills_resolve_via_importlib() -> None:
+    """Both Skills (canonical popolaloom + opt-in install-popola) ship in the wheel.
+
+    Regression guard: v0.7.0 added the install-popola Skill at
+    src/popolaloom/skills/install-popola/SKILL.md alongside the canonical
+    popolaloom Skill. Both must be discoverable via importlib.resources
+    (which is how popola init reads them from the wheel-bundled package
+    per [tool.hatch.build.targets.wheel] packages = ["src/popolaloom"]).
+    """
+    from importlib.resources import files
+
+    canonical = files("popolaloom") / "skills" / "popolaloom" / "SKILL.md"
+    installer = files("popolaloom") / "skills" / "install-popola" / "SKILL.md"
+
+    assert canonical.is_file(), "canonical popolaloom SKILL.md missing from wheel data"
+    assert installer.is_file(), "install-popola SKILL.md missing from wheel data"
+
+    canon_text = canonical.read_text()
+    inst_text = installer.read_text()
+
+    assert "name: popolaloom" in canon_text, "canonical SKILL.md frontmatter wrong"
+    assert "name: install-popola" in inst_text, "install-popola SKILL.md frontmatter wrong"
+
+    assert "version: 0.7.0" in canon_text, "canonical SKILL.md not at 0.7.0"
+    assert "version: 0.7.0" in inst_text, "install-popola SKILL.md not at 0.7.0"

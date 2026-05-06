@@ -4,6 +4,85 @@ All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
+Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwritten per release; v0.7.0+ policy).
+
+## [0.7.0] — 2026-05-06
+
+**Minor — closes the 4 user-feedback items (v0.6.1#1..#4) into a single
+docs + skill consolidation release.** Per `.local/feedbacks/feedback_for_v0.6.1.md`:
+#1 `.local/` is now gitignored (NOT deleted; on-disk files preserved);
+#2 ten per-version `release-notes-v*.md` files are consolidated into a
+single floating `RELEASE_NOTES.md` (the historical archive stays in
+`CHANGELOG.md`); #3 a comprehensive Readme / UserGuide / Quickstart /
+GitHub Pages site / DEMO refresh; #4 a new standalone `install-popola`
+Skill that walks an LLM through installing PopolaLoom globally to
+Cursor / Claude / Codex / Copilot. **No breaking changes.** No public
+Python APIs changed; the canonical `popolaloom` Skill body is
+unchanged (only the frontmatter version bumped).
+
+### Added
+
+- **`src/popolaloom/skills/install-popola/`** (NEW Skill, 2 files:
+  `SKILL.md` + `.popolaloom-version`; the dash in the dir name means
+  this is wheel data, never imported as a Python package) —
+  standalone installer-only Skill (~165 lines / ~1800 tokens, Tier 1)
+  triggered by phrases like `install popola` / `/install-popola` /
+  `安装 popolaloom`. Walks pre-flight checks → `pip install popolaloom`
+  → `popola init <ide> --global` → `popola popolad start` →
+  `popola doctor`. Mirrors the conventional `/install-devola-flow`
+  workflow used to install DevolaFlow globally. Wheel-bundled via
+  the existing `[tool.hatch.build.targets.wheel] packages =
+  ["src/popolaloom"]` recursion (no pyproject change needed).
+- **`RELEASE_NOTES.md`** (NEW, floating per-release file) — overwritten
+  each release with the latest version's notes; CHANGELOG.md is the
+  single historical archive. Pointer added to the CHANGELOG heading
+  paragraph.
+- **`tests/test_smoke.py::test_both_skills_resolve_via_importlib`**
+  (NEW, regression guard) — asserts both `popolaloom/SKILL.md` AND
+  `install-popola/SKILL.md` are wheel-loadable via
+  `importlib.resources.files('popolaloom') / 'skills' / .../SKILL.md`.
+
+### Changed
+
+- **`.gitignore`** — adds explicit `.local/` ignore rule + updates the
+  bottom "DO NOT IGNORE" comment block to drop `.local/` from the
+  tracked-surfaces list. The on-disk files are preserved by intent
+  (one-time `git rm --cached -r .local/` un-tracks ~34 files; the
+  directory itself stays on disk for local agent workflows).
+- **`pyproject.toml`** — `[project] version = "0.6.1" → "0.7.0"`.
+- **`src/popolaloom/__init__.py`** — `__version__ = "0.6.1" → "0.7.0"`.
+- **`src/popolaloom/skills/popolaloom/SKILL.md`** — frontmatter
+  `version: 0.6.1 → 0.7.0` + `last_updated: 2026-05-06`. Body
+  unchanged.
+- **`src/popolaloom/skills/popolaloom/.popolaloom-version`** — `0.7.0`.
+- **`src/popolaloom/skills/install-popola/SKILL.md`** — frontmatter
+  `version: 0.6.1 → 0.7.0` + body version reference bumped.
+- **`src/popolaloom/skills/install-popola/.popolaloom-version`** —
+  `0.7.0` (lockstep with the wheel).
+- **`tests/test_smoke.py`** — version assertion bumped to `0.7.0`;
+  module docstring grows a v0.7.0 lead paragraph; new
+  `test_both_skills_resolve_via_importlib` regression guard added.
+- **`CHANGELOG.md`** — this entry; plus the v0.7.0 pointer line in
+  the heading paragraph (added in W1B).
+- **`README.md` / `docs/QUICKSTART.md` / `docs/USER_GUIDE.md` /
+  `docs/index.md` / `docs/_config.yml` / `docs/DEMO.md`** — full
+  refresh in the same v0.7.0 release (Wave 3 work; this entry
+  mentions them so the entry stays self-contained).
+
+### Removed
+
+- **`release-notes-v0.4.0.md` … `release-notes-v0.6.1.md`** (10 files,
+  ~140 KB total) — historical content is preserved in
+  `CHANGELOG.md`; per-version files are no longer authored from
+  v0.7.0 onward.
+
+### Released
+
+- **PopolaLoom v0.7.0** — single squash-merge candidate on
+  `feat/v0.7.0-docs-skill-cleanup`. Default lane stays at the
+  `--cov-fail-under=94` floor from v0.5.5; smoke test extended
+  with the install-popola wheel-data assertion.
+
 ## [0.6.1] — 2026-05-06
 
 **Patch — CI hotfix: 3 distinct failures blocking the v0.6.0 PR.**
