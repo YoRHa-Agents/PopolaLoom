@@ -299,7 +299,7 @@ def create_app(
             # v0.5.2 Loop 2 (L2.B): tear down the optional LarkSupervisor
             # that ``_build_default_popolad`` may have wired onto the
             # popolad instance.  Prior to v0.5.2 the supervisor was leaked
-            # at lifespan exit (release-notes-v0.5.1.md known limitation #2);
+            # at lifespan exit (CHANGELOG.md [0.5.1] entry, "Known limitations" subsection);
             # we now call the public ``await supervisor.stop()`` so the
             # ``lark-cli event consume`` subprocess + watchdog asyncio task
             # are stopped cooperatively.  When env vars never opted Lark in

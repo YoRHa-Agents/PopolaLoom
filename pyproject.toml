@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.6.1"
+version = "0.7.0"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -161,16 +161,16 @@ omit = ["src/popolaloom/_vendored/*"]
 # v0.4.0 GA: bumped to 91 after rounds 1-5 lifted coverage 89.23 → 91.36%.
 # Original v0.4.0 target was 92; the remaining 0.64 pp gap (mostly
 # CLI / RPC integration error paths that need a live daemon) is
-# tracked for v0.4.1 in release-notes-v0.4.0.md "Known limitations".
+# tracked for v0.4.1 in CHANGELOG.md [0.4.0] entry "Known limitations".
 # v0.5.1: bumped to 92 after Loop 1 added 90 default-lane tests across
 # tests/cli/test_main_error_paths.py (NEW), tests/daemon/test_rpc_error_paths.py
 # (NEW) + tests/cli/test_doctor_cmd.py extensions, lifting coverage
-# 91.15 → 92.56 % and locking in the new floor (per release-notes-v0.5.1.md).
+# 91.15 → 92.56 % and locking in the new floor (per CHANGELOG.md [0.5.1] entry).
 # v0.5.2: bumped to 93 after Loop 2 added 64 default-lane tests across
 # tests/daemon/test_lark_supervisor_shutdown.py (NEW),
 # tests/daemon/test_server_coverage.py (NEW), and
 # tests/lark/test_listener_coverage.py (NEW), lifting coverage
-# 92.56 → 93.37 % and locking in the new floor (per release-notes-v0.5.2.md).
+# 92.56 → 93.37 % and locking in the new floor (per CHANGELOG.md [0.5.2] entry).
 # v0.5.5: bumped to 94 after Loop 5's final coverage push lifted default-
 # lane coverage 93.94 → 94.60 % via 47 new tests across
 # tests/cli/test_init_interactive.py (NEW),
@@ -178,7 +178,7 @@ omit = ["src/popolaloom/_vendored/*"]
 # tests/test_vendored_arktower_migrations.py (NEW), and
 # tests/test_coverage_v055_push.py (NEW). The new floor is the post-
 # v0.5.5 Phase-2-prelude-polish gate; v0.6.0 may revisit it once the
-# multi-agent dispatch surface lands (per release-notes-v0.5.5.md).
+# multi-agent dispatch surface lands (per CHANGELOG.md [0.5.5] entry).
 fail_under = 94
 show_missing = true
 skip_covered = false
