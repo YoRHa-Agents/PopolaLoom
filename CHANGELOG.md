@@ -10,6 +10,27 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
+(intentionally empty — accumulating for v0.7.2.)
+
+## [0.7.1] — 2026-05-06
+
+### Fixed
+
+- **BUG-A: `popola cancel <task_id>` 在 daemon-restart 后无法清 pid=null 孤儿**（出处 `feedback_for_v0.7.0.md` item #5 BUG-A）。`Popolad.cancel_task` 现在区分两类 `pid=null`：(a) `popola_dispatch` 表无对应行 → `_soft_cancel_orphan` 直接写 `task.canceled` 状态 + `task_history` audit 行 + emit `task.canceled` event，**不**发 SIGTERM；(b) 有 `popola_dispatch` row 但 pid 还没回填 → 维持原 race-window 兜底。`/cancel/{task_id}` REST endpoint 透传 `daemon_started_at` 用于 orphan 判定（rehydrated handle.started_at < 当前 daemon.started_at 时归 orphan-reap 路径）。Commit `1549a2c`。
+- **BUG-B: `rehydrate_from_persistence()` 复活了从未真正 spawn 成功的 SUBMITTED 任务**（同 item #5 BUG-B）。改为仅复活 `JOIN popola_dispatch` 命中的 popolad-owned task；缺 row 但有 `popola_task_id` 的 task 标 `failed` + emit `popolad.spawn_aborted` event（dispatch 流程在 spawn 前死了 — daemon 崩、OS 杀子进程、磁盘满等）。无 `popola_task_id` 的 task（譬如 `arktower task add` 直接创建的）保留旧行为（不要求 dispatch row）。`tests/test_repository.py` 加了 3 个新测试覆盖 orphan-reap + spawn-aborted 路径。Commit `1549a2c`。
+- **BUG-C: `popola attach <task_id> --no-follow` 在事件量大时 httpx.ReadTimeout 误报**（出处 `feedback_for_v0.7.0.md` item #4）。`cli.main._consume_sse` 重构为 hybrid (a)+(b) 修复方案：(a) **主修复** — 终止事件 (`task.completed` / `task.failed` / `task.canceled` 以及 forward-compat 的 `event: end-of-stream` 标记) 立即 `break` 出 SSE 迭代，让 `with client.stream(...)` 上下文管理器关闭连接，避免之后再读触发 timeout；(b) **防御兜底** — `httpx.ReadTimeout` 在已观测到终止事件之后视为正常 stream-end（server 已 return 但 httpx 把 EOF 误判成 read timeout）；终止事件之前的 ReadTimeout 仍 re-raise，不静默吞掉真实 server 卡死（"No Silent Failures"）。`tests/cli/test_attach_no_follow_eof.py` 加了 5 个新回归测试。Commit `d20f46a`。
+
+### Added
+
+- **Handoff envelope foundation**（出处 `feedback_for_v0.8.0.md` item #1，user-decided 2026-05-06 选型 Q1=A4 Markdown front-matter / Q2=B4 slug-hash / Q4=D4 active+archive 双层 / Q5=E3 内部统一 / Q7=yes HITL feedback envelope）。新模块 `popolaloom.handoff` 提供 file-based dispatch payload 基础设施：
+  - `HandoffEnvelope` Pydantic v2 schema（13 字段，`extra="forbid"`，`schema_version="1"`），双向序列化 Markdown front-matter（YAML 元数据 + body=prompt，cat-friendly 调试）
+  - `generate_handoff_id` slug-hash 寻址：`<cli>-<slug-from-prompt>-<8hex content hash>`，e.g. `cursor-fix-the-bug-in-foo-py-e2de7acd`；确定性 + 抗碰撞至 ~10⁴ 量级
+  - `write_envelope` 原子写入 `.local/.agent/handoff/<handoff_id>.md`（POSIX `os.replace` + 同目录 tmp 文件，避免 EXDEV）
+  - `archive_envelope` 经 `shutil.copy2` 复制到 `.local/.agent/archive/<task_id>/<handoff_id>.md`，mtime + 元数据保留，task_id path-traversal 防御（`..` / `/` / `\\` 全 reject）
+  - 5 src + 5 test 文件，**100% line + branch coverage** on `src/popolaloom/handoff/*`，114 个新测试
+  - `dispatch_with_envelope` 内部统一 + 各 adapter `POPOLA_HANDOFF_FILE` env / `--popola-handoff-file` flag 注入 / `popola handoff list/show/archive` CLI 在 v0.7.2 落地（Q5=E3）
+  - `popola dispatch --replay <handoff_id>` + HITL feedback envelope + 老 `RelayHandoffEnvelope` 桥接 在 v0.7.3 落地
+
 ### Changed
 
 - **User-facing Skill identifier renamed**: `popolaloom` → `popola-loom`. Affects:
