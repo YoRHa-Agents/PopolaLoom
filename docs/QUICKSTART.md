@@ -1,3 +1,9 @@
+---
+layout: default
+title: Quickstart
+description: 5-minute onboarding for PopolaLoom — install → first task → health check.
+---
+
 # PopolaLoom — 5-minute Quickstart
 
 > Get from `pip install` to "task dispatched and visible in `popola list`" in five minutes. For the full reference, see [`USER_GUIDE.md`](USER_GUIDE.md).
@@ -37,9 +43,9 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 popola init                          # auto-detect (preferred for first time)
 
 # OR per-IDE explicit:
-popola init cursor --global          # → ~/.cursor/skills/popolaloom/SKILL.md
-popola init claude --global          # → ~/.claude/skills/popolaloom/SKILL.md
-popola init codex                    # → $CODEX_HOME/skills/popolaloom/SKILL.md
+popola init cursor --global          # → ~/.cursor/skills/popola-loom/SKILL.md
+popola init claude --global          # → ~/.claude/skills/popola-loom/SKILL.md
+popola init codex                    # → $CODEX_HOME/skills/popola-loom/SKILL.md
 popola init copilot                  # → <repo>/.github/copilot-instructions.md (project-only)
 popola init local                    # → scaffold .local/ workspace surface
 
@@ -128,8 +134,8 @@ The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pol
 
 - **Full CLI + MCP reference**: [`USER_GUIDE.md`](USER_GUIDE.md)
 - **Walkthroughs + example outputs**: [`DEMO.md`](DEMO.md)
-- **Latest release notes**: [`../RELEASE_NOTES.md`](../RELEASE_NOTES.md)
-- **Historical archive (every version)**: [`../CHANGELOG.md`](../CHANGELOG.md)
+- **Latest release notes**: [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
+- **Historical archive (every version)**: [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
 - **Want an LLM to install for you?** Open Cursor or Claude Code and say `install popola` — the `install-popola` Skill (v0.7.0+) handles it.
 
 ## Common errors + fixes

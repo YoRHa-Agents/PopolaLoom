@@ -1,3 +1,9 @@
+---
+layout: default
+title: User Guide
+description: Comprehensive reference for the popola CLI, MCP integration, HITL flows, and configuration.
+---
+
 # PopolaLoom — User Guide (v0.7.0)
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
@@ -81,7 +87,7 @@ The daemon binds the UDS at `$POPOLA_HOME/popolad.sock` (default `~/.popola/popo
 | `popola init --list` | Print every detected target + install path (no writes) | `popola init --list` |
 | `popola init <ide> --dry-run` | Preview writes without touching disk | `popola init cursor --project --dry-run` |
 | `popola skill install --target=<ide>` | Same as `popola init <ide>`, sub-verb form | `popola skill install --target=cursor` |
-| `popola skill upgrade --target=<ide>` | **Overwrite** installed SKILL.md from the wheel (after `.popolaloom-bak.<ts>` backup) | `popola skill upgrade --target=cursor` |
+| `popola skill upgrade --target=<ide>` | **Overwrite** installed SKILL.md from the wheel (after `.popola-loom-bak.<ts>` backup) | `popola skill upgrade --target=cursor` |
 | `popola skill upgrade --target=all` | Cycle every detected install | `popola skill upgrade --target=all` |
 | `popola skill doctor` | Skill-only audit (subset of `popola doctor`) | `popola skill doctor` |
 
@@ -89,15 +95,15 @@ Per-IDE install paths:
 
 | IDE | Scope | Install path |
 |---|---|---|
-| Cursor | global | `~/.cursor/skills/popolaloom/SKILL.md` |
-| Cursor | project | `<repo>/.cursor/skills/popolaloom/SKILL.md` |
-| Claude Code | global | `~/.claude/skills/popolaloom/SKILL.md` |
-| Claude Code | project | `<repo>/.claude/skills/popolaloom/SKILL.md` |
-| Codex | global | `$CODEX_HOME/skills/popolaloom/SKILL.md` (default `~/.codex/`) |
+| Cursor | global | `~/.cursor/skills/popola-loom/SKILL.md` |
+| Cursor | project | `<repo>/.cursor/skills/popola-loom/SKILL.md` |
+| Claude Code | global | `~/.claude/skills/popola-loom/SKILL.md` |
+| Claude Code | project | `<repo>/.claude/skills/popola-loom/SKILL.md` |
+| Codex | global | `$CODEX_HOME/skills/popola-loom/SKILL.md` (default `~/.codex/`) |
 | Copilot | project-only | `<repo>/.github/copilot-instructions.md` (single-file flatten) |
 | local | scaffold | `<repo>/.local/` (workspace surface) |
 
-`popola init` differs from `popola skill upgrade` in two ways: (1) `init` is **idempotent** — second invocation prints `SKIP <path> (already installed)`; `upgrade` **always overwrites** (after writing a `.popolaloom-bak.<ts>` backup). (2) `init` is the first-time-installer entry point; `upgrade` is the post-`pip install --upgrade popolaloom` refresh entry point.
+`popola init` differs from `popola skill upgrade` in two ways: (1) `init` is **idempotent** — second invocation prints `SKIP <path> (already installed)`; `upgrade` **always overwrites** (after writing a `.popola-loom-bak.<ts>` backup). (2) `init` is the first-time-installer entry point; `upgrade` is the post-`pip install --upgrade popolaloom` refresh entry point.
 
 ### Self-evaluation
 
@@ -122,7 +128,7 @@ The 8 dimensions: `dispatch_isolation / cycle_convergence / hitl_latency / attac
 
 The `popola doctor` 4 subsystems:
 
-1. **Skill** — every `(target, scope)` slot from `SKILL_TARGETS`; reports `OK` / `MISS` / `DRIFT` (drift = installed `.popolaloom-version` ≠ wheel version).
+1. **Skill** — every `(target, scope)` slot from `SKILL_TARGETS`; reports `OK` / `MISS` / `DRIFT` (drift = installed `.popola-loom-version` ≠ wheel version).
 2. **Daemon** — `GET /probe` over the popolad UDS socket; `OK` (pid + uptime) when the daemon is up, `FAIL` otherwise.
 3. **Lark** — `lark-cli` on PATH + `LARK_HITL_TARGET_OPEN_ID` env var; `OK` (both present), `WARN` (binary on PATH, env unset), `OFF` (binary missing — informational, not a fail).
 4. **ArkTower** — vendored module imports cleanly + the two PopolaLoom migrations (`005_popolaloom_extensions.sql` / `006_popola_hitl.sql`) are on disk; `WARN` when migrations are missing (the daemon falls back to a no-op runner per the "degrade gracefully" constraint).
@@ -319,16 +325,16 @@ The daemon is structured as four loosely-coupled subsystems that communicate via
 
 The optional `LarkSupervisor` (`lark/supervisor.py`) is wired only when `LARK_HITL_TARGET_OPEN_ID` is set + `lark-cli` is on PATH; it spawns a `lark-cli event consume` listener subprocess and watches it (≤ 3 consecutive deaths → escalate). NFR-2 (status RTT mean ≤ 200ms over 50 samples), NFR-9 (dispatch p95 ≤ 1s over 20 samples), and NFR-1 (cold-start UDS-up ≤ 2s) all have benchmarks under `tests/matrix/nfr/`.
 
-For the visual ASCII-diagram architecture overview, see [`README.md#architecture-tldr`](../README.md#architecture-tldr) — the diagram covers the same surfaces above. For session walkthroughs (with example outputs of `popola init` / `popola doctor` / etc.), see [`DEMO.md`](DEMO.md).
+For the visual ASCII-diagram architecture overview, see [`README.md#architecture-tldr`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/README.md#architecture-tldr) — the diagram covers the same surfaces above. For session walkthroughs (with example outputs of `popola init` / `popola doctor` / etc.), see [`DEMO.md`](DEMO.md).
 
 ## Reference
 
-- **Canonical Skill** (loaded by every host agent post-`popola init`): `src/popolaloom/skills/popolaloom/SKILL.md`
+- **Canonical Skill** (loaded by every host agent post-`popola init`): `src/popolaloom/skills/popola-loom/SKILL.md`
 - **Installer Skill** (v0.7.0+; opt-in for fresh install): `src/popolaloom/skills/install-popola/SKILL.md`
-- **Latest release**: [`../RELEASE_NOTES.md`](../RELEASE_NOTES.md)
-- **Historical archive**: [`../CHANGELOG.md`](../CHANGELOG.md)
-- **Vendoring policy + ArkTower refresh procedure**: [`../VENDORING.md`](../VENDORING.md)
-- **Quickstart smoke script**: [`../examples/quickstart.sh`](../examples/quickstart.sh)
+- **Latest release**: [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
+- **Historical archive**: [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
+- **Vendoring policy + ArkTower refresh procedure**: [`VENDORING.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/VENDORING.md)
+- **Quickstart smoke script**: [`examples/quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/examples/quickstart.sh)
 - **Self-evolution evidence ledgers** (v0.3.x rounds): `evidence/round-{1..5}-evidence.md`
 - **Sibling project**: [ArkTower](https://github.com/YoRHa-Agents/ArkTower) (task pool / FSM / SQL migrations source)
 - **Per-task quality framework**: [DevolaFlow](https://github.com/YoRHa-Agents/DevolaFlow) (Skill coexists with PopolaLoom's; install both)
