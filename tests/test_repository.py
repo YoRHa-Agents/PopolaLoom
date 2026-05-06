@@ -310,6 +310,21 @@ def test_rehydrate_from_persistence_loads_in_flight_tasks(
 
     submitted_id, running_id, completed_id = asyncio.run(_seed())
 
+    # v0.7.1 BUG-B contract: popolad-owned tasks (those with
+    # popola_task_id) must have a popola_dispatch row to be rehydrated.
+    # Seed the rows for the two non-terminal tasks here (the completed
+    # task is filtered out by status and doesn't need one).
+    conn = persistence.connection.get_connection()
+    conn.executemany(
+        """INSERT INTO popola_dispatch (dispatch_id, task_id, runtime, supervisor)
+           VALUES (?, ?, 'popen', 'in-process')""",
+        [
+            (f"dispatch-{submitted_id[:8]}", submitted_id),
+            (f"dispatch-{running_id[:8]}", running_id),
+        ],
+    )
+    conn.commit()
+
     popolad = Popolad(
         events_dir=tmp_path / "events",
         adapter=_noop_adapter,
@@ -383,7 +398,17 @@ def test_rehydrate_emits_popolad_recovered_event(
         await persistence.task_service.claim_task(running.id, agent_id="cursor-agent-1")
         return running.id
 
-    asyncio.run(_seed())
+    running_id = asyncio.run(_seed())
+
+    # v0.7.1 BUG-B contract: popolad-owned tasks must have a
+    # popola_dispatch row to rehydrate; seed it before constructing Popolad.
+    conn = persistence.connection.get_connection()
+    conn.execute(
+        """INSERT INTO popola_dispatch (dispatch_id, task_id, runtime, supervisor)
+           VALUES (?, ?, 'popen', 'in-process')""",
+        (f"dispatch-{running_id[:8]}", running_id),
+    )
+    conn.commit()
 
     events_dir = tmp_path / "events"
     popolad = Popolad(
@@ -407,3 +432,361 @@ def test_rehydrate_emits_popolad_recovered_event(
     assert payload["recovered_count"] == 1
     assert payload["task_ids"] == ["cursor-recoveredtest"]
     assert payload["arktower_task_id"]
+
+
+# ── 6. v0.7.1 BUG-A: cancel orphan with no popola_dispatch row ──────────
+
+
+def test_cancel_orphan_no_dispatch_row(
+    persistence: TaskPersistence,
+    tmp_path: Path,
+) -> None:
+    """v0.7.1 BUG-A: orphan reap when popola_dispatch has no row and started_at predates daemon.
+
+    Reproduces the symptom from RELEASE_NOTES: an ArkTower task with
+    status='submitted' lives on across a daemon restart but the
+    popola_dispatch table never had a row (dispatch crashed before
+    spawn). cancel_task must short-circuit the SIGTERM path and write
+    a clean cancellation audit instead of forever raising
+    'race window between dispatch and spawn'.
+    """
+    import asyncio
+    from datetime import UTC, datetime, timedelta
+
+    from popolaloom._vendored.arktower.core.models import (
+        TaskCreate,
+        TaskStatus,
+    )
+    from popolaloom.daemon.state import TaskHandle, TaskState
+
+    async def _seed() -> str:
+        ark = await persistence.task_service.create_task(
+            TaskCreate(
+                title="[cursor] orphan",
+                description="orphan task",
+                parameters={
+                    "popola_task_id": "cursor-orphanpid0",
+                    "cli": "cursor",
+                    "cmd": ["sleep", "30"],
+                },
+                kind="popola.dispatch",
+                preferred_agent_type="cursor",
+            )
+        )
+        return ark.id
+
+    arktower_task_id = asyncio.run(_seed())
+
+    events_dir = tmp_path / "events"
+    popolad = Popolad(
+        events_dir=events_dir,
+        adapter=_noop_adapter,
+        persistence=persistence,
+        use_graph=False,
+    )
+
+    daemon_started_at = datetime.now(UTC)
+    task_started_at = daemon_started_at - timedelta(minutes=10)
+    handle = TaskHandle(
+        task_id="cursor-orphanpid0",
+        cli="cursor",
+        pid=None,
+        state=TaskState.RUNNING,
+        started_at=task_started_at,
+        event_log_path=events_dir / "cursor-orphanpid0.jsonl",
+        arktower_task_id=arktower_task_id,
+        cmd=["sleep", "30"],
+        persisted=True,
+    )
+    popolad.state_store.register(handle)
+
+    result = popolad.cancel_task(
+        "cursor-orphanpid0",
+        daemon_started_at=daemon_started_at,
+    )
+    assert result["task_id"] == "cursor-orphanpid0"
+    assert result["pid"] is None
+    assert result["escalated_to_sigkill"] is False
+    assert result["requested_signal"] == "none"
+    assert result["result"] == "orphaned_by_daemon_restart"
+
+    refreshed = persistence.repository.get(arktower_task_id)
+    assert refreshed is not None
+    assert refreshed.status == TaskStatus.CANCELED, (
+        f"ArkTower task should be CANCELED; got {refreshed.status}"
+    )
+
+    # repository.get_history loads through Pydantic which rejects
+    # 'cancel_orphan' (Trigger enum has no such value — we bypass the
+    # model with raw SQL on insert per design). Tolerate the resulting
+    # ValueError so we can still surface pydantic-decoded triggers in
+    # the assertion message when present, but rely on raw SQL for the
+    # actual contract check.
+    try:
+        history = persistence.repository.get_history(arktower_task_id)
+        triggers = [
+            ev.trigger.value if hasattr(ev.trigger, "value") else str(ev.trigger)
+            for ev in history
+        ]
+    except ValueError:
+        triggers = []
+    raw_history = persistence.connection.get_connection().execute(
+        "SELECT trigger, notes FROM task_history WHERE task_id = ? ORDER BY timestamp ASC",
+        (arktower_task_id,),
+    ).fetchall()
+    raw_triggers = [row["trigger"] for row in raw_history]
+    raw_notes = [row["notes"] for row in raw_history]
+    assert "cancel_orphan" in raw_triggers, (
+        f"Expected task_history trigger 'cancel_orphan'; "
+        f"raw_triggers={raw_triggers} raw_notes={raw_notes} pydantic_triggers={triggers}"
+    )
+    assert "orphaned_by_daemon_restart" in raw_notes
+
+    refreshed_handle = popolad.state_store.get("cursor-orphanpid0")
+    assert refreshed_handle is not None
+    assert refreshed_handle.state == TaskState.CANCELED
+
+    events = popolad.tail_events("cursor-orphanpid0")
+    canceled_events = [ev for ev in events if ev["type"] == "task.canceled"]
+    assert canceled_events, f"task.canceled event missing; events={events}"
+    payload = canceled_events[-1]["data"]
+    assert payload.get("reason") == "orphaned_by_daemon_restart"
+    assert payload.get("trigger") == "cancel_orphan"
+
+
+def test_cancel_pre_orphan_race_still_errors(
+    persistence: TaskPersistence,
+    tmp_path: Path,
+) -> None:
+    """Race-window error preserved when started_at is NEWER than daemon.
+
+    Guards against regression: legitimate dispatch-vs-spawn race must
+    still raise (current daemon owns the task; orphan-reap path applies
+    only to handles older than the running daemon process).
+    """
+    from datetime import UTC, datetime, timedelta
+
+    from popolaloom.daemon.state import TaskHandle, TaskState
+
+    events_dir = tmp_path / "events"
+    popolad = Popolad(
+        events_dir=events_dir,
+        adapter=_noop_adapter,
+        persistence=persistence,
+        use_graph=False,
+    )
+    daemon_started_at = datetime.now(UTC) - timedelta(minutes=5)
+    task_started_at = datetime.now(UTC)
+    popolad.state_store.register(
+        TaskHandle(
+            task_id="cursor-racepid0000",
+            cli="cursor",
+            pid=None,
+            state=TaskState.RUNNING,
+            started_at=task_started_at,
+            event_log_path=events_dir / "cursor-racepid0000.jsonl",
+            arktower_task_id=None,
+            cmd=[],
+            persisted=False,
+        )
+    )
+
+    with pytest.raises(RuntimeError, match="race window"):
+        popolad.cancel_task(
+            "cursor-racepid0000",
+            daemon_started_at=daemon_started_at,
+        )
+
+
+# ── 7. v0.7.1 BUG-B: rehydrate skips pre-dispatch SUBMITTED tasks ───────
+
+
+def test_rehydrate_skips_pre_dispatch_submitted(
+    persistence: TaskPersistence,
+    tmp_path: Path,
+) -> None:
+    """v0.7.1 BUG-B: tasks without popola_dispatch row become FAILED, not RUNNING.
+
+    Reproduces the 24-ghost regression: every non-terminal ArkTower task
+    used to become TaskState.RUNNING in StateStore on rehydrate, even
+    when dispatch crashed before populating popola_dispatch. Now those
+    rows must be marked failed with error='spawn_aborted_pre_dispatch',
+    must NOT appear in the in-memory state, and must emit a
+    popolad.spawn_aborted forensic event.
+    """
+    import asyncio
+
+    from popolaloom._vendored.arktower.core.models import (
+        TaskCreate,
+        TaskStatus,
+    )
+
+    async def _seed() -> tuple[str, str]:
+        spawned = await persistence.task_service.create_task(
+            TaskCreate(
+                title="[cursor] spawned",
+                description="had popola_dispatch row",
+                parameters={
+                    "popola_task_id": "cursor-spawnedpid0",
+                    "cli": "cursor",
+                    "cmd": ["echo", "spawned"],
+                },
+                kind="popola.dispatch",
+                preferred_agent_type="cursor",
+            )
+        )
+        aborted = await persistence.task_service.create_task(
+            TaskCreate(
+                title="[cursor] pre-dispatch",
+                description="dispatch crashed before spawn",
+                parameters={
+                    "popola_task_id": "cursor-abortedpid0",
+                    "cli": "cursor",
+                    "cmd": ["echo", "aborted"],
+                },
+                kind="popola.dispatch",
+                preferred_agent_type="cursor",
+            )
+        )
+        return spawned.id, aborted.id
+
+    spawned_ark_id, aborted_ark_id = asyncio.run(_seed())
+
+    conn = persistence.connection.get_connection()
+    conn.execute(
+        """INSERT INTO popola_dispatch (dispatch_id, task_id, runtime, supervisor)
+           VALUES (?, ?, 'popen', 'in-process')""",
+        ("dispatch-spawned-0001", spawned_ark_id),
+    )
+    conn.commit()
+
+    events_dir = tmp_path / "events"
+    popolad = Popolad(
+        events_dir=events_dir,
+        adapter=_noop_adapter,
+        persistence=persistence,
+        use_graph=False,
+    )
+
+    rehydrated = popolad.rehydrate_from_persistence()
+    assert rehydrated == 1, (
+        f"Expected only the spawned task to rehydrate; got {rehydrated}"
+    )
+
+    active = {item["task_id"] for item in popolad.list_active()}
+    assert active == {"cursor-spawnedpid0"}, (
+        f"Pre-dispatch orphan must not appear in StateStore; got {active}"
+    )
+
+    aborted_refreshed = persistence.repository.get(aborted_ark_id)
+    assert aborted_refreshed is not None
+    assert aborted_refreshed.status == TaskStatus.FAILED, (
+        f"Pre-dispatch orphan should be FAILED in ArkTower; "
+        f"got {aborted_refreshed.status}"
+    )
+    assert aborted_refreshed.error == "spawn_aborted_pre_dispatch", (
+        f"error column should pinpoint the cause; "
+        f"got error={aborted_refreshed.error!r}"
+    )
+
+    spawned_refreshed = persistence.repository.get(spawned_ark_id)
+    assert spawned_refreshed is not None
+    assert spawned_refreshed.status == TaskStatus.SUBMITTED, (
+        "Tasks WITH a popola_dispatch row must be left untouched by the "
+        f"rehydrate path; got {spawned_refreshed.status}"
+    )
+
+    aborted_log = events_dir / "cursor-abortedpid0.jsonl"
+    assert aborted_log.exists(), "popolad.spawn_aborted event log should be written"
+    raw_lines = aborted_log.read_text(encoding="utf-8").splitlines()
+    assert any('"popolad.spawn_aborted"' in line for line in raw_lines), (
+        f"popolad.spawn_aborted not emitted; lines={raw_lines}"
+    )
+
+
+# ── 8. v0.7.1 BUG-B prerequisite: dispatch populates popola_dispatch ────
+
+
+def test_dispatch_populates_popola_dispatch_row(
+    persistence: TaskPersistence,
+    tmp_path: Path,
+) -> None:
+    """End-to-end: ``Popolad.dispatch_task`` writes a ``popola_dispatch`` row.
+
+    Without this the BUG-B rehydrate heuristic (item #5 in
+    feedback_for_v0.7.0.md) is unsound: every legitimately spawned
+    task would be flagged as ``spawn_aborted`` on the next daemon
+    restart because production never inserted into the table that
+    has lived in the schema since v0.2.0 migration 005. NFR-8
+    (tests/matrix/nfr/test_nfr_8_recovery_rate.py — full restart
+    recovery) regresses to 0% recovery without the insert; this
+    unit-level test gives a fast default-lane signal too.
+    """
+    events_dir = tmp_path / "events"
+    popolad = Popolad(
+        events_dir=events_dir,
+        adapter=_noop_adapter,
+        persistence=persistence,
+        use_graph=False,
+    )
+
+    task_id = popolad.dispatch_task(cli="cursor", prompt="dispatch row probe")
+    status = popolad.get_status(task_id)
+    arktower_task_id = status["arktower_task_id"]
+    assert arktower_task_id is not None, (
+        f"Test prerequisite: ArkTower id must be populated; got {status}"
+    )
+
+    conn = persistence.connection.get_connection()
+    rows = conn.execute(
+        "SELECT dispatch_id, task_id, runtime, supervisor "
+        "FROM popola_dispatch WHERE task_id = ?",
+        (arktower_task_id,),
+    ).fetchall()
+    assert len(rows) == 1, (
+        f"Expected exactly 1 popola_dispatch row for ArkTower id "
+        f"{arktower_task_id}; got {len(rows)}: {rows}"
+    )
+    row = rows[0]
+    assert row["task_id"] == arktower_task_id
+    assert row["runtime"] == "popen"
+    assert row["supervisor"] == "in-process"
+    assert row["dispatch_id"], "dispatch_id should be a non-empty primary key"
+
+
+def test_record_popola_dispatch_is_idempotent(
+    persistence: TaskPersistence,
+    tmp_path: Path,
+) -> None:
+    """``_record_popola_dispatch`` uses INSERT OR IGNORE — repeat calls do not error.
+
+    Defensive contract: if a future code path (e.g. a graph node retry
+    or a recovery flow) re-records dispatch metadata for the same
+    ArkTower task, we must not raise on UNIQUE conflict. The helper
+    is also a no-op when persistence or the ArkTower id is unset
+    (e.g. dispatch ran with persistence disabled).
+    """
+    events_dir = tmp_path / "events"
+    popolad = Popolad(
+        events_dir=events_dir,
+        adapter=_noop_adapter,
+        persistence=persistence,
+        use_graph=False,
+    )
+
+    popolad._record_popola_dispatch(None)
+
+    fake_id = "ark-task-fake-0001"
+    popolad._record_popola_dispatch(fake_id)
+    popolad._record_popola_dispatch(fake_id)
+    popolad._record_popola_dispatch(fake_id, runtime="popen", supervisor="in-process")
+
+    conn = persistence.connection.get_connection()
+    rows = conn.execute(
+        "SELECT 1 FROM popola_dispatch WHERE task_id = ?",
+        (fake_id,),
+    ).fetchall()
+    assert len(rows) == 1, (
+        f"INSERT OR IGNORE should keep exactly 1 row across repeat calls; "
+        f"got {len(rows)} rows"
+    )

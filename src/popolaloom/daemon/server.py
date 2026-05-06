@@ -400,6 +400,7 @@ class Popolad:
         )
 
         self._state.update(task_id, pid=pid)
+        self._record_popola_dispatch(arktower_task_id)
         return task_id
 
     def _dispatch_via_graph(
@@ -494,6 +495,7 @@ class Popolad:
             on_exit=_on_exit_internal,
         )
         self._state.update(task_id, pid=pid)
+        self._record_popola_dispatch(arktower_task_id)
 
         callbacks = self._make_graph_callbacks(
             task_id=task_id,
@@ -647,11 +649,92 @@ class Popolad:
         handles = self._state.list_all() if include_terminal else self._state.list_active()
         return [self._task_summary(h, full=include_terminal) for h in handles]
 
+    def _has_popola_dispatch_row(self, arktower_task_id: str | None) -> bool:
+        """Return True iff popola_dispatch has a row for this ArkTower task id."""
+        if arktower_task_id is None or self._persistence is None:
+            return False
+        try:
+            conn = self._persistence.connection.get_connection()
+            row = conn.execute(
+                "SELECT 1 FROM popola_dispatch WHERE task_id = ? LIMIT 1",
+                (arktower_task_id,),
+            ).fetchone()
+            return row is not None
+        except Exception:
+            logger.exception(
+                "popola_dispatch lookup failed for arktower_task_id=%s; "
+                "treating as 'row present' so cancel keeps its strict default",
+                arktower_task_id,
+            )
+            return True
+
+    def _record_popola_dispatch(
+        self,
+        arktower_task_id: str | None,
+        *,
+        runtime: str = "popen",
+        supervisor: str = "in-process",
+    ) -> None:
+        """Insert a ``popola_dispatch`` row marking this task as successfully spawned.
+
+        v0.7.1 BUG-B prerequisite: :meth:`rehydrate_from_persistence` and
+        :meth:`cancel_task` use the presence of a ``popola_dispatch``
+        row to distinguish *"spawned, then orphaned by a daemon crash"*
+        from *"never spawned because dispatch crashed pre-spawn"*. Per
+        ``migrations/005_popolaloom_extensions.sql``, the table was
+        introduced in v0.2.0 as occupied schema with the comment
+        *"Populating it is a v0.3.0 concern"*. v0.7.1 finally fills the
+        gap so the BUG-A/B heuristics are sound end-to-end (the
+        NFR-8 recovery test in tests/matrix/nfr/ regresses without this
+        insert because every legitimately-spawned task would otherwise
+        be flagged as ``spawn_aborted`` on rehydrate).
+
+        Per workspace rule "No Silent Failures": failures here are
+        logged at ERROR + swallowed (the task itself spawned fine; we
+        don't want to fail dispatch on an audit-table write). The
+        downside is that the next rehydrate may flag this task as
+        spawn_aborted; we accept that trade-off because the alternative
+        — raising and failing the user-visible dispatch — is worse.
+
+        Args:
+            arktower_task_id: ArkTower row id; ``None`` (no persistence
+                wired) is a no-op.
+            runtime: ``"popen"`` for v0.7.x in-process supervision;
+                future tmux / systemd-run runtimes will populate this
+                column accordingly.
+            supervisor: ``"in-process"`` for v0.7.x; future detached
+                supervisors set ``"subprocess"``.
+        """
+        if arktower_task_id is None or self._persistence is None:
+            return
+        try:
+            conn = self._persistence.connection.get_connection()
+            conn.execute(
+                "INSERT OR IGNORE INTO popola_dispatch "
+                "(dispatch_id, task_id, runtime, supervisor) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    f"dispatch-{arktower_task_id}",
+                    arktower_task_id,
+                    runtime,
+                    supervisor,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            logger.exception(
+                "_record_popola_dispatch: failed to insert row for "
+                "arktower_task_id=%s; rehydrate will treat this task as "
+                "spawn_aborted on next daemon restart",
+                arktower_task_id,
+            )
+
     def cancel_task(
         self,
         task_id: str,
         *,
         sigterm_grace_s: float = 5.0,
+        daemon_started_at: datetime | None = None,
     ) -> dict[str, Any]:
         """Send SIGTERM to the task subprocess, escalate to SIGKILL after grace.
 
@@ -670,9 +753,20 @@ class Popolad:
         ../../../.local/memory/research/v0.5.0-skill-install-lark-research.md)
         contract bug consumed by ``evaluation/runner.py:325-331``.
 
+        v0.7.1 BUG-A fix: when ``daemon_started_at`` is supplied AND the
+        rehydrated handle predates the current daemon AND no
+        ``popola_dispatch`` row exists for the underlying ArkTower task,
+        fall through to :meth:`_soft_cancel_orphan` instead of raising
+        the legacy "race window between dispatch and spawn" error
+        forever. See Step 2 of fix/v0.7.1-* dispatch.
+
         Args:
             task_id: 已注册的 task_id。
             sigterm_grace_s: SIGTERM 后等待秒数, 超时 SIGKILL。
+            daemon_started_at: optional UTC start time of the running
+                popolad process; supplied by :mod:`popolaloom.daemon.rpc`
+                so we can identify orphan handles created by a previous
+                daemon. ``None`` keeps legacy behavior (no orphan-reap).
 
         Returns:
             dict: ``{task_id, requested_signal, escalated_to_sigkill, pid}``.
@@ -694,6 +788,18 @@ class Popolad:
             )
         pid = handle.pid
         if pid is None:
+            # Orphan-reap path: rehydrated handles from a previous daemon process that
+            # crashed before populating popola_dispatch will sit forever in this state.
+            # We can identify them by (a) no popola_dispatch row AND (b) handle.started_at
+            # older than the *current* daemon's started_at — in that case the in-memory
+            # handle was created by rehydrate, not by this daemon's dispatch path.
+            is_orphan = (
+                daemon_started_at is not None
+                and handle.started_at < daemon_started_at
+                and not self._has_popola_dispatch_row(handle.arktower_task_id)
+            )
+            if is_orphan:
+                return self._soft_cancel_orphan(task_id, handle)
             raise RuntimeError(
                 f"task {task_id} has no pid yet "
                 "(race window between dispatch and spawn)"
@@ -785,6 +891,135 @@ class Popolad:
             "requested_signal": "SIGTERM",
             "escalated_to_sigkill": escalated,
             "pid": pid,
+        }
+
+    def _soft_cancel_orphan(
+        self,
+        task_id: str,
+        handle: TaskHandle,
+    ) -> dict[str, Any]:
+        """Reap an orphaned task left behind by a prior daemon process.
+
+        Triggered from :meth:`cancel_task` when ``popola_dispatch`` has no
+        row AND the handle's ``started_at`` predates this daemon's
+        startup time — meaning :meth:`rehydrate_from_persistence` placed
+        it in :class:`StateStore` but the original subprocess was
+        already gone with no recovery path. We persist the cancellation
+        in ArkTower + ``task_history`` (``trigger='cancel_orphan'``) and
+        emit a ``task.canceled`` NDJSON event so consumers see a clean
+        terminal state instead of looping on
+        "race window between dispatch and spawn" forever.
+
+        Per workspace rule "No Silent Failures": every persistence /
+        event-log failure inside this method is logged via
+        :func:`logger.exception` with context; we never bare-except.
+        """
+        self._state.update(
+            task_id,
+            state=TaskState.CANCELED,
+            completed_at=datetime.now(UTC),
+        )
+
+        arktower_task_id = handle.arktower_task_id
+        if self._persistence is not None and arktower_task_id is not None:
+            from popolaloom._vendored.arktower.core.models import (
+                TaskStatus as _ArkTaskStatus,
+            )
+            from popolaloom._vendored.arktower.core.models import (
+                TaskUpdate as _ArkTaskUpdate,
+            )
+
+            try:
+                existing = self._persistence.repository.get(arktower_task_id)
+                from_status_value = existing.status.value if existing else "submitted"
+            except Exception:
+                logger.exception(
+                    "orphan-reap: repository.get failed for arktower_task_id=%s; "
+                    "defaulting from_status='submitted' for audit",
+                    arktower_task_id,
+                )
+                from_status_value = "submitted"
+
+            try:
+                self._persistence.repository.update(
+                    arktower_task_id,
+                    _ArkTaskUpdate(status=_ArkTaskStatus.CANCELED),
+                )
+            except Exception:
+                logger.exception(
+                    "orphan-reap: ArkTower repository.update(CANCELED) failed for %s; "
+                    "audit row + event still emitted",
+                    arktower_task_id,
+                )
+
+            try:
+                conn = self._persistence.connection.get_connection()
+                now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                conn.execute(
+                    """INSERT INTO task_history
+                           (event_id, task_id, trigger, from_status, to_status,
+                            actor, notes, timestamp)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        uuid.uuid4().hex,
+                        arktower_task_id,
+                        "cancel_orphan",
+                        from_status_value,
+                        "canceled",
+                        "popolad-orphan-reaper",
+                        "orphaned_by_daemon_restart",
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                logger.exception(
+                    "orphan-reap: task_history INSERT failed for %s",
+                    arktower_task_id,
+                )
+
+        with self._event_logs_lock:
+            event_log = self._event_logs.get(task_id)
+        if event_log is None:
+            try:
+                event_log = EventLog(
+                    handle.event_log_path,
+                    source=f"popola/{task_id}",
+                )
+                with self._event_logs_lock:
+                    self._event_logs[task_id] = event_log
+            except Exception:
+                logger.exception(
+                    "orphan-reap: failed to (re)open EventLog at %s; "
+                    "skipping task.canceled emission for %s",
+                    handle.event_log_path,
+                    task_id,
+                )
+                event_log = None
+
+        if event_log is not None:
+            try:
+                event_log.append(
+                    "task.canceled",
+                    {
+                        "task_id": task_id,
+                        "reason": "orphaned_by_daemon_restart",
+                        "trigger": "cancel_orphan",
+                        "arktower_task_id": arktower_task_id,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "orphan-reap: event_log.append(task.canceled) failed for %s",
+                    task_id,
+                )
+
+        return {
+            "task_id": task_id,
+            "requested_signal": "none",
+            "escalated_to_sigkill": False,
+            "pid": None,
+            "result": "orphaned_by_daemon_restart",
         }
 
     def event_log(self, task_id: str) -> EventLog | None:
@@ -1270,11 +1505,24 @@ class Popolad:
             return 0
 
         handles: list[TaskHandle] = []
+        spawn_aborted_count = 0
         for ark_task in ark_tasks:
             params = ark_task.parameters or {}
             popola_task_id = params.get("popola_task_id")
             cli = params.get("cli") or ark_task.preferred_agent_type or "unknown"
             cmd = params.get("cmd") or []
+
+            # v0.7.1 BUG-B fix: only popolad-owned tasks (those with popola_task_id)
+            # need a popola_dispatch row to be considered alive. If we have a
+            # popola_task_id but NO matching popola_dispatch row, dispatch crashed
+            # before spawn — surface as failed rather than reviving a ghost RUNNING
+            # handle in StateStore. Tasks WITHOUT popola_task_id (legitimately
+            # created outside popolad — e.g. ``arktower task add``) keep current
+            # behavior because they were never expected to have a dispatch row.
+            if popola_task_id is not None and not self._has_popola_dispatch_row(ark_task.id):
+                self._handle_pre_dispatch_orphan(ark_task, str(popola_task_id), str(cli))
+                spawn_aborted_count += 1
+                continue
 
             if not popola_task_id:
                 popola_task_id = self._make_task_id(str(cli))
@@ -1308,8 +1556,83 @@ class Popolad:
         self._state.rehydrate(deduped)
         recovered_task_ids = [h.task_id for h in deduped]
         self._emit_recovered_events(deduped, recovered_task_ids)
-        logger.info("rehydrated %d in-flight task(s) from ArkTower SQLite", len(deduped))
+        logger.info(
+            "rehydrated %d in-flight task(s) from ArkTower SQLite "
+            "(skipped %d spawn-aborted orphan(s))",
+            len(deduped),
+            spawn_aborted_count,
+        )
         return len(deduped)
+
+    def _handle_pre_dispatch_orphan(
+        self,
+        ark_task: Any,
+        popola_task_id: str,
+        cli: str,
+    ) -> None:
+        """Mark an orphan ArkTower task as failed when ``popola_dispatch`` is missing.
+
+        Triggered from :meth:`rehydrate_from_persistence` when a task
+        carries a ``popola_task_id`` but no ``popola_dispatch`` row —
+        meaning the original daemon process crashed between
+        :meth:`TaskService.create_task` and :meth:`Supervisor.spawn`. We
+        close the loop persistently so the next rehydrate doesn't see
+        it again, and emit a forensic ``popolad.spawn_aborted`` event.
+
+        Per workspace rule "No Silent Failures": the persistence /
+        event-log writes are wrapped in try/except + logger.exception so
+        the rehydrate loop continues for the remaining tasks even if
+        one orphan write fails.
+        """
+        from popolaloom._vendored.arktower.core.models import (
+            TaskStatus as _ArkTaskStatus,
+        )
+        from popolaloom._vendored.arktower.core.models import (
+            TaskUpdate as _ArkTaskUpdate,
+        )
+
+        if self._persistence is not None:
+            try:
+                self._persistence.repository.update(
+                    ark_task.id,
+                    _ArkTaskUpdate(
+                        status=_ArkTaskStatus.FAILED,
+                        error="spawn_aborted_pre_dispatch",
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "rehydrate: ArkTower repository.update(FAILED, "
+                    "error='spawn_aborted_pre_dispatch') failed for %s",
+                    ark_task.id,
+                )
+
+        event_log_path = self._events_dir / f"{popola_task_id}.jsonl"
+        try:
+            log = EventLog(event_log_path, source=f"popola/{popola_task_id}")
+            try:
+                log.append(
+                    "popolad.spawn_aborted",
+                    {
+                        "popola_task_id": popola_task_id,
+                        "arktower_task_id": ark_task.id,
+                        "cli": cli,
+                        "reason": "spawn_aborted_pre_dispatch",
+                        "detail": (
+                            "no popola_dispatch row present at rehydrate time; "
+                            "previous daemon crashed before subprocess spawn"
+                        ),
+                    },
+                )
+            finally:
+                log.close()
+        except Exception:
+            logger.exception(
+                "rehydrate: failed to emit popolad.spawn_aborted event for %s "
+                "(arktower_task_id=%s)",
+                popola_task_id,
+                ark_task.id,
+            )
 
     def _emit_recovered_events(
         self,

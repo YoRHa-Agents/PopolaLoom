@@ -410,8 +410,13 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
 
     @app.post("/cancel/{task_id}", response_model=CancelResponse)
     async def cancel(task_id: str) -> CancelResponse:
+        daemon_started_at = _DAEMON_STATE.get("started_at")
         try:
-            result = await asyncio.to_thread(popolad.cancel_task, task_id)
+            result = await asyncio.to_thread(
+                popolad.cancel_task,
+                task_id,
+                daemon_started_at=daemon_started_at,
+            )
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"task not found: {task_id}") from exc
         except RuntimeError as exc:
