@@ -89,13 +89,15 @@ allow-direct-references = true
 #      these on disk
 #      `popolaloom._vendored.arktower.cli.deps.migrations_dir()` would
 #      raise after a wheel install.
-#   2. `src/popolaloom/skills/popolaloom/{SKILL.md,.popolaloom-version}`
-#      — the canonical PopolaLoom Skill (Stage S3 of v0.5.0); the
-#      `popola init` installer (Stage S2) reads this via
+#   2. `src/popolaloom/skills/popola-loom/{SKILL.md,.popola-loom-version}`
+#      — the canonical PopolaLoom Skill (Stage S3 of v0.5.0; user-facing
+#      Skill identifier renamed from `popolaloom` to `popola-loom` in
+#      v0.7.1+ — the Python package name `popolaloom` is unchanged).
+#      The `popola init` installer (Stage S2) reads this via
 #      `importlib.resources.files('popolaloom').joinpath('skills',
-#      'popolaloom', 'SKILL.md')` (see `cli/_skill_source.py`) and
+#      'popola-loom', 'SKILL.md')` (see `cli/_skill_source.py`) and
 #      copies it into the per-IDE install target.  The hidden
-#      `.popolaloom-version` marker mirrors DevolaFlow's
+#      `.popola-loom-version` marker mirrors DevolaFlow's
 #      `.devola-flow-version` (research §A.5) and is the
 #      drift-detection input for `popola doctor` (Stage S4).
 #

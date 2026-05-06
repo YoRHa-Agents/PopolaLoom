@@ -1,7 +1,7 @@
 ---
 name: install-popola
 version: 0.7.0
-description: "Install PopolaLoom (popola CLI + popolad daemon + the `popolaloom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popolaloom / set up popola / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
+description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
   requires:
@@ -13,13 +13,18 @@ token_estimate: 1800
 last_updated: "2026-05-06"
 triggers:
   - "install popola"
+  - "install popola-loom"
   - "install popolaloom"
   - "set up popola"
+  - "set up popola-loom"
   - "set up popolaloom"
+  - "装 popola-loom"
   - "装 popolaloom"
+  - "安装 popola-loom"
   - "安装 popolaloom"
   - "/install-popola"
   - "register popola skill"
+  - "register popola-loom skill"
 ---
 
 # install-popola Skill
@@ -30,14 +35,16 @@ A standalone, installer-only Skill that walks the host agent (Cursor / Claude Co
 
 ## When to use
 
-Trigger this Skill (NOT the canonical `popolaloom` Skill) on any of:
+Trigger this Skill (NOT the canonical `popola-loom` Skill) on any of:
 
-- "install popola" / "install popolaloom" / "set up popola" / "set up popolaloom"
-- "装 popolaloom" / "安装 popolaloom" / "把 popola 装到我的电脑" / "全局安装 popola"
+- "install popola" / "install popola-loom" / "install popolaloom" / "set up popola" / "set up popola-loom" / "set up popolaloom"
+- "装 popola-loom" / "装 popolaloom" / "安装 popola-loom" / "安装 popolaloom" / "把 popola 装到我的电脑" / "全局安装 popola"
 - "/install-popola" slash command
-- "register popola skill" / "把 popola 加到 cursor / claude"
+- "register popola skill" / "register popola-loom skill" / "把 popola 加到 cursor / claude"
 
-The canonical `popolaloom/SKILL.md` (loaded after install) assumes `popola` is already on PATH and the daemon can be started. If that assumption fails on the host machine, run THIS Skill first.
+> **Note**: The user-facing Skill identifier was renamed from `popolaloom` to `popola-loom` in v0.7.1+; the legacy phrasings (`install popolaloom`, `装 popolaloom`, etc.) remain as triggers above so existing muscle memory keeps working. The Python package name `popolaloom` is unchanged.
+
+The canonical `popola-loom/SKILL.md` (loaded after install) assumes `popola` is already on PATH and the daemon can be started. If that assumption fails on the host machine, run THIS Skill first.
 
 ## Pre-flight checks (run first, in order)
 
@@ -69,9 +76,9 @@ If the user is on a corporate network that blocks PyPI, the `pip install git+...
 popola init                   # auto-detect (preferred for first-time setup)
 
 # OR explicit per-IDE (idempotent; second run prints SKIP):
-popola init cursor --global   # → ~/.cursor/skills/popolaloom/SKILL.md
-popola init claude --global   # → ~/.claude/skills/popolaloom/SKILL.md
-popola init codex             # → $CODEX_HOME/skills/popolaloom/SKILL.md
+popola init cursor --global   # → ~/.cursor/skills/popola-loom/SKILL.md
+popola init claude --global   # → ~/.claude/skills/popola-loom/SKILL.md
+popola init codex             # → $CODEX_HOME/skills/popola-loom/SKILL.md
 popola init copilot           # → <repo>/.github/copilot-instructions.md (project-only)
 popola init local             # → scaffold .local/ workspace surface
 
@@ -108,7 +115,7 @@ popola skill upgrade --target=all   # overwrite installed SKILL.md with the whee
 popola doctor                       # confirm no DRIFT
 ```
 
-`popola skill upgrade` (Stage S4 of v0.5.0+) compares SHA-256 between the wheel-shipped SKILL.md and the on-disk installed copy, takes a `.popolaloom-bak.<ts>` backup, then writes the new content. Running `popola init` instead is also safe — it's idempotent — but it WON'T overwrite an existing SKILL.md (it only writes when the file is missing).
+`popola skill upgrade` (Stage S4 of v0.5.0+) compares SHA-256 between the wheel-shipped SKILL.md and the on-disk installed copy, takes a `.popola-loom-bak.<ts>` backup, then writes the new content. Running `popola init` instead is also safe — it's idempotent — but it WON'T overwrite an existing SKILL.md (it only writes when the file is missing).
 
 ## Interactive wizard (alternative, v0.5.5+)
 
@@ -124,12 +131,12 @@ Walks the operator through per-IDE confirmations: detect IDEs → confirm instal
 |---|---|---|
 | popola CLI on PATH | `which popola` | `/usr/local/bin/popola` (or similar) |
 | Python module imports | `python -c "import popolaloom; print(popolaloom.__version__)"` | `0.7.0` |
-| Cursor Skill installed | `cat ~/.cursor/skills/popolaloom/SKILL.md \| head -1` | `---` (frontmatter) |
-| Claude Skill installed | `cat ~/.claude/skills/popolaloom/SKILL.md \| head -1` | `---` |
+| Cursor Skill installed | `cat ~/.cursor/skills/popola-loom/SKILL.md \| head -1` | `---` (frontmatter) |
+| Claude Skill installed | `cat ~/.claude/skills/popola-loom/SKILL.md \| head -1` | `---` |
 | daemon running | `popola probe` | `pid=...  uptime=...` |
 | 4-subsystem audit | `popola doctor` | `0 FAIL` rows |
 
-If every row matches the expected column, the install is complete. Move on to the canonical `popolaloom` Skill — the host agent will auto-load it the next time the user mentions "dispatch a task" / "派发任务".
+If every row matches the expected column, the install is complete. Move on to the canonical `popola-loom` Skill — the host agent will auto-load it the next time the user mentions "dispatch a task" / "派发任务".
 
 ## Common installation errors and fixes
 
@@ -137,7 +144,7 @@ If every row matches the expected column, the install is complete. Move on to th
 - **Permission denied installing globally** — use `pip install --user popolaloom` instead of system-wide; or run inside a virtualenv (`python -m venv .venv && source .venv/bin/activate && pip install popolaloom`).
 - **`popolad failed to bind socket`** — a stale socket from a previous daemon is at `~/.popola/popolad.sock`. Delete it (`rm ~/.popola/popolad.sock`) then retry `popola popolad start`. If a previous `popolad` is still running, `popola popolad stop` first.
 - **`popola doctor` reports DRIFT for the Skill** — the installed SKILL.md version differs from the wheel version (usually because the user upgraded the wheel without re-running install). Run `popola skill upgrade --target=all` to refresh.
-- **Cursor / Claude doesn't auto-load the Skill after install** — restart the IDE (or open a new chat); Skill discovery happens at startup. Confirm the file exists with `ls ~/.cursor/skills/popolaloom/SKILL.md`.
+- **Cursor / Claude doesn't auto-load the Skill after install** — restart the IDE (or open a new chat); Skill discovery happens at startup. Confirm the file exists with `ls ~/.cursor/skills/popola-loom/SKILL.md`.
 
 ## After install — what next?
 
@@ -145,14 +152,14 @@ Open Cursor or Claude Code in any project and say:
 
 - "派发任务给 cursor 跑 X" / "dispatch a task to cursor: X"
 - "list my running agents" / "popola list"
-- "check my popolaloom health" / "popola doctor"
+- "check my popola-loom health" / "popola doctor"
 
-The host agent will auto-load the canonical `popolaloom` Skill (now installed) and route the request to the right `popola` verb. From here on, this `install-popola` Skill is dormant unless the user later asks to re-install / upgrade.
+The host agent will auto-load the canonical `popola-loom` Skill (now installed) and route the request to the right `popola` verb. From here on, this `install-popola` Skill is dormant unless the user later asks to re-install / upgrade.
 
 ## Reference
 
 - **Repo**: [github.com/YoRHa-Agents/PopolaLoom](https://github.com/YoRHa-Agents/PopolaLoom)
-- **Canonical Skill (loaded after install)**: `~/.cursor/skills/popolaloom/SKILL.md` (or `~/.claude/skills/popolaloom/SKILL.md`)
+- **Canonical Skill (loaded after install)**: `~/.cursor/skills/popola-loom/SKILL.md` (or `~/.claude/skills/popola-loom/SKILL.md`)
 - **5-minute Quickstart**: `docs/QUICKSTART.md`
 - **DEMO walkthrough**: `docs/DEMO.md`
 - **User Guide**: `docs/USER_GUIDE.md`
@@ -162,4 +169,4 @@ The host agent will auto-load the canonical `popolaloom` Skill (now installed) a
 
 - This Skill's frontmatter `version` field reflects the wheel-shipped baseline at install time (currently `0.7.0`; bumped in lockstep with each minor release).
 - After upgrading the wheel, run `popola skill upgrade --target=all` to refresh the on-disk SKILL.md (otherwise `popola doctor` flags `DRIFT v0.6.1 (expected v0.7.0)` once the wheel moves ahead).
-- The companion `.popolaloom-version` marker beside this `SKILL.md` is the byte-stable input the doctor uses for the drift check; do not hand-edit it (the installer + upgrader own the file).
+- The companion `.popola-loom-version` marker beside this `SKILL.md` is the byte-stable input the doctor uses for the drift check; do not hand-edit it (the installer + upgrader own the file).

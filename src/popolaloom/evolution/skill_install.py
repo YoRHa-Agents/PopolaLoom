@@ -72,12 +72,18 @@ __all__ = [
 ]
 
 
-VERSION_MARKER_FILENAME: str = ".popolaloom-version"
+VERSION_MARKER_FILENAME: str = ".popola-loom-version"
 """Filename of the version marker written beside each SKILL.md.
 
 Mirrors DevolaFlow's ``.devola-flow-version`` (research §A.5); used by
 :mod:`popolaloom.evolution.skill_doctor` to detect drift between the
 installed skill and the running wheel.
+
+The marker filename was renamed from ``.popolaloom-version`` to
+``.popola-loom-version`` in v0.7.1+ alongside the Skill directory
+rename ``popolaloom`` → ``popola-loom``; the symbol name
+``VERSION_MARKER_FILENAME`` (and the underlying drift-detection
+contract) is unchanged.
 """
 
 
@@ -186,7 +192,7 @@ def _content_byte_match(target_path: Path, expected: bytes) -> bool:
 
 
 def _write_marker(install_dir: Path, version: str) -> None:
-    """Write the ``.popolaloom-version`` marker beside the SKILL.md.
+    """Write the ``.popola-loom-version`` marker beside the SKILL.md.
 
     Idempotent: re-writes the marker only when the on-disk content
     differs from ``version`` (so re-installing the same wheel doesn't
@@ -228,7 +234,7 @@ def install_skill(
        canonical source, return ``skipped=True`` (idempotent
        re-install).
     5. Otherwise write the SKILL.md (creating parent directories) and
-       a sibling ``.popolaloom-version`` marker.
+       a sibling ``.popola-loom-version`` marker.
 
     Args:
         target:  one of ``cursor`` / ``claude`` / ``codex`` / ``copilot``.

@@ -297,7 +297,7 @@ def test_read_existing_version_no_version_field_returns_none(tmp_path: Path) -> 
     from popolaloom.evolution.skill_upgrade import _read_existing_version
 
     versionless = tmp_path / "no-version.md"
-    versionless.write_text("---\nname: popolaloom\n---\nbody\n", encoding="utf-8")
+    versionless.write_text("---\nname: popola-loom\n---\nbody\n", encoding="utf-8")
     assert _read_existing_version(versionless) is None
 
 
@@ -307,14 +307,14 @@ def test_read_existing_version_parses_quoted_version(tmp_path: Path) -> None:
 
     quoted = tmp_path / "quoted.md"
     quoted.write_text(
-        "---\nname: popolaloom\nversion: '0.5.5'\n---\nbody\n",
+        "---\nname: popola-loom\nversion: '0.5.5'\n---\nbody\n",
         encoding="utf-8",
     )
     assert _read_existing_version(quoted) == "0.5.5"
 
     dquoted = tmp_path / "dquoted.md"
     dquoted.write_text(
-        '---\nname: popolaloom\nversion: "0.5.5"\n---\nbody\n',
+        '---\nname: popola-loom\nversion: "0.5.5"\n---\nbody\n',
         encoding="utf-8",
     )
     assert _read_existing_version(dquoted) == "0.5.5"

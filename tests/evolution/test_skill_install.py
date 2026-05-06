@@ -58,7 +58,7 @@ def test_install_skill_writes_skill_md_and_marker(
     _cwd, fake_home = isolated_home
     outcome = install_skill("cursor", scope="global")
 
-    expected_path = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    expected_path = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
 
     assert isinstance(outcome, InstallOutcome)
     assert outcome.installed is True
@@ -71,7 +71,7 @@ def test_install_skill_writes_skill_md_and_marker(
 
     assert expected_path.is_file()
     body = expected_path.read_text(encoding="utf-8")
-    assert body.startswith("---\nname: popolaloom\n")
+    assert body.startswith("---\nname: popola-loom\n")
 
     marker = expected_path.parent / VERSION_MARKER_FILENAME
     assert marker.is_file()
@@ -85,7 +85,7 @@ def test_install_skill_dry_run_does_not_write(
     _cwd, fake_home = isolated_home
     outcome = install_skill("claude", scope="global", dry_run=True)
 
-    expected_path = fake_home / ".claude" / "skills" / "popolaloom" / "SKILL.md"
+    expected_path = fake_home / ".claude" / "skills" / "popola-loom" / "SKILL.md"
 
     assert outcome.installed is False
     assert outcome.skipped is False
@@ -106,7 +106,7 @@ def test_install_skill_idempotent_second_run_skips(
     first = install_skill("cursor", scope="global")
     assert first.installed is True
 
-    target = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     mtime_before = target.stat().st_mtime
 
     second = install_skill("cursor", scope="global")
@@ -219,13 +219,13 @@ def test_parse_frontmatter_version_handles_no_version_line() -> None:
     """Frontmatter without a ``version:`` line falls back to the wheel version."""
     from popolaloom import __version__
 
-    text = "---\nname: popolaloom\ndescription: x\n---\nbody\n"
+    text = "---\nname: popola-loom\ndescription: x\n---\nbody\n"
     assert _parse_frontmatter_version(text) == __version__
 
 
 def test_parse_frontmatter_version_strips_quotes() -> None:
     """Quoted frontmatter version values are unwrapped."""
-    text = "---\nname: popolaloom\nversion: '1.2.3'\n---\nbody\n"
+    text = "---\nname: popola-loom\nversion: '1.2.3'\n---\nbody\n"
     assert _parse_frontmatter_version(text) == "1.2.3"
 
 

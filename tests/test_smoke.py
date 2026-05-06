@@ -10,13 +10,13 @@ gitignored (NOT deleted; on-disk files preserved); (2) ten per-version
 GitHub Pages site under ``docs/index.md`` + ``docs/_config.yml`` +
 the ``docs/DEMO.md`` v0.7.0 era refresh; (4) NEW standalone
 ``install-popola`` Skill at ``src/popolaloom/skills/install-popola/``
-(``SKILL.md`` + ``.popolaloom-version``; the dash in the directory
+(``SKILL.md`` + ``.popola-loom-version``; the dash in the directory
 name means this is wheel data resolved via :func:`importlib.resources.files`,
 never imported as a Python package) mirroring
 the conventional ``/install-devola-flow`` workflow used to install
 DevolaFlow globally. The smoke suite gains
 ``test_both_skills_resolve_via_importlib`` to assert BOTH the
-canonical ``popolaloom/SKILL.md`` AND the new ``install-popola/
+canonical ``popola-loom/SKILL.md`` AND the new ``install-popola/
 SKILL.md`` ship in the wheel and resolve via
 ``importlib.resources.files('popolaloom') / 'skills' / .../SKILL.md``
 (the same lookup path the ``popola init`` installer uses to read the
@@ -24,6 +24,13 @@ wheel-bundled Skill before copying it into the per-IDE install
 target). See ``RELEASE_NOTES.md`` for the closure ledger +
 verification commands; the historical archive stays in
 ``CHANGELOG.md``.
+
+v0.7.1+ rename (in lockstep with this docstring's references): the
+user-facing Skill identifier was renamed from ``popolaloom`` to
+``popola-loom`` (directory ``src/popolaloom/skills/popola-loom/``,
+frontmatter ``name: popola-loom``, version-marker filename
+``.popola-loom-version``). The Python package name ``popolaloom``
+is unchanged.
 
 v0.6.1 patch (CI hotfix — closes 3 distinct CI failures blocking the
 v0.6.0 PR): (1) mypy strict raises ~12 errors inside the vendored
@@ -150,7 +157,7 @@ in 5 stages: S1 vendored ArkTower at ``popolaloom._vendored.arktower``
 (removing the ``arktower @ file://`` direct reference per Q5-4 fallback
 to Path B vendor), S2 ``popola init`` Typer subcommand group with 8
 verbs + 8 modifiers (mirrors DevolaFlow ``devola-init`` per Q5-2 lock),
-S3 canonical SKILL.md at ``src/popolaloom/skills/popolaloom/SKILL.md``
+S3 canonical SKILL.md at ``src/popolaloom/skills/popola-loom/SKILL.md``
 (~ 10 623 chars / ~ 2 655 tokens, 7 sections, ships in wheel), S4
 ``popola skill {install,doctor,upgrade}`` subcommand group + ``popola
 doctor`` aggregate health verb (4 new verbs total), S5 docs / DEMO /
@@ -228,26 +235,28 @@ def test_import_and_version() -> None:
 
 
 def test_both_skills_resolve_via_importlib() -> None:
-    """Both Skills (canonical popolaloom + opt-in install-popola) ship in the wheel.
+    """Both Skills (canonical popola-loom + opt-in install-popola) ship in the wheel.
 
     Regression guard: v0.7.0 added the install-popola Skill at
     src/popolaloom/skills/install-popola/SKILL.md alongside the canonical
-    popolaloom Skill. Both must be discoverable via importlib.resources
+    popola-loom Skill (renamed from popolaloom in v0.7.1+; the dash in
+    the directory name means it is wheel data, never an importable
+    Python package). Both must be discoverable via importlib.resources
     (which is how popola init reads them from the wheel-bundled package
     per [tool.hatch.build.targets.wheel] packages = ["src/popolaloom"]).
     """
     from importlib.resources import files
 
-    canonical = files("popolaloom") / "skills" / "popolaloom" / "SKILL.md"
+    canonical = files("popolaloom") / "skills" / "popola-loom" / "SKILL.md"
     installer = files("popolaloom") / "skills" / "install-popola" / "SKILL.md"
 
-    assert canonical.is_file(), "canonical popolaloom SKILL.md missing from wheel data"
+    assert canonical.is_file(), "canonical popola-loom SKILL.md missing from wheel data"
     assert installer.is_file(), "install-popola SKILL.md missing from wheel data"
 
     canon_text = canonical.read_text()
     inst_text = installer.read_text()
 
-    assert "name: popolaloom" in canon_text, "canonical SKILL.md frontmatter wrong"
+    assert "name: popola-loom" in canon_text, "canonical SKILL.md frontmatter wrong"
     assert "name: install-popola" in inst_text, "install-popola SKILL.md frontmatter wrong"
 
     assert "version: 0.7.0" in canon_text, "canonical SKILL.md not at 0.7.0"

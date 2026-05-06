@@ -48,7 +48,7 @@ def _write_skill_with_version(path: Path, version: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     body = (
         "---\n"
-        "name: popolaloom\n"
+        "name: popola-loom\n"
         f"version: {version}\n"
         'description: "drift fixture"\n'
         "---\n"
@@ -63,7 +63,7 @@ def test_check_skill_health_detects_version_drift(
 ) -> None:
     """A SKILL.md with a stale version flips ``drift=True`` + records a notes entry."""
     _cwd, fake_home = isolated_home
-    target = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     _write_skill_with_version(target, "0.0.1-stale")
 
     reports = check_skill_health(targets=["cursor"])
@@ -160,7 +160,7 @@ def test_check_skill_health_handles_empty_version_value(
     target = cwd / ".github" / "copilot-instructions.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        "---\nname: popolaloom\nversion: ''\n---\nbody\n",
+        "---\nname: popola-loom\nversion: ''\n---\nbody\n",
         encoding="utf-8",
     )
 
@@ -178,7 +178,7 @@ def test_check_skill_health_handles_no_version_key(
     target = cwd / ".github" / "copilot-instructions.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        "---\nname: popolaloom\ndescription: no version\n---\nbody\n",
+        "---\nname: popola-loom\ndescription: no version\n---\nbody\n",
         encoding="utf-8",
     )
 

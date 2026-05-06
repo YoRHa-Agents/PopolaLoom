@@ -95,8 +95,14 @@ Legacy v0.3.0 alias — see :data:`CURSOR_SKILL_PATH`.
 # the ``popola init copilot`` fallback.
 
 
-_POPOLALOOM_SKILL_RELATIVE: tuple[str, ...] = ("skills", "popolaloom", "SKILL.md")
-"""Path components appended under each IDE's home / project root."""
+_POPOLALOOM_SKILL_RELATIVE: tuple[str, ...] = ("skills", "popola-loom", "SKILL.md")
+"""Path components appended under each IDE's home / project root.
+
+The user-facing Skill directory was renamed from ``popolaloom`` to
+``popola-loom`` in v0.7.1+; the Python package name ``popolaloom`` is
+unchanged.  The constant name retains the legacy ``_POPOLALOOM_``
+prefix to avoid touching every importer.
+"""
 
 
 def _cursor_global_target() -> Path:

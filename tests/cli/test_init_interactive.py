@@ -110,8 +110,8 @@ def test_interactive_wizard_happy_path_writes_detected_targets(
     assert "Install plan:" in out
     assert "Interactive setup complete." in out
 
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
-    assert (cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
+    assert (cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md").is_file()
     assert (cwd / ".github" / "copilot-instructions.md").is_file()
     assert (cwd / ".local" / "feedbacks").is_dir()
 
@@ -174,9 +174,9 @@ def test_interactive_wizard_global_scope_lands_under_home(
     ]
     result = runner.invoke(init_app, ["--interactive"], input=_build_input(answers))
     assert result.exit_code == 0, _combined_output(result)
-    target = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     assert target.is_file()
-    project_target = cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    project_target = cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     assert not project_target.exists()
 
 
@@ -202,7 +202,7 @@ def test_interactive_wizard_operator_aborts_proceed(
     result = runner.invoke(init_app, ["--interactive"], input=_build_input(answers))
     assert result.exit_code == 0, _combined_output(result)
     assert "Aborted by operator" in _combined_output(result)
-    assert not (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").exists()
+    assert not (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").exists()
 
 
 # ── 6. fresh repo (nothing detected) → cursor-friendly defaults ───────────
@@ -232,4 +232,4 @@ def test_interactive_wizard_no_detection_offers_cursor_default(
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
     assert "Auto-detected: (none" in out
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()

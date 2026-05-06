@@ -74,24 +74,24 @@ def test_skill_install_cursor_global_writes_skill(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """``install --target=cursor --global`` writes ~/.cursor/skills/popolaloom/SKILL.md."""
+    """``install --target=cursor --global`` writes ~/.cursor/skills/popola-loom/SKILL.md."""
     _cwd, fake_home = isolated_home
     result = runner.invoke(skill_app, ["install", "--target=cursor", "--global"])
     assert result.exit_code == 0, _combined(result)
-    target = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     assert target.is_file()
-    assert target.read_text(encoding="utf-8").startswith("---\nname: popolaloom\n")
+    assert target.read_text(encoding="utf-8").startswith("---\nname: popola-loom\n")
 
 
 def test_skill_install_claude_project_writes_skill(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """``install --target=claude --project`` writes <cwd>/.claude/skills/popolaloom/SKILL.md."""
+    """``install --target=claude --project`` writes <cwd>/.claude/skills/popola-loom/SKILL.md."""
     cwd, _fake_home = isolated_home
     result = runner.invoke(skill_app, ["install", "--target=claude", "--project"])
     assert result.exit_code == 0, _combined(result)
-    target = cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md"
+    target = cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md"
     assert target.is_file()
 
 
@@ -99,11 +99,11 @@ def test_skill_install_codex_uses_home_fallback(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """``install --target=codex --global`` writes ~/.codex/skills/popolaloom/SKILL.md."""
+    """``install --target=codex --global`` writes ~/.codex/skills/popola-loom/SKILL.md."""
     _cwd, fake_home = isolated_home
     result = runner.invoke(skill_app, ["install", "--target=codex", "--global"])
     assert result.exit_code == 0, _combined(result)
-    target = fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md"
     assert target.is_file()
 
 
@@ -121,9 +121,9 @@ def test_skill_install_target_all_installs_every_target(
     result = runner.invoke(skill_app, ["install", "--target=all", "--project"])
     assert result.exit_code == 0, _combined(result)
 
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
-    assert (cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md").is_file()
-    assert (fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
+    assert (cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md").is_file()
+    assert (fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md").is_file()
     assert (cwd / ".github" / "copilot-instructions.md").is_file()
 
 
@@ -140,7 +140,7 @@ def test_skill_install_dry_run_does_not_write(
     assert result.exit_code == 0, _combined(result)
     out = _combined(result)
     assert "DRY" in out
-    assert not (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").exists()
+    assert not (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").exists()
 
 
 def test_skill_install_json_emits_machine_readable_array(
@@ -185,10 +185,10 @@ def test_skill_upgrade_overwrites_existing_skill(
 ) -> None:
     """``popola skill upgrade`` force-replaces stale SKILL.md content."""
     _cwd, fake_home = isolated_home
-    target = fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        "---\nname: popolaloom\nversion: 0.0.1-stale\n---\nold body\n",
+        "---\nname: popola-loom\nversion: 0.0.1-stale\n---\nold body\n",
         encoding="utf-8",
     )
 
@@ -196,7 +196,7 @@ def test_skill_upgrade_overwrites_existing_skill(
     assert result.exit_code == 0, _combined(result)
     body = target.read_text(encoding="utf-8")
     assert "0.0.1-stale" not in body
-    assert body.startswith("---\nname: popolaloom\n")
+    assert body.startswith("---\nname: popola-loom\n")
 
 
 def test_skill_install_invalid_target_errors(
@@ -260,7 +260,7 @@ def test_skill_upgrade_dry_run_does_not_write(
     )
     assert result.exit_code == 0, _combined(result)
     assert "DRY" in _combined(result)
-    assert not (fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md").exists()
+    assert not (fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md").exists()
 
 
 def test_skill_upgrade_json_emits_array(
