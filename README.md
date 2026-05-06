@@ -80,6 +80,28 @@ popola dispatch "review src/foo.py for bugs" --cli=codex \
 
 Supported KEYs per adapter: see [`docs/USER_GUIDE.md#adapter-passthrough`](docs/USER_GUIDE.md#adapter-passthrough).
 
+## Hands-off envelope (v0.7.1+ foundation, v0.7.2+ E3, v0.7.3+ replay/feedback)
+
+Starting in v0.7.2, every `popola dispatch` call writes a **file-based handoff envelope** to `.local/.agent/handoff/<handoff_id>.md` (gitignored) and injects `POPOLA_HANDOFF_FILE` + `POPOLA_HANDOFF_ID` into the spawned sub-CLI's environment. The envelope is a Markdown file with YAML front-matter (cat-friendly debugging) and the prompt as body — auditable, replayable, addressable by content-derived id (`<cli>-<slug>-<8hex>`).
+
+```bash
+# Each dispatch writes an envelope (and the sub-CLI sees it via env var)
+popola dispatch "fix bug in foo.py" --cli=cursor
+popola handoff list
+# ┃ handoff_id                             ┃ size  ┃ mtime               ┃ ...
+# │ cursor-fix-bug-in-foo-py-3a7f9c1d      │ 412 B │ 2026-05-06 14:30:00 │
+popola handoff show cursor-fix-bug-in-foo-py-3a7f9c1d
+# (raw Markdown — front-matter + prompt body)
+
+# Replay the same dispatch later (v0.7.3+) — exact re-run, no retyping
+popola dispatch --replay cursor-fix-bug-in-foo-py-3a7f9c1d
+
+# Snapshot a finished task's envelope to .local/.agent/archive/<task_id>/
+popola handoff archive cursor-fix-bug-in-foo-py-3a7f9c1d cursor-23e74ec18917
+```
+
+The envelope is the **single source of truth** for dispatch payloads (E3 internal unification — `dispatch_task` is now a thin wrapper that builds an envelope and delegates to `dispatch_with_envelope`). HITL feedback travels in the same shape via `FeedbackEnvelope` (Q7=yes, v0.7.3+). The legacy `RelayHandoffEnvelope` (v0.3.0) is bridge-converted via `to_handoff_envelope()` so existing relay-based code paths keep working unchanged. Full design: [`docs/USER_GUIDE.md#hands-off-envelope`](docs/USER_GUIDE.md#hands-off-envelope).
+
 ## Documentation
 
 | Doc | Audience | Purpose |

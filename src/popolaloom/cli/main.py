@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -224,8 +225,15 @@ def list_cli() -> None:
 
 @app.command()
 def dispatch(
-    prompt: str = typer.Argument(..., help="Prompt string forwarded to the chosen CLI."),
-    cli: str = typer.Option(..., "--cli", help="CLI adapter name (cursor/claude/codex/...)."),
+    prompt: str = typer.Argument(
+        "",
+        help="Prompt string forwarded to the chosen CLI. May be empty when --replay is set.",
+    ),
+    cli: str = typer.Option(
+        "",
+        "--cli",
+        help="CLI adapter name (cursor/claude/codex/...). May be empty when --replay is set.",
+    ),
     cwd: Path | None = typer.Option(  # noqa: B008
         None,
         "--cwd",
@@ -240,6 +248,16 @@ def dispatch(
         None,
         "--events-dir",
         help="Override events_dir (advisory; daemon owns actual write path). R-014 part.",
+    ),
+    replay: str = typer.Option(
+        "",
+        "--replay",
+        help=(
+            "Replay a previously written handoff envelope by id "
+            "(e.g. cursor-fix-bug-foo-py-3a7f9c1d). When set, overrides "
+            "prompt / --cli / --cwd / --cli-flag from the envelope's "
+            "stored values (v0.7.3+)."
+        ),
     ),
     wait: bool = typer.Option(
         False,
@@ -257,8 +275,29 @@ def dispatch(
         help="Emit machine-readable JSON instead of a plain task_id line.",
     ),
 ) -> None:
-    """Dispatch a new task to popolad and (optionally) wait for completion."""
-    extra = _parse_cli_flags(cli_flag)
+    """Dispatch a new task to popolad and (optionally) wait for completion.
+
+    v0.7.3+ ``--replay HANDOFF_ID`` reads a previously written envelope from
+    ``$POPOLA_HANDOFF_DIR`` (or ``.local/.agent/handoff/``) and uses its
+    ``target_cli`` / ``prompt`` / ``cwd`` / ``adapter_extra`` as the
+    dispatch payload — exact replay of a prior dispatch (or a relay'd /
+    HITL'd one) without re-typing the prompt or its flags.
+    """
+    if replay:
+        _resolved = _resolve_replay(replay, prompt, cli, cwd, cli_flag)
+        prompt = _resolved.prompt
+        cli = _resolved.cli
+        cwd = _resolved.cwd
+        extra = _resolved.adapter_extra
+    else:
+        if not prompt:
+            typer.echo("error: missing prompt (or use --replay HANDOFF_ID)", err=True)
+            raise typer.Exit(code=2)
+        if not cli:
+            typer.echo("error: --cli is required (or use --replay HANDOFF_ID)", err=True)
+            raise typer.Exit(code=2)
+        extra = _parse_cli_flags(cli_flag)
+
     if events_dir is not None:
         extra.setdefault("__events_dir", str(events_dir))
 
@@ -698,6 +737,70 @@ def _parse_cli_flags(flags: list[str]) -> dict[str, Any]:
             parsed = value
         result[key] = parsed
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayPayload:
+    """Resolved dispatch parameters from a `--replay HANDOFF_ID` lookup."""
+
+    cli: str
+    prompt: str
+    cwd: Path | None
+    adapter_extra: dict[str, Any]
+
+
+def _resolve_replay(
+    handoff_id: str,
+    user_prompt: str,
+    user_cli: str,
+    user_cwd: Path | None,
+    user_cli_flag: list[str],
+) -> _ReplayPayload:
+    """Load envelope by id and produce a dispatch payload.
+
+    v0.7.3+ ``popola dispatch --replay <handoff_id>`` reads the local
+    envelope file and uses its stored fields (``target_cli`` / ``prompt`` /
+    ``cwd`` / ``adapter_extra``) as the dispatch payload — an exact replay
+    of a prior dispatch.
+
+    If the user also passed ``prompt`` / ``--cli`` / ``--cwd`` /
+    ``--cli-flag`` on the same invocation we WARN to stderr that those are
+    overridden by the envelope (No Silent Failures — the user gets
+    explicit feedback that their inline args were ignored).
+    """
+    from popolaloom.handoff import load_envelope
+
+    try:
+        env = load_envelope(handoff_id)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo(f"error: invalid handoff_id: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    overrides: list[str] = []
+    if user_prompt:
+        overrides.append(f"prompt={user_prompt!r}")
+    if user_cli:
+        overrides.append(f"--cli={user_cli!r}")
+    if user_cwd is not None:
+        overrides.append(f"--cwd={user_cwd!s}")
+    if user_cli_flag:
+        overrides.append(f"--cli-flag (×{len(user_cli_flag)})")
+
+    if overrides:
+        typer.echo(
+            f"warning: --replay overrides inline {', '.join(overrides)} with envelope values",
+            err=True,
+        )
+
+    return _ReplayPayload(
+        cli=env.target_cli,
+        prompt=env.prompt,
+        cwd=Path(env.cwd) if env.cwd else None,
+        adapter_extra=dict(env.adapter_extra) if env.adapter_extra else {},
+    )
 
 
 def _format_event(ev: dict[str, Any]) -> str:

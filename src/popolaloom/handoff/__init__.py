@@ -18,6 +18,14 @@ from popolaloom.handoff.archive import (
     archive_envelope,
 )
 from popolaloom.handoff.envelope import HANDOFF_SCHEMA_VERSION, HandoffEnvelope
+from popolaloom.handoff.feedback import (
+    DEFAULT_FEEDBACK_FILE_PREFIX,
+    FEEDBACK_SCHEMA_VERSION,
+    FeedbackEnvelope,
+    feedback_path,
+    generate_feedback_id,
+    write_feedback,
+)
 from popolaloom.handoff.hash import content_hash, generate_handoff_id, slugify_prompt
 from popolaloom.handoff.loader import (
     HandoffSummary,
@@ -32,19 +40,25 @@ from popolaloom.handoff.writer import (
 )
 
 __all__ = [
-    "HANDOFF_SCHEMA_VERSION",
     "DEFAULT_ARCHIVE_ROOT",
+    "DEFAULT_FEEDBACK_FILE_PREFIX",
     "DEFAULT_HANDOFF_ROOT",
+    "FEEDBACK_SCHEMA_VERSION",
+    "FeedbackEnvelope",
+    "HANDOFF_SCHEMA_VERSION",
     "HandoffEnvelope",
     "HandoffSummary",
     "archive_dir_for",
     "archive_envelope",
     "content_hash",
     "envelope_path",
+    "feedback_path",
+    "generate_feedback_id",
     "generate_handoff_id",
     "list_active_envelopes",
     "load_envelope",
     "resolve_envelope_path",
     "slugify_prompt",
     "write_envelope",
+    "write_feedback",
 ]
