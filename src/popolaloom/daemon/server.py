@@ -74,6 +74,11 @@ from popolaloom.daemon.graph import GraphCallbacks, build_main_graph
 from popolaloom.daemon.graph import TaskState as GraphTaskState
 from popolaloom.daemon.state import StateStore, TaskHandle, TaskState
 from popolaloom.daemon.supervisor import Supervisor
+from popolaloom.handoff import (
+    HandoffEnvelope,
+    generate_handoff_id,
+    write_envelope,
+)
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -97,6 +102,29 @@ callbacks (``(cli, prompt, cwd) -> argv``) by catching ``TypeError`` so
 v0.0.1 fakes in test fixtures do not break — but the *type alias* is
 strict 4-arg per AC #8 of v0.2.0 Stage E.
 """
+
+
+def _resolve_handoff_path(env: dict[str, str] | None) -> str | None:
+    """Resolve the active handoff envelope path for v0.7.2 C5 flag-injection.
+
+    Order of precedence:
+
+    1. ``env["POPOLA_HANDOFF_FILE"]`` if set (this is what
+       :meth:`Popolad.dispatch_with_envelope` injects into the spawn env).
+    2. ``os.environ["POPOLA_HANDOFF_FILE"]`` if the caller didn't pass an
+       explicit env dict (legacy ``dispatch_task`` paths that don't
+       construct a merged env).
+    3. ``None`` — no flag will be injected.
+
+    The flag injection itself is gated on ``extra["popola_handoff_flag"]``
+    in :meth:`Popolad._call_adapter`; this helper only resolves WHERE the
+    file lives so the flag value is correct when injection fires.
+    """
+    if env is not None:
+        path = env.get("POPOLA_HANDOFF_FILE")
+        if path:
+            return path
+    return os.environ.get("POPOLA_HANDOFF_FILE")
 
 
 def _default_events_dir() -> Path:
@@ -270,6 +298,118 @@ class Popolad:
                 return self.event_log(handle.task_id)
         return None
 
+    def dispatch_with_envelope(
+        self,
+        envelope: HandoffEnvelope,
+        *,
+        adapter: AdapterCallback | None = None,
+        base_env: dict[str, str] | None = None,
+        handoff_root: Path | str | None = None,
+    ) -> str:
+        """Canonical dispatch entry — v0.8.0 hands-off envelope (E3 internal unification).
+
+        New in v0.7.2 (per ``feedback_for_v0.8.0.md`` item #1, user-decided
+        Q5=E3): the file-backed envelope is the single source of truth for
+        dispatch payload. This method:
+
+        1. Writes the envelope to ``<handoff_root>/<handoff_id>.md`` (atomic via
+           :func:`popolaloom.handoff.write_envelope`; ``handoff_root`` resolved as
+           explicit arg → ``$POPOLA_HANDOFF_DIR`` env → ``DEFAULT_HANDOFF_ROOT``
+           = ``.local/.agent/handoff``).
+        2. Builds a env overlay containing ``POPOLA_HANDOFF_FILE`` (absolute
+           path) + ``POPOLA_HANDOFF_ID`` (slug-hash). The overlay always takes
+           precedence over caller-provided ``base_env`` to prevent
+           handoff-impersonation.
+        3. Delegates to the existing :meth:`_dispatch_via_graph` /
+           :meth:`_dispatch_legacy` with the merged env, target_cli, prompt,
+           cwd, and adapter_extra all sourced from the envelope.
+
+        :meth:`dispatch_task` is now a thin wrapper that builds an envelope
+        from kwargs and calls this method (E3 internal unification — there is
+        only one canonical dispatch path internally; the kwargs surface is
+        preserved for backward compat with rpc.py / cli/main.py / tests).
+
+        Args:
+            envelope: validated :class:`HandoffEnvelope` (Pydantic v2). Caller
+                is responsible for building it; if you have a raw prompt /
+                cli pair, use :meth:`dispatch_task` instead which builds the
+                envelope for you.
+            adapter: optional adapter callback override; defaults to
+                ``self._adapter`` injected at __init__.
+            base_env: optional base environment dict (typically a caller-
+                provided sandbox env); merged with the handoff overlay so
+                the child process sees both. ``None`` means the daemon's
+                ``os.environ`` is the base (typical case).
+            handoff_root: optional override for the active root directory.
+                ``None`` means resolve from ``$POPOLA_HANDOFF_DIR`` env var,
+                falling back to :data:`popolaloom.handoff.DEFAULT_HANDOFF_ROOT`.
+
+        Returns:
+            str: ``task_id`` (popola internal id, distinct from
+            ``envelope.handoff_id``; the two are linked via
+            ``extra["_handoff_envelope_path"]`` + the env vars).
+
+        Raises:
+            TypeError: if ``envelope`` is not a :class:`HandoffEnvelope`.
+            RuntimeError: if no adapter is available (same as
+                :meth:`dispatch_task`).
+            ValueError: if adapter returns invalid cmd (same).
+            OSError: if envelope file cannot be written (re-raised, No
+                Silent Failures).
+        """
+        if not isinstance(envelope, HandoffEnvelope):
+            raise TypeError(
+                f"dispatch_with_envelope expects HandoffEnvelope, "
+                f"got {type(envelope).__name__}"
+            )
+
+        # Resolve handoff dir: explicit arg > $POPOLA_HANDOFF_DIR > default
+        if handoff_root is None:
+            env_dir = os.environ.get("POPOLA_HANDOFF_DIR")
+            if env_dir:
+                handoff_root = env_dir
+        env_path = write_envelope(envelope, base_dir=handoff_root)
+
+        # Build env overlay; handoff vars always take precedence to avoid
+        # caller-provided POPOLA_HANDOFF_* keys impersonating the dispatch.
+        overlay = {
+            "POPOLA_HANDOFF_FILE": str(env_path.resolve()),
+            "POPOLA_HANDOFF_ID": envelope.handoff_id,
+        }
+        merged_env = (
+            {**os.environ, **overlay}
+            if base_env is None
+            else {**base_env, **overlay}
+        )
+
+        cwd = Path(envelope.cwd) if envelope.cwd else None
+        # Adapter-extra is the user-controlled passthrough; envelope-internal
+        # bookkeeping (path, id) flows via env vars (POPOLA_HANDOFF_FILE/ID)
+        # so adapters / supervisors don't need to peek at the extra dict shape.
+        # Pass None when empty so 3-arg legacy adapter fallback still triggers
+        # in _call_adapter (test fixtures from v0.0.1 still rely on it).
+        extra: dict[str, Any] | None = (
+            dict(envelope.adapter_extra) if envelope.adapter_extra else None
+        )
+
+        if self._use_graph:
+            return self._dispatch_via_graph(
+                envelope.target_cli,
+                envelope.prompt,
+                cwd,
+                merged_env,
+                adapter,
+                extra,
+            )
+        return self._dispatch_legacy(
+            envelope.target_cli,
+            envelope.prompt,
+            cwd,
+            merged_env,
+            adapter,
+            extra,
+        )
+
     def dispatch_task(
         self,
         cli: str,
@@ -281,33 +421,27 @@ class Popolad:
     ) -> str:
         """Dispatch a new task and return its ``task_id``.
 
+        v0.7.2 (Stage v0.8.0 patch 2, E3 internal unification): this method
+        is now a thin wrapper that builds a :class:`HandoffEnvelope` from the
+        kwargs and delegates to :meth:`dispatch_with_envelope`. The public
+        signature is preserved unchanged so rpc.py / cli/main.py / tests
+        keep working without modification.
+
+        For new code prefer :meth:`dispatch_with_envelope` directly — it
+        gives you control over the full envelope (including audit fields
+        like ``reason`` / ``tags`` that the kwargs surface does not expose).
+
         v0.2.0 Stage B: routes through LangGraph by default
         (``self._use_graph=True``); legacy direct path is kept behind the
-        flag for Stage C bootstrap. **Public signature unchanged** —
-        rpc.py still calls ``popolad.dispatch_task(cli, prompt, cwd, env,
-        adapter, extra)`` via :func:`asyncio.to_thread`.
-
-        Steps (graph path):
-
-        1. Generate ``task_id`` (uuid4 hex 前 12 位 + ``cli`` 前缀)。
-        2. 通过 adapter 把 (cli, prompt, cwd, extra) 翻译成 argv list (validate)。
-        3. 尝试在 ArkTower 中持久化 task (Stage C 真接入; Stage A
-           仍是 schema-parity 占位; 失败时返 None + persisted=False)。
-        4. 创建 :class:`EventLog`; 受 ``_event_logs_lock`` 保护 (R-006)。
-        5. 注册 :class:`TaskHandle` 到 StateStore (state=RUNNING)。
-        6. 写 ``task.dispatched`` CloudEvents 事件。
-        7. 构建 LangGraph 主图 (dispatch → spawn → wait → emit_terminal),
-           keyed by ``thread_id = task_id``; 后台线程跑 ``graph.invoke``。
-        8. 返回 task_id (不等待子进程)。
-
-        Steps (legacy path, ``POPOLA_USE_GRAPH=0``): same as v0.0.1 — see
-        :meth:`_dispatch_legacy` for the inline body.
+        flag for Stage C bootstrap.
 
         Args:
             cli: CLI 名 (``cursor`` / ``claude`` / ``codex`` / 测试中可任意)。
             prompt: 给 CLI 的提示词 (透传给 adapter 由后者翻译)。
             cwd: 子进程工作目录, ``None`` 沿用 popolad CWD。
-            env: 子进程环境变量字典, ``None`` 继承父进程。
+            env: 子进程环境变量字典; 与 envelope 注入的
+                ``POPOLA_HANDOFF_FILE`` / ``POPOLA_HANDOFF_ID`` overlay 合并
+                (overlay 优先)。``None`` 表示用 ``os.environ`` 作 base。
             adapter: 临时 adapter 覆盖 (优先级高于 ``__init__`` 时注入的)。
             extra: 可选 ``--cli-flag KEY=VAL`` 解析结果, 透传给 adapter。
 
@@ -317,11 +451,28 @@ class Popolad:
 
         Raises:
             RuntimeError: 当未注入 adapter 且本次也未传时。
-            ValueError: 当 adapter 返回非 list[str] / 空 list。
+            ValueError: 当 adapter 返回非 list[str] / 空 list, 或当
+                ``prompt`` 为空导致 envelope 验证失败。
         """
-        if self._use_graph:
-            return self._dispatch_via_graph(cli, prompt, cwd, env, adapter, extra)
-        return self._dispatch_legacy(cli, prompt, cwd, env, adapter, extra)
+        # E3 internal unification: every dispatch goes through
+        # dispatch_with_envelope. The envelope is the single source of truth.
+        envelope = HandoffEnvelope(
+            handoff_id=generate_handoff_id(
+                cli,
+                prompt,
+                adapter_extra=extra,
+            ),
+            created_at=datetime.now(UTC),
+            target_cli=cli,
+            prompt=prompt,
+            cwd=str(cwd) if cwd is not None else None,
+            adapter_extra=extra or {},
+        )
+        return self.dispatch_with_envelope(
+            envelope,
+            adapter=adapter,
+            base_env=env,
+        )
 
     def _dispatch_legacy(
         self,
@@ -347,7 +498,10 @@ class Popolad:
         task_id = self._make_task_id(cli)
         cwd_path = Path(cwd) if cwd is not None else None
 
-        cmd = self._call_adapter(adapter_fn, cli, prompt, cwd_path, extra)
+        handoff_path = _resolve_handoff_path(env)
+        cmd = self._call_adapter(
+            adapter_fn, cli, prompt, cwd_path, extra, handoff_path=handoff_path
+        )
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
@@ -436,7 +590,10 @@ class Popolad:
         task_id = self._make_task_id(cli)
         cwd_path = Path(cwd) if cwd is not None else None
 
-        cmd = self._call_adapter(adapter_fn, cli, prompt, cwd_path, extra)
+        handoff_path = _resolve_handoff_path(env)
+        cmd = self._call_adapter(
+            adapter_fn, cli, prompt, cwd_path, extra, handoff_path=handoff_path
+        )
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
@@ -535,8 +692,11 @@ class Popolad:
         prompt: str,
         cwd: Path | None,
         extra: dict[str, Any] | None,
+        *,
+        handoff_path: str | None = None,
     ) -> list[str]:
-        """Call ``adapter_fn`` with the canonical 4-arg signature.
+        """Call ``adapter_fn`` with the canonical 4-arg signature, then
+        optionally inject ``--popola-handoff-file <path>`` (v0.7.2 C5 双通道).
 
         The :data:`AdapterCallback` type alias is strict 4-arg
         ``(cli, prompt, cwd, extra) -> argv`` (Stage E R-009 closure),
@@ -552,13 +712,34 @@ class Popolad:
           them — No Silent Failures rule); ``TypeError`` propagates.
         - When ``extra`` is ``None``, try 4-arg first; on ``TypeError``
           fall back to 3-arg (legacy fixtures).
+
+        v0.7.2 (per design D-080 Q3=C5 双通道): after the adapter returns
+        a base ``cmd``, if ``handoff_path`` is non-None **and** the user
+        opted in via ``extra["popola_handoff_flag"] = True``, append
+        ``["--popola-handoff-file", handoff_path]`` to the cmd. This is
+        opt-in because vanilla ``cursor-agent`` / ``claude`` / ``codex``
+        do not yet recognise the flag — auto-injecting would break their
+        argv parsing. The env-var channel (``POPOLA_HANDOFF_FILE``) is
+        always live and is the primary delivery; the flag is a
+        forward-compat hook for sub-CLIs that gain native support later.
         """
         if extra is not None:
-            return adapter_fn(cli, prompt, cwd, extra)
-        try:
-            return adapter_fn(cli, prompt, cwd, None)
-        except TypeError:
-            return adapter_fn(cli, prompt, cwd)  # type: ignore[call-arg]
+            cmd = adapter_fn(cli, prompt, cwd, extra)
+        else:
+            try:
+                cmd = adapter_fn(cli, prompt, cwd, None)
+            except TypeError:
+                cmd = adapter_fn(cli, prompt, cwd)  # type: ignore[call-arg]
+
+        # v0.7.2 C5 flag-channel injection (opt-in via popola_handoff_flag).
+        if (
+            handoff_path is not None
+            and extra is not None
+            and bool(extra.get("popola_handoff_flag"))
+        ):
+            cmd = list(cmd) + ["--popola-handoff-file", handoff_path]
+
+        return cmd
 
     def _resolve_events_dir(self, extra: dict[str, Any] | None) -> Path:
         """Resolve the events directory for a single dispatch (R-014 closure).
@@ -1368,7 +1549,28 @@ class Popolad:
                 cwd: Path | None,
                 extra: dict[str, Any] | None,
             ) -> list[str]:
-                return outer._call_adapter(adapter_fn, cli, prompt, cwd, extra)
+                # v0.7.2 C5: re-resolve handoff path from os.environ since
+                # the graph callback doesn't have direct access to the
+                # outer dispatch's `env` dict; we relied on the daemon's
+                # process env carrying POPOLA_HANDOFF_FILE only when the
+                # parent dispatch_with_envelope set it via merged_env.
+                # That overlay landed in the SUBPROCESS env, not the
+                # daemon's own env, so this fallback returns None unless
+                # a higher-level caller exported the var explicitly. The
+                # graph re-call happens AFTER the actual dispatch already
+                # built the cmd, so a None here is safe — it just means
+                # the graph-mode introspective re-call won't double-add
+                # the flag (the actual cmd already has it from the first
+                # _call_adapter invocation).
+                handoff_path = _resolve_handoff_path(None)
+                return outer._call_adapter(
+                    adapter_fn,
+                    cli,
+                    prompt,
+                    cwd,
+                    extra,
+                    handoff_path=handoff_path,
+                )
 
             def supervisor_spawn(
                 self,

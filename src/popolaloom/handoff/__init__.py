@@ -2,11 +2,12 @@
 
 Per design doc D-080 (v0.8.0 plan, user-decided 2026-05-06):
 - Q1=A4 Markdown front-matter, Q2=B4 slug-hash, Q4=D4 active+archive 双层
-- v0.7.1 (this slice): schema + hash only; writer/archive in v0.7.1 next slice;
-  dispatch_with_envelope unification in v0.7.2.
-- v0.7.1 (patch 2 — this commit): adds the ``writer`` (atomic active-root
-  landing) and ``archive`` (terminal-state copy to ``<task_id>/`` audit
-  tree) layers.  Dispatch glue still rides v0.7.2.
+- v0.7.1 (foundation slice): schema + hash + writer + archive.
+- v0.7.2 (THIS slice): adds ``loader`` (read-side helpers — list active /
+  resolve path / load + parse) so the new ``popola handoff`` CLI subcommand
+  group + ``Popolad.dispatch_with_envelope`` E3-internal-unification can
+  consume envelopes back from disk.  Dispatch glue + adapter env+flag
+  injection also lands here (see :class:`popolaloom.daemon.server.Popolad`).
 """
 
 from __future__ import annotations
@@ -18,6 +19,12 @@ from popolaloom.handoff.archive import (
 )
 from popolaloom.handoff.envelope import HANDOFF_SCHEMA_VERSION, HandoffEnvelope
 from popolaloom.handoff.hash import content_hash, generate_handoff_id, slugify_prompt
+from popolaloom.handoff.loader import (
+    HandoffSummary,
+    list_active_envelopes,
+    load_envelope,
+    resolve_envelope_path,
+)
 from popolaloom.handoff.writer import (
     DEFAULT_HANDOFF_ROOT,
     envelope_path,
@@ -29,11 +36,15 @@ __all__ = [
     "DEFAULT_ARCHIVE_ROOT",
     "DEFAULT_HANDOFF_ROOT",
     "HandoffEnvelope",
+    "HandoffSummary",
     "archive_dir_for",
     "archive_envelope",
     "content_hash",
     "envelope_path",
     "generate_handoff_id",
+    "list_active_envelopes",
+    "load_envelope",
+    "resolve_envelope_path",
     "slugify_prompt",
     "write_envelope",
 ]

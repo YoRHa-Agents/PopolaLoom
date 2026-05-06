@@ -77,6 +77,7 @@ def _register_subcommand_groups() -> None:
     """
     from popolaloom.cli.doctor_cmd import doctor_command
     from popolaloom.cli.eval import app as eval_app
+    from popolaloom.cli.handoff_cmd import app as handoff_app
     from popolaloom.cli.init_cmd import app as init_app
     from popolaloom.cli.popolad import app as popolad_app
     from popolaloom.cli.skill_cmd import app as skill_app
@@ -92,6 +93,11 @@ def _register_subcommand_groups() -> None:
         skill_app,
         name="skill",
         help="Install / audit / upgrade the PopolaLoom Skill",
+    )
+    app.add_typer(
+        handoff_app,
+        name="handoff",
+        help="Inspect / archive on-disk handoff envelopes (v0.7.2+)",
     )
     app.command(name="doctor")(doctor_command)
 
