@@ -231,7 +231,7 @@ import popolaloom
 def test_import_and_version() -> None:
     """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
     assert popolaloom is not None
-    assert popolaloom.__version__ == "0.7.2"
+    assert popolaloom.__version__ == "0.7.3"
 
 
 def test_both_skills_resolve_via_importlib() -> None:
@@ -259,5 +259,5 @@ def test_both_skills_resolve_via_importlib() -> None:
     assert "name: popola-loom" in canon_text, "canonical SKILL.md frontmatter wrong"
     assert "name: install-popola" in inst_text, "install-popola SKILL.md frontmatter wrong"
 
-    assert "version: 0.7.2" in canon_text, "canonical SKILL.md not at 0.7.2"
-    assert "version: 0.7.2" in inst_text, "install-popola SKILL.md not at 0.7.2"
+    assert "version: 0.7.3" in canon_text, "canonical SKILL.md not at 0.7.3"
+    assert "version: 0.7.3" in inst_text, "install-popola SKILL.md not at 0.7.3"

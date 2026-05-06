@@ -10,7 +10,22 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.7.3.)
+(intentionally empty — accumulating for v0.8.0 final bump.)
+
+## [0.7.3] — 2026-05-06
+
+### Added
+
+- **`popola dispatch --replay <handoff_id>`**（v0.7.3，feedback_for_v0.8.0.md item #1 third slice）。读取本地写好的 envelope 文件（`$POPOLA_HANDOFF_DIR` → `.local/.agent/handoff/` 解析顺序），用其 `target_cli` / `prompt` / `cwd` / `adapter_extra` 重派——slug-hash 寻址保证相同内容 → 相同 id，replay 完全确定性。命令行同时传 `prompt` / `--cli` / `--cwd` / `--cli-flag` 时打 stderr warning 提示被覆盖（No Silent Failures）。`tests/cli/test_dispatch_replay.py` 8 个回归测试。
+- **`popolaloom.handoff.FeedbackEnvelope`（Q7=yes，HITL feedback envelope 基础层）**。Pydantic v2 schema 镜像 `HandoffEnvelope` 设计（`extra="forbid"`、`schema_version="1"`），承载用户对 `LangGraph.interrupt()` prompt 的回答；ID 形如 `<task_id>-fb-<8hex>`，与 dispatch envelope 在同一 active 目录共存而不冲突（`-fb-` 中缀做区分）。模块表面：`FeedbackEnvelope`, `generate_feedback_id`, `write_feedback`, `feedback_path`, `FEEDBACK_SCHEMA_VERSION`, `DEFAULT_FEEDBACK_FILE_PREFIX`。**注意**：v0.7.3 仅落地 schema + writer 基础层；live `popola feedback ...` CLI 自动持久化推到 v0.7.4 的 `--persist` flag（避免 daemon-side 协调风险）。25 个新测试。
+- **`popolaloom.daemon.primitives.to_handoff_envelope` 桥接函数**：把 v0.3.0 `RelayHandoffEnvelope` 转成 v0.8.0 `HandoffEnvelope`。字段映射：`source_task_id → parent_task_id`，`payload → adapter_extra["_relay_payload"]`，`tags=["relay-bridged"]` 标记。`relay()` primitive 本身保持不动（旧路径完全兼容）；新代码可调用桥接 + `write_envelope` 给 relay 做 file-based audit。13 个回归测试。
+- **README.md "Hands-off envelope" 章节**：放在 "Documentation" 之前的一个独立主章节，含简短示例（dispatch + handoff list + show + replay + archive 一站式）。
+- **docs/USER_GUIDE.md "Hands-off envelope" 完整章节**：why a file（argv 限制 / audit / replay / cross-CLI）、envelope shape (Markdown FM)、`popola handoff` CLI 表、C5 双通道注入解释、HITL feedback envelope 基础层说明、legacy `RelayHandoffEnvelope` 桥接说明、programmatic API 示例、完整模块表面表（每个公开 symbol 的 kind + purpose）。
+- **SKILL.md (popola-loom)** Quick reference 表追加 4 行：`popola dispatch --replay`, `popola handoff list/show/archive`。
+
+### Changed
+
+- `tests/test_smoke.py` 版本断言 `0.7.2` → `0.7.3`。
 
 ## [0.7.2] — 2026-05-06
 
