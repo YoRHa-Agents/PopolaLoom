@@ -10,7 +10,35 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.8.0 final bump.)
+(intentionally empty — accumulating for v0.8.x.)
+
+## [0.8.0] — 2026-05-06
+
+**Theme**: documentation-only minor bump that promotes the v0.7.1 → v0.7.3 hands-off envelope feature to a stable surface. **No new code, no breaking changes**: every Python API and CLI verb shipped in v0.7.3 is preserved verbatim. The version bump signals semantic stability — `popolaloom.handoff.HandoffEnvelope` schema_version="1" + the dispatch/replay/feedback/archive surface are no longer "experimental v0.7.x" but stable v0.8.x building blocks.
+
+The hands-off envelope feature in aggregate (per `feedback_for_v0.8.0.md` item #1):
+
+- **Q1=A4 Markdown front-matter** — every dispatch payload is a `cat`-friendly `<id>.md` file under `.local/.agent/handoff/` (gitignored), front-matter holds the structured metadata, body holds the prompt.
+- **Q2=B4 slug-hash addressing** — `<cli>-<slug-from-prompt>-<8hex content hash>` (e.g. `cursor-fix-bug-foo-py-3a7f9c1d`); content-derived so identical dispatches always map to the same id.
+- **Q3=C5 双通道注入** — env (primary, always live: `POPOLA_HANDOFF_FILE` / `POPOLA_HANDOFF_ID`) + flag (forward-compat secondary: `--popola-handoff-file <path>`, opt-in via `popola_handoff_flag=true` to avoid breaking vanilla cursor-agent / claude / codex).
+- **Q4=D4 active+archive 双层** — active = `.local/.agent/handoff/<id>.md`, archive = `.local/.agent/archive/<task_id>/<id>.md`; archive is a `shutil.copy2` snapshot (mtime preserved, source not deleted).
+- **Q5=E3 internal unification** — `Popolad.dispatch_with_envelope` is THE canonical dispatch path; `Popolad.dispatch_task(prompt, ...)` is now a thin wrapper that builds an envelope and delegates. Public signatures unchanged for backward compat.
+- **Q7=yes HITL feedback envelope** — companion `FeedbackEnvelope` for HITL answers; foundation slice ships in v0.7.3, live `popola feedback ... --persist` wiring deferred to v0.8.x patches.
+- v0.3.0 legacy `RelayHandoffEnvelope` bridged via `to_handoff_envelope()` so old relay code paths gain file-based audit without changing the relay primitive itself.
+
+### Changed
+
+- `tests/test_smoke.py` 版本断言 `0.7.3` → `0.8.0`。
+- `pyproject.toml` / `src/popolaloom/__init__.py` / SKILL.md (×2) / `.popola-loom-version` bumped to `0.8.0`.
+
+### Notes
+
+- This release rolls up v0.7.1 (foundation), v0.7.2 (dispatch_with_envelope + handoff CLI), v0.7.3 (replay + feedback envelope + relay bridge + docs) into a single stable minor.
+- Subscribers tracking the `[Unreleased]` section: the bus is empty post-bump.
+- v0.8.x patches will land:
+  - live `popola feedback ... --persist` wiring (was deferred from v0.7.3 to avoid daemon-side coordination risk);
+  - terminal-state auto-archive (currently archive happens via explicit `popola handoff archive`);
+  - native v0.8.0 envelope schema in the relay primitive itself (currently still emits legacy `RelayHandoffEnvelope`; `to_handoff_envelope` bridge is the migration path).
 
 ## [0.7.3] — 2026-05-06
 

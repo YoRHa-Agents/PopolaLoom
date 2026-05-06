@@ -1,6 +1,6 @@
 # PopolaLoom
 
-> **v0.7.0** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon.
+> **v0.8.0** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. **NEW in v0.8.0**: file-backed hands-off envelope (`popolaloom.handoff`) — every dispatch persists a `cat`-friendly Markdown envelope to `.local/.agent/handoff/<id>.md` and injects it into the spawned sub-CLI's environment. Replayable via `popola dispatch --replay <id>`.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -116,7 +116,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.7.0 — Docs + install-popola Skill consolidation.** See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the v0.7.0 closure ledger; [`CHANGELOG.md`](CHANGELOG.md) for the v0.0.1 → v0.7.0 history.
+**v0.8.0 — Hands-off envelope stable.** See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the v0.8.0 closure ledger; [`CHANGELOG.md`](CHANGELOG.md) for the v0.0.1 → v0.8.0 history.
 
 | Capability | Status |
 |---|---|
@@ -131,11 +131,19 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 | `popola init` 8 verbs + 8 modifiers (Cursor / Claude / Codex / Copilot / local / all) | OK live |
 | `popola init --interactive` wizard | OK live (v0.5.5+) |
 | Canonical SKILL.md auto-loaded by host agents | OK live |
-| **v0.7.0**: NEW `install-popola` Skill (mirrors `/install-devola-flow`) | OK live |
-| **v0.7.0**: Single floating `RELEASE_NOTES.md` (per-version files retired) | OK live |
-| **v0.7.0**: `.local/` is now gitignored (local-only working surface) | OK live |
-| **v0.7.0**: GitHub Pages site (`docs/index.md` + `docs/_config.yml`) | scaffolded |
-| 1380+ default-lane tests / 94%+ coverage | OK live |
+| `install-popola` Skill (mirrors `/install-devola-flow`) | OK live (v0.7.0+) |
+| Single floating `RELEASE_NOTES.md` (per-version files retired) | OK live (v0.7.0+) |
+| `.local/` is gitignored (local-only working surface) | OK live (v0.7.0+) |
+| GitHub Pages site (`docs/index.md` + `docs/_config.yml`) | scaffolded |
+| **v0.7.1**: BUG-A/B/C fixed (cancel orphan, rehydrate spawn-aborted, attach `--no-follow` EOF) | OK live |
+| **v0.7.2 / v0.8.0**: `popolaloom.handoff` module (HandoffEnvelope schema_v1 + writer + archive + loader) | OK live (100% cov) |
+| **v0.7.2 / v0.8.0**: `Popolad.dispatch_with_envelope` (E3 internal unification, all dispatch goes through one path) | OK live |
+| **v0.7.2 / v0.8.0**: C5 双通道 (env primary + flag opt-in forward-compat) | OK live |
+| **v0.7.2 / v0.8.0**: `popola handoff list / show / archive` CLI | OK live |
+| **v0.7.3 / v0.8.0**: `popola dispatch --replay <handoff_id>` | OK live |
+| **v0.7.3 / v0.8.0**: `FeedbackEnvelope` (Q7=yes HITL feedback foundation) | OK live (writer only; live `--persist` deferred) |
+| **v0.7.3 / v0.8.0**: `to_handoff_envelope(relay_env)` legacy bridge | OK live |
+| 1597 default-lane tests / 94.42% coverage | OK live |
 
 ## Architecture (TL;DR)
 
