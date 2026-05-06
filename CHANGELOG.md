@@ -10,7 +10,28 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.7.2.)
+(intentionally empty — accumulating for v0.7.3.)
+
+## [0.7.2] — 2026-05-06
+
+### Added
+
+- **`Popolad.dispatch_with_envelope` — canonical dispatch entry (E3 internal unification)**（出处 `feedback_for_v0.8.0.md` user-decided Q5=E3）。新方法接受一个 `HandoffEnvelope` 实例，做三件事：(1) 用 `popolaloom.handoff.write_envelope` 把 envelope 文件原子落盘到 `<handoff_root>/<handoff_id>.md`；(2) 把 `POPOLA_HANDOFF_FILE` (绝对路径) + `POPOLA_HANDOFF_ID` (slug-hash) 注入 spawn 子进程的 env overlay（overlay 永远赢过 caller-provided base_env，防 handoff 冒充）；(3) 把 `envelope.target_cli` / `envelope.prompt` / `envelope.cwd` / `envelope.adapter_extra` 转交给现有 `_dispatch_via_graph` / `_dispatch_legacy` 内部路径。`Popolad.dispatch_task(cli, prompt, ...)` 现在变成薄壳——把 kwargs 拼成 envelope 后委派给 `dispatch_with_envelope`，所有 dispatch 走同一条内部路径。`handoff_root` 解析顺序：方法显式参数 > `$POPOLA_HANDOFF_DIR` env > `popolaloom.handoff.DEFAULT_HANDOFF_ROOT`。
+- **C5 双通道之 flag 路（forward-compat secondary）**（出处 `feedback_for_v0.8.0.md` Q3=C5 双通道）。`Popolad._call_adapter` 在 adapter 返回 base cmd 之后做 post-processing：当 `extra.get("popola_handoff_flag")` 为真时，append `["--popola-handoff-file", <env_path>]` 到 cmd。**Opt-in**：vanilla cursor-agent / claude / codex 都不识别这个 flag，无脑注入会破坏它们的 argv parsing；env 通道 (`POPOLA_HANDOFF_FILE`) 永远是主通道，flag 是为未来 sub-CLI 原生支持留的钩子。各 adapter (cursor.py / claude.py / codex.py) **保持 PURE 不动**——flag 注入完全在 popolad 这一层，避免 N 个 adapter 重复实现。
+- **`popolaloom.handoff.loader` 模块（read-side helpers）**：`list_active_envelopes` 枚举 `<base_dir>/*.md` 返回 `HandoffSummary` 列表（按 mtime 倒排）；`resolve_envelope_path` 给 handoff_id 算出 canonical 路径（含 path-traversal 校验）；`load_envelope` 读文件 + 调 `HandoffEnvelope.from_markdown` 反序列化。所有读路径默认尊重 `$POPOLA_HANDOFF_DIR` 与 `DEFAULT_HANDOFF_ROOT` 优先级，与 writer/archive 共享解析契约。
+- **`popola handoff list / show / archive` CLI 子命令组**（filesystem-only，不依赖 daemon）：
+  - `popola handoff list [--handoff-dir DIR] [--json]` — 列出 active envelopes，按 mtime 倒排；Rich table 默认输出，`--json` 输出可解析 JSON 数组。
+  - `popola handoff show <handoff_id> [--handoff-dir DIR] [--json]` — 默认 `cat` 出原始 Markdown front-matter（cat-friendly 设计 Q1=A4）；`--json` 调 Pydantic `model_dump_json()` 输出 normalized JSON。
+  - `popola handoff archive <handoff_id> <task_id> [--handoff-dir DIR] [--archive-root DIR]` — 把 active envelope 复制到 `<archive_root>/<task_id>/<handoff_id>.md`（D4 双层）；handoff_id + task_id 都做 path-traversal 校验，源文件不删（audit 快照语义）。
+- **测试隔离 fixture**：`tests/conftest.py` 加 session-scoped autouse fixture `_handoff_dir_session`，把 `$POPOLA_HANDOFF_DIR` 重定向到 `tmp_path_factory.mktemp("popola_handoff_session")`，让所有走 `dispatch_task`（v0.7.2+ 自动建 envelope 文件）的测试不污染工作区的 `.local/.agent/handoff/` 目录。
+- **30 个新测试**（13 在 `tests/daemon/test_dispatch_with_envelope.py` + 17 跨 `tests/handoff/test_loader.py` & `tests/cli/test_handoff_cmd.py`）：覆盖 type validation、envelope 文件落盘、env overlay 优先级 + 防冒充、handoff_root 三档解析优先级、popola_handoff_flag opt-in vs falsy、handoff CLI 三个子命令的 happy-path + traversal/missing 异常路径。
+
+### Changed
+
+- `Popolad.dispatch_task` 现在 100% 走 `dispatch_with_envelope` 内部统一路径（E3）。Public 签名保持不变，所有现有 caller（rpc.py / cli/main.py / 1494+ 个测试）零感知迁移。
+- `Popolad._call_adapter` 新增 keyword-only `handoff_path: str | None = None`；当 ``extra["popola_handoff_flag"]`` 为真时附 `--popola-handoff-file <handoff_path>` 到 cmd。
+- `tests/test_smoke.py` 版本断言 `0.7.0` → `0.7.2`（v0.7.1 release 时漏更新，本版补回）。
+- `src/popolaloom/skills/install-popola/SKILL.md` 版本字段 `0.7.0` → `0.7.2`（同上原因，v0.7.1 release 时漏 bump）。
 
 ## [0.7.1] — 2026-05-06
 

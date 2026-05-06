@@ -1,141 +1,171 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md). Per-version `release-notes-v*.md` files were consolidated into this single file in v0.7.0 (per user feedback v0.6.1#2).
 
-# PopolaLoom v0.7.1 — v0.7.0 BUG fixes + handoff envelope foundation
+# PopolaLoom v0.7.2 — dispatch_with_envelope (E3) + adapter flag injection (C5) + handoff CLI
 
 > Released: 2026-05-06
-> Theme: closes 3 v0.7.0 residual BUGs (cancel orphan, rehydrate spawn-aborted, attach `--no-follow` ReadTimeout) **and** lays the substrate for the v0.8.0 hands-off envelope feature (schema + hash + writer + archive). No daemon-side wiring yet — that lands in v0.7.2.
+> Theme: wires the v0.7.1 handoff foundation into the actual dispatch path. After this release every `popola dispatch` (and every internal `dispatch_task` call from rpc.py / cli/main.py) writes a Markdown envelope file to `.local/.agent/handoff/<id>.md` and injects `POPOLA_HANDOFF_FILE` / `POPOLA_HANDOFF_ID` into the spawned sub-CLI's environment. v0.7.3 will add `popola dispatch --replay` + HITL feedback envelope + old-RelayHandoffEnvelope bridge.
 
 ## Summary
 
-PopolaLoom v0.7.1 is a hybrid bug-fix + foundation patch that wraps two threads in one branch (`fix/v0.7.1-cancel-orphan-and-rehydrate-spawn-aborted`):
+PopolaLoom v0.7.2 lands the **internal-unification** half of the v0.8.0 hands-off envelope feature:
 
-1. **Three BUG fixes** (`feedback_for_v0.7.0.md`):
-   - **BUG-A** — cancel-orphan path for daemon-restart leftover SUBMITTED tasks
-   - **BUG-B** — rehydrate guard against pre-spawn-crash zombies
-   - **BUG-C** — `popola attach --no-follow` EOF / ReadTimeout treated as normal completion
+1. **`Popolad.dispatch_with_envelope` is the canonical dispatch entry** (E3 internal unification) — `dispatch_task(cli, prompt, ...)` is now a thin wrapper that builds a `HandoffEnvelope` from kwargs and delegates. All dispatch goes through one path.
 
-2. **Hands-off envelope foundation** (`feedback_for_v0.8.0.md` item #1, user-decided design 2026-05-06):
-   - `popolaloom.handoff` module — schema, slug-hash addressing, atomic writer, dual-layer (active + archive) archiver
-   - **100% line + branch coverage** on the new module
-   - dispatch / adapter / CLI integration deferred to v0.7.2 (user Q5=E3 internal unification)
+2. **C5 双通道 (env primary + flag forward-compat)** — every spawned sub-CLI now sees `POPOLA_HANDOFF_FILE=<abs path>` + `POPOLA_HANDOFF_ID=<slug-hash>` in its env. The `--popola-handoff-file <path>` argv flag is opt-in (`extra["popola_handoff_flag"]=True`) so vanilla cursor-agent / claude / codex don't break on unknown-flag errors; the flag stays as a forward-compat hook for sub-CLIs that gain native support.
 
-The two threads cohabit one branch because the BUG fixes were already implemented (working tree of the same branch) and the handoff foundation is a pure-additive new module — no risk of cross-contamination.
+3. **`popola handoff` CLI** — three new filesystem-only subcommands (`list` / `show` / `archive`) for inspecting + archiving on-disk envelopes without a running daemon.
 
-## What's NEW · `popolaloom.handoff` module
+4. **Read-side library** (`popolaloom.handoff.loader`) — `list_active_envelopes` / `load_envelope` / `resolve_envelope_path` for programmatic access to the envelope store.
+
+The release ships **without** breaking changes: every existing `dispatch_task` caller (rpc.py / cli/main.py / 1494+ tests) keeps its signature; the only behavioural delta is that each dispatch now drops a small Markdown file in `.local/.agent/handoff/` (gitignored).
+
+## What's NEW · `Popolad.dispatch_with_envelope`
 
 ```python
 from datetime import UTC, datetime
-from popolaloom.handoff import HandoffEnvelope, generate_handoff_id, write_envelope
 
-handoff_id = generate_handoff_id("cursor", "fix the bug in foo.py")
-# → "cursor-fix-the-bug-in-foo-py-e2de7acd"
+from popolaloom.daemon import Popolad
+from popolaloom.handoff import HandoffEnvelope, generate_handoff_id
+
+popolad = Popolad(events_dir=...)  # or get the rpc-bound singleton
 
 env = HandoffEnvelope(
-    handoff_id=handoff_id,
+    handoff_id=generate_handoff_id("cursor", "fix bug in foo.py"),
     created_at=datetime.now(UTC),
     target_cli="cursor",
-    prompt="fix the bug in foo.py — there's a NoneType error around line 42",
+    prompt="fix bug in foo.py — NoneType around line 42",
+    reason="user reported during code review",          # NEW: only available via envelope path
+    tags=["v0.7.x", "bug-fix"],                          # NEW
 )
-path = write_envelope(env)
-# → .local/.agent/handoff/cursor-fix-the-bug-in-foo-py-e2de7acd.md
+task_id = popolad.dispatch_with_envelope(env)
 ```
 
-The on-disk envelope is human-readable Markdown:
+The kwargs surface still works (and now goes through the same internal path):
 
-```
----
-schema_version: '1'
-handoff_id: cursor-fix-the-bug-in-foo-py-e2de7acd
-created_at: '2026-05-06T14:30:00+00:00'
-source_cli: null
-target_cli: cursor
-parent_task_id: null
-cwd: null
-adapter_extra: {}
-constraints: {}
-reason: null
-tags: []
----
-fix the bug in foo.py — there's a NoneType error around line 42
+```python
+task_id = popolad.dispatch_task(
+    cli="cursor", prompt="fix bug", extra={"output_format": "stream-json"}
+)
+# Builds an envelope internally, writes it, and dispatches via dispatch_with_envelope.
 ```
 
-`HandoffEnvelope.from_markdown(text)` round-trips back to an identical model — verified by 3 parametrized cases (minimal / full / special-chars) plus 11 other invariant tests. `extra="forbid"` so unknown front-matter keys raise `ValidationError` (No Silent Failures).
+## Sub-CLI sees the envelope via env vars
 
-### Public surface
+Every spawned sub-CLI (cursor-agent, claude, codex, ...) now finds:
+
+```bash
+$ env | grep POPOLA_HANDOFF
+POPOLA_HANDOFF_FILE=/home/user/proj/.local/.agent/handoff/cursor-fix-bug-foo-py-3a7f9c1d.md
+POPOLA_HANDOFF_ID=cursor-fix-bug-foo-py-3a7f9c1d
+```
+
+The agent (LLM running inside the sub-CLI) can `cat $POPOLA_HANDOFF_FILE` to inspect the original dispatch — including audit-only fields (`reason`, `tags`) that don't fit into a single argv prompt.
+
+## C5 flag (opt-in forward-compat)
+
+```bash
+popola dispatch "..." --cli=cursor --cli-flag popola_handoff_flag=true
+# Resulting argv now includes: ... --popola-handoff-file /path/to/<id>.md
+```
+
+This is **opt-in** because vanilla cursor-agent / claude / codex don't recognise the flag yet — auto-injection would break their argv parsing. The env channel above is always live; the flag stays as a hook for future native support.
+
+## What's NEW · `popola handoff` CLI
+
+```bash
+# List active envelopes (newest first)
+popola handoff list
+
+# Active handoff envelopes
+# ┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━┳━...
+# ┃ handoff_id                                    ┃  size ┃ mtime               ┃
+# ┡━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━╇━...
+# │ cursor-fix-bug-foo-py-3a7f9c1d                │ 412 B │ 2026-05-06 14:30:00 │
+# └───────────────────────────────────────────────┴───────┴─────────────────────┴──...
+
+# Show raw Markdown (cat-friendly, design Q1=A4)
+popola handoff show cursor-fix-bug-foo-py-3a7f9c1d
+
+# Or as JSON for piping into jq
+popola handoff show cursor-fix-bug-foo-py-3a7f9c1d --json | jq .prompt
+
+# Archive a finished task's envelope (D4 audit snapshot)
+popola handoff archive cursor-fix-bug-foo-py-3a7f9c1d cursor-23e74ec18917
+# → /repo/.local/.agent/archive/cursor-23e74ec18917/cursor-fix-bug-foo-py-3a7f9c1d.md
+```
+
+All three commands are **filesystem-only** — no daemon required, safe to run during incidents when popolad might be down.
+
+## Read-side library
 
 ```python
 from popolaloom.handoff import (
-    HandoffEnvelope,           # Pydantic v2 model, schema_version="1"
-    HANDOFF_SCHEMA_VERSION,
-    generate_handoff_id,       # <cli>-<slug>-<8hex>
-    slugify_prompt,            # prompt → safe ASCII slug, max 30 chars
-    content_hash,              # canonical-JSON SHA-256 first 8 hex
-    write_envelope,            # atomic write to .local/.agent/handoff/
-    envelope_path,             # canonical path lookup, no I/O
-    DEFAULT_HANDOFF_ROOT,      # Path(".local/.agent/handoff")
-    archive_envelope,          # shutil.copy2 to .local/.agent/archive/<task_id>/
-    archive_dir_for,           # canonical archive dir, no I/O
-    DEFAULT_ARCHIVE_ROOT,      # Path(".local/.agent/archive")
+    list_active_envelopes,
+    load_envelope,
+    resolve_envelope_path,
 )
+
+# Enumerate
+for s in list_active_envelopes():
+    print(s.handoff_id, s.path, s.size_bytes, s.mtime)
+
+# Load + parse a specific envelope
+env = load_envelope("cursor-fix-bug-foo-py-3a7f9c1d")
+print(env.prompt, env.reason, env.tags)
+
+# Just the path (no I/O)
+p = resolve_envelope_path("cursor-fix-bug-foo-py-3a7f9c1d")
 ```
 
-## 3 BUG fixes (commits)
+`$POPOLA_HANDOFF_DIR` env is honoured by all three (matches writer / archive).
 
-| # | Commit | Subject | feedback ref |
-|---|---|---|---|
-| BUG-A | `1549a2c` | cancel orphan: 区分 `pid=null` 两类 (`_soft_cancel_orphan` vs race window) | item #5 BUG-A |
-| BUG-B | `1549a2c` | rehydrate 仅复活有 `popola_dispatch` row 的 task；缺行标 `failed` + emit `popolad.spawn_aborted` event | item #5 BUG-B |
-| BUG-C | `d20f46a` | `_consume_sse` hybrid (a)+(b)：终止事件即 break + 终止后 ReadTimeout 视作正常 EOF | item #4 |
-
-3 commits, 11 new tests across the BUG fixes (3 in `tests/test_repository.py` + 5 in `tests/cli/test_attach_no_follow_eof.py` + 3 from `tests/test_repository.py` for orphan-reap path).
-
-## Upgrade notes
-
-- **No breaking changes**：`popolaloom.handoff` 是新公共模块；老 `dispatch_task(prompt)` / `RelayHandoffEnvelope` 路径完全不动
-- `.local/.agent/handoff/` 已经在 v0.7.0 `.gitignore` 里，envelope 文件不会进 git
-- 升级仅需 `pip install -U popolaloom`（local clone：`pip install -e ".[dev]"`）
-- `popola doctor` 不需要新检查项（v0.7.2 接 dispatch 时再加）
-
-## What's NOT in v0.7.1（在后续 patch 落地）
-
-- **v0.7.2**：`dispatch_with_envelope` 内部统一 + 各 adapter `POPOLA_HANDOFF_FILE` env / `--popola-handoff-file` flag 注入（Q3=C5 双通道） + `popola handoff list / show / archive` CLI
-- **v0.7.3**：`popola dispatch --replay <handoff_id>` 重放 + HITL feedback envelope（Q7=yes） + 老 `RelayHandoffEnvelope` 桥接到新 `HandoffEnvelope` + 文档刷新（README / QUICKSTART / USER_GUIDE / SKILL.md / DEMO）
-- **v0.8.0**：final minor bump + 整体回归 + PR 提交（不直 push main）
-
-## Files changed (v0.7.1)
+## Files changed (v0.7.2)
 
 | 改动 | 文件 |
 |---|---|
-| BUG-A/B 修 | `src/popolaloom/daemon/server.py`, `src/popolaloom/daemon/rpc.py`, `tests/test_repository.py` |
-| BUG-C 修 | `src/popolaloom/cli/main.py`, `tests/cli/test_attach_no_follow_eof.py` |
-| Handoff foundation src (NEW) | `src/popolaloom/handoff/{__init__,envelope,hash,writer,archive}.py` (5 files) |
-| Handoff foundation tests (NEW) | `tests/handoff/{__init__,test_envelope,test_hash,test_writer,test_archive}.py` (5 files) |
-| Doc | `.github/copilot-instructions.md` (Workflow 4 `--cli-flag` 展开) |
-| Bump | `pyproject.toml`, `src/popolaloom/__init__.py`, `src/popolaloom/skills/popola-loom/SKILL.md`, `src/popolaloom/skills/popola-loom/.popola-loom-version`, `CHANGELOG.md`, `RELEASE_NOTES.md` |
+| Server E3 + C5 | `src/popolaloom/daemon/server.py` (+178 lines: dispatch_with_envelope + _resolve_handoff_path + _call_adapter post-processing) |
+| Loader (NEW) | `src/popolaloom/handoff/loader.py` (HandoffSummary + list_active_envelopes + resolve_envelope_path + load_envelope) |
+| Module surface | `src/popolaloom/handoff/__init__.py` (+5 new exports) |
+| CLI (NEW) | `src/popolaloom/cli/handoff_cmd.py` (popola handoff list / show / archive) |
+| CLI registration | `src/popolaloom/cli/main.py` (add_typer for handoff_app) |
+| Test isolation | `tests/conftest.py` (session-scoped autouse $POPOLA_HANDOFF_DIR fixture) |
+| Tests (NEW) | `tests/daemon/test_dispatch_with_envelope.py` (16 tests), `tests/handoff/test_loader.py` (16 tests), `tests/cli/test_handoff_cmd.py` (11 tests) |
+| Smoke test | `tests/test_smoke.py` (version assertion 0.7.0 → 0.7.2) |
+| Bump | `pyproject.toml`, `src/popolaloom/__init__.py`, `src/popolaloom/skills/popola-loom/SKILL.md`, `src/popolaloom/skills/popola-loom/.popola-loom-version`, `src/popolaloom/skills/install-popola/SKILL.md`, `CHANGELOG.md`, `RELEASE_NOTES.md` |
 
 ## Status
 
 | Capability | Status |
 |---|---|
-| ALL v0.7.0 capabilities | unchanged ✓ |
-| BUG-A/B/C closed | ✓ |
-| `popolaloom.handoff` module | new ✓ (100% line + branch coverage) |
-| `dispatch_with_envelope` | deferred → v0.7.2 |
-| `popola handoff` CLI subcommands | deferred → v0.7.2 |
+| ALL v0.7.1 capabilities | unchanged ✓ |
+| `Popolad.dispatch_with_envelope` (E3) | new ✓ |
+| `dispatch_task` → `dispatch_with_envelope` thin wrapper | new ✓ (signature preserved) |
+| C5 env channel (POPOLA_HANDOFF_FILE / POPOLA_HANDOFF_ID) | new ✓ |
+| C5 flag channel (`--popola-handoff-file`) | new ✓ (opt-in via `popola_handoff_flag`) |
+| `popola handoff list / show / archive` CLI | new ✓ |
+| `popolaloom.handoff.loader` module | new ✓ |
 | `popola dispatch --replay` | deferred → v0.7.3 |
 | HITL feedback envelope | deferred → v0.7.3 |
-| 1508 default-lane tests / 94.45% coverage | ✓ |
+| Old `RelayHandoffEnvelope` bridge to new `HandoffEnvelope` | deferred → v0.7.3 |
+| Final 0.8.0 minor bump | deferred → v0.8.0 |
+| 1551 default-lane tests / 94.42% coverage | ✓ |
 
-## Self-eval (v0.7.1)
+## Self-eval (v0.7.2)
 
-- `pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=src/popolaloom --cov-fail-under=94`：1508 passed, 18 skipped, 82 deselected, 0 failed
+- `pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=src/popolaloom --cov-fail-under=94`：1551 passed, 18 skipped, 82 deselected, 0 failed
 - `ruff check src/popolaloom tests/`：All checks passed
 - `popolaloom.handoff` 模块覆盖率：100% (line + branch)
-- 累计 commits 在 `fix/v0.7.1-cancel-orphan-and-rehydrate-spawn-aborted` 分支：5（BUG-A/B + doc + BUG-C + feat-handoff + this release）
+- `Popolad.dispatch_with_envelope` 覆盖：100%
+- 累计 commits 在 `fix/v0.7.1-cancel-orphan-and-rehydrate-spawn-aborted` 分支：7（5 from v0.7.1 + 1 v0.7.2 feat + 1 v0.7.2 release）
+
+## Upgrade notes
+
+- **No breaking changes**：所有 `dispatch_task` caller 零感知迁移
+- 升级仅需 `pip install -U popolaloom`（local clone：`pip install -e ".[dev]"`）
+- 每次 dispatch 现在会向 `.local/.agent/handoff/` 写一个小的 Markdown 文件（已 gitignored）。如需自定义位置，设 `POPOLA_HANDOFF_DIR` 环境变量
+- v0.7.3 将提供 `popola dispatch --replay <handoff_id>` 实现"重放上次派发"，以及 HITL feedback 走同一 envelope 体系
 
 ## Next steps
 
-1. v0.7.1 PR 不直接 push 到 `main`（按 "Protected Branch Workflow" 工作区规则），等用户 review
-2. v0.7.2 在同一分支继续叠加：`dispatch_with_envelope` 内部统一 + adapter env+flag 双通道 + handoff CLI 子命令
-3. v0.7.3 跟进：replay + HITL feedback envelope + old-RelayHandoffEnvelope 桥接 + 文档
-4. v0.8.0 收口：final bump + PR 提交
+1. v0.7.3 (next release): `popola dispatch --replay` + HITL feedback envelope (Q7=yes) + 老 `RelayHandoffEnvelope` 桥接到新 `HandoffEnvelope` + 文档 (README / QUICKSTART / USER_GUIDE / DEMO 全面刷新)
+2. v0.8.0 (final minor): 整体回归 + PR 提交（不直 push main，按 Protected Branch Workflow）
