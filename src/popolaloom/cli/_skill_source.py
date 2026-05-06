@@ -9,9 +9,11 @@ contract so S2 can ship a working installer without blocking on S3.
 Resolution strategy (per the v0.5.0 plan §4 Stage S2.6 + the locked S2
 spec — `_skill_source.py` resolver):
 
-1. ``<package_root>/skills/popolaloom/SKILL.md`` — the canonical
+1. ``<package_root>/skills/popola-loom/SKILL.md`` — the canonical
    wheel-bundled path written by Stage S3.  When present this file is
-   the source of truth for every install verb.
+   the source of truth for every install verb.  (The directory name was
+   renamed from ``popolaloom`` → ``popola-loom`` in v0.7.1+; the Python
+   package name ``popolaloom`` is unchanged.)
 2. Fallback to a generated stub with the v0.5.0 frontmatter shape and a
    "TODO: stage S3 will replace this" body.  The stub is byte-stable
    across runs (no timestamps, no hashes) so idempotency tests can hash
@@ -53,12 +55,12 @@ def canonical_source_path() -> Path | None:
     checkout (``src/popolaloom/``).
 
     Returns:
-        Path: absolute path to ``<package>/skills/popolaloom/SKILL.md``
+        Path: absolute path to ``<package>/skills/popola-loom/SKILL.md``
         when it exists on disk; ``None`` otherwise (Stage S2 ships
         without the real skill so the fallback stub fires).
     """
     package_root = resources.files("popolaloom")
-    candidate = package_root.joinpath("skills", "popolaloom", "SKILL.md")
+    candidate = package_root.joinpath("skills", "popola-loom", "SKILL.md")
     try:
         path = Path(str(candidate))
     except (TypeError, ValueError):
@@ -70,7 +72,7 @@ def canonical_source_path() -> Path | None:
 
 STUB_FRONTMATTER: str = f"""\
 ---
-name: popolaloom
+name: popola-loom
 version: {__version__}
 description: >
   Use when delegating long-running coding tasks to a local agent CLI

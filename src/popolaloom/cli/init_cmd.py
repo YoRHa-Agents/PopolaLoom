@@ -112,18 +112,18 @@ def cursor_target_path(scope: str, cwd: Path | None = None) -> Path:
     """Resolve the Cursor SKILL.md install path for ``scope``.
 
     Args:
-        scope: ``"global"`` → ``~/.cursor/skills/popolaloom/SKILL.md``;
-            ``"project"`` (default) → ``<cwd>/.cursor/skills/popolaloom/SKILL.md``.
+        scope: ``"global"`` → ``~/.cursor/skills/popola-loom/SKILL.md``;
+            ``"project"`` (default) → ``<cwd>/.cursor/skills/popola-loom/SKILL.md``.
         cwd: project root (defaults to :func:`Path.cwd`).
     """
     base_dir = Path.home() / ".cursor" if scope == "global" else (cwd or Path.cwd()) / ".cursor"
-    return base_dir / "skills" / "popolaloom" / "SKILL.md"
+    return base_dir / "skills" / "popola-loom" / "SKILL.md"
 
 
 def claude_target_path(scope: str, cwd: Path | None = None) -> Path:
     """Resolve the Claude Code SKILL.md install path for ``scope``."""
     base_dir = Path.home() / ".claude" if scope == "global" else (cwd or Path.cwd()) / ".claude"
-    return base_dir / "skills" / "popolaloom" / "SKILL.md"
+    return base_dir / "skills" / "popola-loom" / "SKILL.md"
 
 
 def copilot_target_path(cwd: Path | None = None) -> Path:
@@ -145,7 +145,7 @@ def codex_target_path() -> Path:
     import os
 
     codex_home = Path(os.environ.get("CODEX_HOME", str(Path.home() / ".codex")))
-    return codex_home / "skills" / "popolaloom" / "SKILL.md"
+    return codex_home / "skills" / "popola-loom" / "SKILL.md"
 
 
 # ── auto-detect ──────────────────────────────────────────────────────────
@@ -253,7 +253,7 @@ def _write_skill(target: Path, content: str, *, dry_run: bool) -> str:
 
 
 def _write_marker(install_dir: Path, *, dry_run: bool) -> None:
-    """Write a ``.popolaloom-version`` marker beside the SKILL.md.
+    """Write a ``.popola-loom-version`` marker beside the SKILL.md.
 
     The marker stores the running wheel version so a future ``popola
     doctor`` (Stage S4) can detect drift between the installed skill
@@ -261,7 +261,7 @@ def _write_marker(install_dir: Path, *, dry_run: bool) -> None:
     """
     from popolaloom import __version__
 
-    marker = install_dir / ".popolaloom-version"
+    marker = install_dir / ".popola-loom-version"
     if dry_run:
         typer.echo(f"  DRY  {marker}")
         return

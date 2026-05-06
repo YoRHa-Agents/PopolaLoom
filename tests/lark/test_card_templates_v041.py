@@ -281,8 +281,8 @@ def test_build_cancel_escalated_card_happy_path() -> None:
 
 def test_build_skill_missing_card_happy_path() -> None:
     card = build_skill_missing_card(
-        skill_name="popolaloom",
-        expected_paths=["~/.cursor/skills/popolaloom/SKILL.md"],
+        skill_name="popola-loom",
+        expected_paths=["~/.cursor/skills/popola-loom/SKILL.md"],
         detected_paths=[],
     )
     _assert_card_envelope_shape(card, HEADER_COLOR_BY_TERMINAL_TRIGGER["skill.missing"])
@@ -290,7 +290,7 @@ def test_build_skill_missing_card_happy_path() -> None:
     assert "Skill 检测缺失" in card["header"]["title"]["content"]
 
     body = _last_div_text(card)
-    assert "popolaloom" in body
+    assert "popola-loom" in body
     assert "Expected paths" in body and "(1)" in body
     assert "Detected paths" in body and "(0)" in body
     assert "(none)" in body  # detected paths empty placeholder
@@ -299,7 +299,7 @@ def test_build_skill_missing_card_happy_path() -> None:
     assert actions is not None
     assert len(actions["actions"]) == 1
     assert actions["actions"][0]["value"] == {
-        "task_id": "popolaloom",
+        "task_id": "popola-loom",
         "action": "ack",
     }
 
@@ -362,7 +362,7 @@ def test_all_5_builders_serialize_with_footer() -> None:
         (
             build_skill_missing_card,
             {
-                "skill_name": "popolaloom",
+                "skill_name": "popola-loom",
                 "expected_paths": ["a"], "detected_paths": ["b"],
             },
         ),

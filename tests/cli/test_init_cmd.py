@@ -85,11 +85,11 @@ def test_init_cursor_project_writes_skill(
     cwd, _fake_home = isolated_home
     result = runner.invoke(init_app, ["cursor", "--project"])
     assert result.exit_code == 0, _combined_output(result)
-    target = cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     assert target.exists()
     body = target.read_text(encoding="utf-8")
-    assert body.startswith("---\nname: popolaloom\n")
-    marker = target.parent / ".popolaloom-version"
+    assert body.startswith("---\nname: popola-loom\n")
+    marker = target.parent / ".popola-loom-version"
     assert marker.exists()
     assert "0." in marker.read_text(encoding="utf-8")
 
@@ -102,9 +102,9 @@ def test_init_claude_global_writes_to_home(
     _cwd, fake_home = isolated_home
     result = runner.invoke(init_app, ["claude", "--global"])
     assert result.exit_code == 0, _combined_output(result)
-    target = fake_home / ".claude" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".claude" / "skills" / "popola-loom" / "SKILL.md"
     assert target.exists()
-    assert "name: popolaloom" in target.read_text(encoding="utf-8")
+    assert "name: popola-loom" in target.read_text(encoding="utf-8")
 
 
 def test_init_copilot_writes_single_file(
@@ -117,18 +117,18 @@ def test_init_copilot_writes_single_file(
     assert result.exit_code == 0, _combined_output(result)
     target = cwd / ".github" / "copilot-instructions.md"
     assert target.exists()
-    assert target.read_text(encoding="utf-8").startswith("---\nname: popolaloom\n")
+    assert target.read_text(encoding="utf-8").startswith("---\nname: popola-loom\n")
 
 
 def test_init_codex_uses_home_dot_codex(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """`popola init codex` writes ~/.codex/skills/popolaloom/SKILL.md."""
+    """`popola init codex` writes ~/.codex/skills/popola-loom/SKILL.md."""
     _cwd, fake_home = isolated_home
     result = runner.invoke(init_app, ["codex"])
     assert result.exit_code == 0, _combined_output(result)
-    target = fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md"
     assert target.exists()
 
 
@@ -144,7 +144,7 @@ def test_init_codex_honors_codex_home_env(
     monkeypatch.setenv("CODEX_HOME", str(custom))
     result = runner.invoke(init_app, ["codex"])
     assert result.exit_code == 0, _combined_output(result)
-    target = custom / "skills" / "popolaloom" / "SKILL.md"
+    target = custom / "skills" / "popola-loom" / "SKILL.md"
     assert target.exists()
 
 
@@ -203,10 +203,10 @@ def test_init_all_installs_every_ide_target(
     result = runner.invoke(init_app, ["all", "--project"])
     assert result.exit_code == 0, _combined_output(result)
 
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
-    assert (cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
+    assert (cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md").is_file()
     assert (cwd / ".github" / "copilot-instructions.md").is_file()
-    assert (fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md").is_file()
     assert not (cwd / ".local").exists()
 
 
@@ -251,7 +251,7 @@ def test_init_dry_run_no_writes(
     result = runner.invoke(init_app, ["cursor", "--project", "--dry-run"])
     assert result.exit_code == 0, _combined_output(result)
     assert "DRY" in _combined_output(result)
-    assert not (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").exists()
+    assert not (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").exists()
 
 
 def test_init_no_args_auto_detects_targets(
@@ -266,8 +266,8 @@ def test_init_no_args_auto_detects_targets(
     result = runner.invoke(init_app, [])
     assert result.exit_code == 0, _combined_output(result)
     assert "auto-detected targets" in _combined_output(result)
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
-    assert (cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
+    assert (cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md").is_file()
 
 
 # ── modifier tests ──────────────────────────────────────────────────────
@@ -318,7 +318,7 @@ def test_init_cursor_idempotent_second_run_skips(
     cwd, _fake_home = isolated_home
     first = runner.invoke(init_app, ["cursor", "--project"])
     assert first.exit_code == 0
-    target = cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md"
+    target = cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
     target.write_text("MARKER FROM USER\n", encoding="utf-8")
     mtime_before = target.stat().st_mtime
 

@@ -1,5 +1,42 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md). Per-version `release-notes-v*.md` files were consolidated into this single file in v0.7.0 (per user feedback v0.6.1#2).
 
+# PopolaLoom Unreleased — Skill identifier rename
+
+> Status: pending release on the `feat/skill-rename-popola-loom` branch
+> Theme: align the user-facing Skill identifier with the PopolaLoom
+> brand orthography. **No source-code logic changes; no Python API
+> changes.**
+
+## Summary
+
+The user-facing Skill identifier is renamed from **`popolaloom`** to
+**`popola-loom`**. The Python package name `popolaloom` is unchanged
+(`pip install popolaloom`, `import popolaloom`,
+`popolaloom._vendored.arktower`, etc. all keep working). Concretely:
+
+- Wheel-bundled Skill directory:
+  `src/popolaloom/skills/popolaloom/` → `src/popolaloom/skills/popola-loom/`
+- SKILL.md frontmatter: `name: popolaloom` → `name: popola-loom`
+- Version marker filename: `.popolaloom-version` → `.popola-loom-version`
+- Every `popola init` / `popola skill install` install path now lands
+  at `~/.cursor/skills/popola-loom/`, `~/.claude/skills/popola-loom/`,
+  `$CODEX_HOME/skills/popola-loom/` (Copilot stays at the single-file
+  `<cwd>/.github/copilot-instructions.md`).
+- The `install-popola` Skill keeps its existing legacy trigger
+  phrases (`install popolaloom`, `安装 popolaloom`, etc.) so existing
+  muscle memory keeps working, and adds new `install popola-loom` /
+  `set up popola-loom` / `安装 popola-loom` triggers for the new
+  orthography.
+
+Operators upgrading should re-run `popola init` (or
+`popola skill upgrade --target=all`) once after upgrading the wheel so
+the on-disk SKILL.md lands at the new path. The previous
+`~/.cursor/skills/popolaloom/SKILL.md` files can be removed after the
+new install lands; `popola doctor` will report the new path's status
+under the new directory name.
+
+---
+
 # PopolaLoom v0.7.0 — Docs + install-popola Skill consolidation
 
 > Released: 2026-05-06

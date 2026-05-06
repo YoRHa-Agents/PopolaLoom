@@ -38,7 +38,7 @@ from popolaloom.cli._skill_source import canonical_source_path
 _FRONTMATTER_RE = re.compile(r"\A---\n(.*?)\n---\n(.*)\Z", re.DOTALL)
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _CANONICAL_PATH = (
-    _REPO_ROOT / "src" / "popolaloom" / "skills" / "popolaloom" / "SKILL.md"
+    _REPO_ROOT / "src" / "popolaloom" / "skills" / "popola-loom" / "SKILL.md"
 )
 
 _EXPECTED_SECTION_HEADERS: tuple[str, ...] = (
@@ -131,9 +131,10 @@ def test_skill_md_frontmatter_yaml_required_keys(
             f"frontmatter[{key!r}] must be a non-empty string; got {value!r}"
         )
 
-    assert skill_frontmatter["name"] == "popolaloom", (
-        "skill `name` is locked at 'popolaloom' (Q5-1 lock); changing it "
-        "breaks every install path under .cursor/skills/popolaloom/."
+    assert skill_frontmatter["name"] == "popola-loom", (
+        "skill `name` is locked at 'popola-loom' (Q5-1 lock — renamed "
+        "from 'popolaloom' in v0.7.1+); changing it breaks every install "
+        "path under .cursor/skills/popola-loom/."
     )
 
 

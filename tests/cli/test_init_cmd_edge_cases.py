@@ -107,7 +107,7 @@ def test_init_auto_detect_no_ides_falls_back_to_cursor(
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
     assert "No AI tools detected" in out
-    assert (cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md").is_file()
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
 
 
 def test_init_auto_detect_picks_up_github_dir_for_copilot(
@@ -135,7 +135,7 @@ def test_init_auto_detect_picks_up_dot_codex_dir(
 
     result = runner.invoke(init_app, [])
     assert result.exit_code == 0, _combined_output(result)
-    target = fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md"
+    target = fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md"
     assert target.is_file()
 
 
@@ -296,10 +296,10 @@ def test_init_all_idempotent_second_run_skips_all(
         f"output:\n{out2}"
     )
     for path in (
-        cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md",
-        cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md",
+        cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md",
+        cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md",
         cwd / ".github" / "copilot-instructions.md",
-        fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md",
+        fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md",
     ):
         assert path.is_file()
 
@@ -335,10 +335,10 @@ def test_write_marker_dry_run_does_not_write(
     """
     from popolaloom.cli.init_cmd import _write_marker
 
-    install_dir = tmp_path / "skills" / "popolaloom"
+    install_dir = tmp_path / "skills" / "popola-loom"
     install_dir.mkdir(parents=True)
     _write_marker(install_dir, dry_run=True)
-    assert not (install_dir / ".popolaloom-version").exists()
+    assert not (install_dir / ".popola-loom-version").exists()
 
 
 def test_write_marker_skips_when_already_exists(
@@ -349,9 +349,9 @@ def test_write_marker_skips_when_already_exists(
     """
     from popolaloom.cli.init_cmd import _write_marker
 
-    install_dir = tmp_path / "skills" / "popolaloom"
+    install_dir = tmp_path / "skills" / "popola-loom"
     install_dir.mkdir(parents=True)
-    marker = install_dir / ".popolaloom-version"
+    marker = install_dir / ".popola-loom-version"
     marker.write_text("0.0.0-pinned\n", encoding="utf-8")
     _write_marker(install_dir, dry_run=False)
     assert marker.read_text(encoding="utf-8") == "0.0.0-pinned\n"

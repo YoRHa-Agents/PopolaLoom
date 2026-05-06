@@ -16,7 +16,7 @@ It is the multi-task / multi-CLI sibling of [DevolaFlow](https://github.com/YoRH
 - **Cross-terminal task survival** via the `popolad` UDS daemon (`start_new_session=True`, persistent SQLite task pool) — close your shell, SSH disconnect, machine reboot; the task survives until you `popola attach` from anywhere.
 - **Vendored ArkTower** task pool + EventBus + 4 SQL migrations under `popolaloom._vendored.arktower` — no sibling repo required for `pip install`.
 - **HITL across 5 channels** (Lark / IDE / CLI / MCP / Web) — LangGraph `interrupt()` broadcasts to all 5; first responder wins via cross-channel atomic `mark_answered`.
-- **Auto-discovery via Skill convention** — `popola init` writes the canonical `SKILL.md` into every detected IDE (`~/.cursor/skills/popolaloom/`, `~/.claude/skills/popolaloom/`, `$CODEX_HOME/skills/popolaloom/`, `<repo>/.github/copilot-instructions.md`), and host agents auto-load it.
+- **Auto-discovery via Skill convention** — `popola init` writes the canonical `SKILL.md` into every detected IDE (`~/.cursor/skills/popola-loom/`, `~/.claude/skills/popola-loom/`, `$CODEX_HOME/skills/popola-loom/`, `<repo>/.github/copilot-instructions.md`), and host agents auto-load it.
 - **8-dim self-eval baseline** (`popola eval run`) — PopolaLoom-nines composite over `dispatch_isolation / cycle_convergence / hitl_latency / attach_correctness / cross_cli_handoff / single_threaded_writes / event_log_completeness / hitl_handleability`, with per-dimension evidence pipelines.
 - **MCP-native** — exposes 9 dispatch / inspect / HITL verbs over stdio (`popola_submit / popola_list / popola_status / popola_attach_stream / popola_cancel / popola_relay / popola_supervise / popola_supply_feedback / popola_inject_subtask`) so any MCP-aware IDE can call them as tools.
 
@@ -163,7 +163,7 @@ PopolaLoom ships TWO Skills that auto-load in host agents:
 
 | Skill | Path | When it triggers |
 |---|---|---|
-| `popolaloom` (canonical, v0.5.0+) | `src/popolaloom/skills/popolaloom/SKILL.md` | User says "dispatch a task to cursor", "list my agents", "popola doctor", etc. — every popola CLI verb |
+| `popola-loom` (canonical, v0.5.0+; renamed from `popolaloom` in v0.7.1+) | `src/popolaloom/skills/popola-loom/SKILL.md` | User says "dispatch a task to cursor", "list my agents", "popola doctor", etc. — every popola CLI verb |
 | `install-popola` (NEW, v0.7.0+) | `src/popolaloom/skills/install-popola/SKILL.md` | User says "install popola", "/install-popola", "安装 popolaloom" — fresh install / upgrade workflow |
 
 Both ship in the wheel; `popola init` installs the canonical one to per-IDE Skill directories. The installer Skill is opt-in and authored manually (deferred automation noted in [`RELEASE_NOTES.md`](RELEASE_NOTES.md) §"Known limitations").
@@ -172,14 +172,14 @@ Both ship in the wheel; `popola init` installs the canonical one to per-IDE Skil
 
 | IDE | Scope | Install path |
 |---|---|---|
-| Cursor | global | `~/.cursor/skills/popolaloom/SKILL.md` |
-| Cursor | project | `<repo>/.cursor/skills/popolaloom/SKILL.md` |
-| Claude Code | global | `~/.claude/skills/popolaloom/SKILL.md` |
-| Claude Code | project | `<repo>/.claude/skills/popolaloom/SKILL.md` |
-| Codex | global | `$CODEX_HOME/skills/popolaloom/SKILL.md` (default `~/.codex/`) |
+| Cursor | global | `~/.cursor/skills/popola-loom/SKILL.md` |
+| Cursor | project | `<repo>/.cursor/skills/popola-loom/SKILL.md` |
+| Claude Code | global | `~/.claude/skills/popola-loom/SKILL.md` |
+| Claude Code | project | `<repo>/.claude/skills/popola-loom/SKILL.md` |
+| Codex | global | `$CODEX_HOME/skills/popola-loom/SKILL.md` (default `~/.codex/`) |
 | Copilot | project-only | `<repo>/.github/copilot-instructions.md` (single-file flatten) |
 
-Every install verb is **idempotent**: a second invocation prints `SKIP <path> (already installed)` instead of overwriting operator edits. A `.popolaloom-version` marker is written beside the SKILL.md so `popola doctor` can detect drift (`v0.4.1 (expected v0.7.0)` etc.) when you upgrade the wheel without re-running install.
+Every install verb is **idempotent**: a second invocation prints `SKIP <path> (already installed)` instead of overwriting operator edits. A `.popola-loom-version` marker is written beside the SKILL.md so `popola doctor` can detect drift (`v0.4.1 (expected v0.7.0)` etc.) when you upgrade the wheel without re-running install.
 
 For the upgrade workflow, the `popola doctor` audit explanation, and the full list of `popola init` verbs / modifiers, see [`docs/USER_GUIDE.md#ide-integration`](docs/USER_GUIDE.md#ide-integration).
 

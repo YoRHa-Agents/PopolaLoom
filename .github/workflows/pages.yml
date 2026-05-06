@@ -1,0 +1,70 @@
+# .github/workflows/pages.yml — GitHub Pages deployment.
+#
+# Builds the Jekyll site under `docs/` (theme: jekyll-theme-cayman, plugin:
+# jekyll-relative-links per `docs/_config.yml`) and deploys to GitHub Pages
+# via the official `actions/deploy-pages` workflow. The repo's Pages
+# configuration already uses `build_type: workflow` (i.e. classic
+# branch-source builds are disabled and Pages waits for a workflow to
+# upload the artifact). No `Gemfile` is needed — `actions/jekyll-build-pages`
+# uses the github-pages gem set under the hood.
+#
+# Trigger contract:
+#   * push to `main` that touches `docs/**` or this workflow → build + deploy
+#   * `workflow_dispatch` → manual rebuild (e.g. after a theme bump)
+#
+# Concurrency: a single in-flight `pages` deploy at a time. We do NOT
+# `cancel-in-progress` because cancelling a deploy mid-flight can leave
+# Pages in an inconsistent state — instead we queue and let each run
+# finish.
+
+name: Deploy GitHub Pages
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: Build Jekyll site
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Pages
+        id: pages
+        uses: actions/configure-pages@v5
+
+      - name: Build with Jekyll
+        uses: actions/jekyll-build-pages@v1
+        with:
+          source: ./docs
+          destination: ./_site
+
+      - name: Upload artifact
+        uses: actions/upload-pages-artifact@v3
+
+  deploy:
+    name: Deploy to GitHub Pages
+    needs: build
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

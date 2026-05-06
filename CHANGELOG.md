@@ -1,10 +1,43 @@
 # Changelog
 
+Skill renamed from `popolaloom` to `popola-loom` (directory + frontmatter `name:` + version marker filename `.popola-loom-version`); Python package name `popolaloom` unchanged.
+
 All notable changes to PopolaLoom are documented here. The format
 follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/) and
 the project adheres to [Semantic Versioning](https://semver.org/).
 
 Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwritten per release; v0.7.0+ policy).
+
+## [Unreleased]
+
+### Changed
+
+- **User-facing Skill identifier renamed**: `popolaloom` → `popola-loom`. Affects:
+  the wheel-bundled Skill directory (`src/popolaloom/skills/popolaloom/` →
+  `src/popolaloom/skills/popola-loom/`), the SKILL.md frontmatter
+  `name:` field, the version-marker filename
+  (`.popolaloom-version` → `.popola-loom-version`), every `popola init` /
+  `popola skill install` install path
+  (`~/.cursor/skills/popolaloom/` → `~/.cursor/skills/popola-loom/`,
+  same for `.claude` / `$CODEX_HOME`), and all related test fixtures /
+  documentation. The Python package name `popolaloom` is unchanged
+  (`pip install popolaloom`, `from popolaloom import ...`,
+  `popolaloom._vendored.arktower` etc. all keep working). The
+  `install-popola` Skill keeps its existing trigger phrases
+  (`install popolaloom`, `安装 popolaloom`, etc.) and adds new
+  `install popola-loom` / `set up popola-loom` triggers so legacy and
+  new phrasings both route to the same installer Skill.
+  Rationale: align the user-facing Skill identifier with the
+  PopolaLoom brand orthography ("Popola Loom") used in docs +
+  marketing material; the previous concatenated form (`popolaloom`)
+  was a Python-package-name carry-over that the host agent's Skill
+  router exposed verbatim.
+
+  Documentation Protocol: doc_auto sync pending — rename touched
+  `README.md`, `RELEASE_NOTES.md`, `CHANGELOG.md`, `docs/QUICKSTART.md`,
+  `docs/USER_GUIDE.md`, `docs/index.md`, `docs/DEMO.md`,
+  `.github/copilot-instructions.md`, `pyproject.toml`, and 12 test
+  files. Last updated: 2026-05-06.
 
 ## [0.7.0] — 2026-05-06
 

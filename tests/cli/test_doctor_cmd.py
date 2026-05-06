@@ -248,7 +248,7 @@ def test_doctor_skill_ok_when_skill_md_matches_version(
     target = cwd / ".github" / "copilot-instructions.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        f"---\nname: popolaloom\nversion: {__version__}\n---\nbody\n",
+        f"---\nname: popola-loom\nversion: {__version__}\n---\nbody\n",
         encoding="utf-8",
     )
 
@@ -352,15 +352,15 @@ def test_doctor_strict_passes_when_no_failures(
     cwd = isolated_env / "project"
     fake_home = isolated_env / "home"
     targets_to_install = [
-        cwd / ".cursor" / "skills" / "popolaloom" / "SKILL.md",
-        cwd / ".claude" / "skills" / "popolaloom" / "SKILL.md",
-        fake_home / ".cursor" / "skills" / "popolaloom" / "SKILL.md",
-        fake_home / ".claude" / "skills" / "popolaloom" / "SKILL.md",
-        fake_home / ".codex" / "skills" / "popolaloom" / "SKILL.md",
+        cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md",
+        cwd / ".claude" / "skills" / "popola-loom" / "SKILL.md",
+        fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md",
+        fake_home / ".claude" / "skills" / "popola-loom" / "SKILL.md",
+        fake_home / ".codex" / "skills" / "popola-loom" / "SKILL.md",
         cwd / ".github" / "copilot-instructions.md",
     ]
     body = (
-        f"---\nname: popolaloom\nversion: {__version__}\n"
+        f"---\nname: popola-loom\nversion: {__version__}\n"
         'description: "ok fixture"\n---\nbody\n'
     )
     for target in targets_to_install:
@@ -392,7 +392,7 @@ def test_doctor_skill_drift_detected_when_frontmatter_lags(
     target = cwd / ".github" / "copilot-instructions.md"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(
-        "---\nname: popolaloom\nversion: 0.0.0-stale\n---\nbody\n",
+        "---\nname: popola-loom\nversion: 0.0.0-stale\n---\nbody\n",
         encoding="utf-8",
     )
 

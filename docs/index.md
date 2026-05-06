@@ -8,7 +8,7 @@ description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / 
 
 > Meta-orchestrator over local agent CLIs. Per-task isolation, persistent process bus, HITL via 5 channels — all on a single `popolad` UDS daemon.
 
-[GitHub](https://github.com/YoRHa-Agents/PopolaLoom) · [Quickstart](QUICKSTART.html) · [User Guide](USER_GUIDE.html) · [Demo](DEMO.html) · [Release Notes](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) · [Changelog](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
+[GitHub](https://github.com/YoRHa-Agents/PopolaLoom) · [Quickstart](QUICKSTART.md) · [User Guide](USER_GUIDE.md) · [Demo](DEMO.md) · [Release Notes](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) · [Changelog](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
 
 ## What is PopolaLoom?
 
@@ -26,7 +26,7 @@ popola dispatch "echo hello popola" --cli=cursor
 popola doctor                        # 4-subsystem health check
 ```
 
-→ Full guide: [Quickstart](QUICKSTART.html)
+→ Full guide: [Quickstart](QUICKSTART.md)
 
 ## Key features
 
@@ -47,9 +47,9 @@ Just say `install popola` to any host agent (Cursor, Claude Code, Codex, GitHub 
 
 | Doc | What it covers |
 |---|---|
-| [Quickstart](QUICKSTART.html) | 5-minute onboarding (install → first task) |
-| [User Guide](USER_GUIDE.html) | Full CLI + MCP + HITL reference |
-| [Demo](DEMO.html) | Walkthroughs + example outputs + self-evolution journey |
+| [Quickstart](QUICKSTART.md) | 5-minute onboarding (install → first task) |
+| [User Guide](USER_GUIDE.md) | Full CLI + MCP + HITL reference |
+| [Demo](DEMO.md) | Walkthroughs + example outputs + self-evolution journey |
 
 ## Latest release: v0.7.0
 

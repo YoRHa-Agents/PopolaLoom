@@ -1,3 +1,9 @@
+---
+layout: default
+title: Demo
+description: Walkthroughs, example outputs, and self-evolution journey from v0.3.5 to v0.7.0.
+---
+
 # PopolaLoom — DEMO walkthrough (v0.3.5 → v0.7.0)
 
 > 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
@@ -19,10 +25,10 @@ migrations. The four threads:
    `.local/.agent/` keep working unchanged).
 2. **Single floating release notes** — all 10 per-version release-note
    files at the repo root (v0.4.0 → v0.6.1) are removed; their content
-   is preserved verbatim in [`CHANGELOG.md`](../CHANGELOG.md). The new
-   [`RELEASE_NOTES.md`](../RELEASE_NOTES.md) at the repo root is
+   is preserved verbatim in [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md). The new
+   [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) at the repo root is
    overwritten on every release going forward.
-3. **Comprehensive docs refresh** — [`README.md`](../README.md) is
+3. **Comprehensive docs refresh** — [`README.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/README.md) is
    rewritten as a polished landing page; new
    [`docs/QUICKSTART.md`](QUICKSTART.md) (5-minute onboarding) +
    [`docs/USER_GUIDE.md`](USER_GUIDE.md) (full reference); a
@@ -39,8 +45,8 @@ migrations. The four threads:
    Copilot), say `install popola` and the host walks you through it.
 
 Want the operator-level "what changed" summary? Read
-[`RELEASE_NOTES.md`](../RELEASE_NOTES.md). Want the version-by-version
-archive? Read [`CHANGELOG.md`](../CHANGELOG.md).
+[`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md). Want the version-by-version
+archive? Read [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md).
 
 ## v0.5.x evolution walkthrough (Loops 1–5)
 
@@ -59,7 +65,7 @@ test / coverage delta for the default lane (per the lane filter
 | 5    | v0.5.5  | `popola init --interactive` wizard + mutmut 4 → 5 + vendored migrations + coverage push | 1321 → 1368 (+47)| 93.94 % → 94.60 % |
 
 Each loop's "Known limitations / deferred" section feeds the next
-loop's first 5 minutes — see [`CHANGELOG.md`](../CHANGELOG.md) for
+loop's first 5 minutes — see [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) for
 the per-version closure ledger (the historical `[0.5.1]` …
 `[0.5.5]` entries) and the verification commands.
 
@@ -79,14 +85,14 @@ Install for Codex? [y/N]: n
 Scaffold .local/ workspace? [Y/n]: y
 
 Install plan:
-  - cursor (project) → /repo/.cursor/skills/popolaloom/SKILL.md
-  - claude (project) → /repo/.claude/skills/popolaloom/SKILL.md
+  - cursor (project) → /repo/.cursor/skills/popola-loom/SKILL.md
+  - claude (project) → /repo/.claude/skills/popola-loom/SKILL.md
   - local (project) → /repo/.local
 
 Proceed with this plan? [Y/n]: y
 
-  Cursor (project) -> /repo/.cursor/skills/popolaloom/SKILL.md
-  OK   /repo/.cursor/skills/popolaloom/SKILL.md
+  Cursor (project) -> /repo/.cursor/skills/popola-loom/SKILL.md
+  OK   /repo/.cursor/skills/popola-loom/SKILL.md
   ...
 Interactive setup complete.
 ```
@@ -97,6 +103,11 @@ still the default for CI scripts; `--interactive` is a deliberate
 human-driven UX surface).
 
 ## v0.5.0 Skill installation walkthrough
+
+> Note: paths shown reflect the current `popola-loom` naming (renamed
+> from `popolaloom` post-v0.7.0). The historical v0.5.0 release shipped
+> the older `popolaloom/` skill directory; the rename was applied
+> uniformly across this DEMO for clarity.
 
 The fastest path from a fresh checkout to "task running in Cursor +
 Lark notification on completion" is the new 6-step flow that ships with
@@ -118,8 +129,8 @@ Detected install targets:
 
 # 3. install Skill into Cursor globally (idempotent)
 $ popola init cursor --global
-  OK   /home/agent/.cursor/skills/popolaloom/SKILL.md
-  OK   /home/agent/.cursor/skills/popolaloom/.popolaloom-version
+  OK   /home/agent/.cursor/skills/popola-loom/SKILL.md
+  OK   /home/agent/.cursor/skills/popola-loom/.popola-loom-version
 
 # 4. start the daemon
 $ popola popolad start
@@ -136,9 +147,9 @@ $ popola doctor
 PopolaLoom Doctor Report
 
 Skill audit
-  cursor global  /home/agent/.cursor/skills/popolaloom/SKILL.md  OK     v0.5.0
-  cursor project <repo>/.cursor/skills/popolaloom/SKILL.md       MISS   expected v0.5.0
-  claude global  /home/agent/.claude/skills/popolaloom/SKILL.md  MISS   expected v0.5.0
+  cursor global  /home/agent/.cursor/skills/popola-loom/SKILL.md  OK     v0.5.0
+  cursor project <repo>/.cursor/skills/popola-loom/SKILL.md       MISS   expected v0.5.0
+  claude global  /home/agent/.claude/skills/popola-loom/SKILL.md  MISS   expected v0.5.0
   ...
 Daemon audit
   socket   /home/agent/.popola/popolad.sock                       OK     pid=12345 uptime=3.4s
@@ -164,7 +175,7 @@ emits a 4-section envelope (`skill` / `daemon` / `lark` / `arktower`
 When `lark-cli` is installed AND `LARK_HITL_TARGET_OPEN_ID` is set,
 the daemon proactively sends interactive cards on every terminal
 state (per the v0.4.1 minor; see
-[`CHANGELOG.md` §0.4.1](../CHANGELOG.md)):
+[`CHANGELOG.md` §0.4.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)):
 
 | Trigger | Default | Card colour |
 |---|---|---|
@@ -173,17 +184,10 @@ state (per the v0.4.1 minor; see
 | `task.canceled` | ON (`LARK_NOTIFY_ON_CANCELED=1`) | yellow |
 | `cancel → SIGKILL` | OFF (`LARK_NOTIFY_ON_CANCEL_ESCALATED=0`) | orange |
 
-> **Screenshots (placeholder for v0.5.1)**:
-> `docs/screenshots/popola-doctor-output.png`,
-> `docs/screenshots/lark-completion-card.png`,
-> `docs/screenshots/cursor-skill-discover.png` — to be added in a
-> v0.5.1 doc-only PR alongside the deferred curl-installer (per Q5-5
-> lock). The text/output captures above are the ground truth for now.
-
 ## Quickstart walkthrough
 
 The fastest way to see PopolaLoom working is the
-[`examples/quickstart.sh`](../examples/quickstart.sh) script.  It
+[`examples/quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/examples/quickstart.sh) script.  It
 exercises the 6 canonical demo steps (Steps 0–5: `popola init` dry-run
 → daemon start → dispatch → list → status → `popola doctor` → daemon
 stop) in ~10 seconds. The historical 5-step output below is preserved
@@ -221,13 +225,6 @@ sending SIGTERM to popolad PID=3396800
 popolad PID=3396800 exited gracefully
 [quickstart] all 5 steps PASS — popolaloom v0.3.5 ready
 ```
-
-> **Screenshots (placeholder)**: `docs/screenshots/quickstart-runthrough.png`,
-> `docs/screenshots/popola-list-rich-table.png`,
-> `docs/screenshots/nines-toml-output.png` — to be added in a follow-up
-> doc-only PR.  The exact tooling for capturing them is
-> [asciinema](https://asciinema.org/) + [terminalizer](https://terminalizer.com/);
-> the demo script above is the ground truth.
 
 ## Step-by-step deep dive
 
@@ -325,8 +322,8 @@ event_log_completeness = 0.10
 hitl_handleability = 0.10
 ```
 
-The 8 dimensions are documented in [`nines.toml`](../nines.toml) +
-[`src/popolaloom/evaluation/dimensions/`](../src/popolaloom/evaluation/dimensions/).
+The 8 dimensions are documented in [`nines.toml`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/nines.toml) +
+[`src/popolaloom/evaluation/dimensions/`](https://github.com/YoRHa-Agents/PopolaLoom/tree/main/src/popolaloom/evaluation/dimensions).
 Each scorer has a per-dimension evidence pipeline (round-3 v0.3.3
 finally wired `lark_health` to real fixture-driven measurement).
 
@@ -395,7 +392,7 @@ popola dispatch "用 nines + devola-flow 评估 popolaloom 当前版本" --cli c
 ```
 
 The 5-round v0.3.x cycle is fully documented in
-[`evidence/round-{1..5}-evidence.md`](../evidence/) — each ledger
+[`evidence/round-{1..5}-evidence.md`](https://github.com/YoRHa-Agents/PopolaLoom/tree/main/evidence) — each ledger
 shows the inner composite, outer Δ, decision (RELEASE / ROLLBACK),
 and findings list.
 
@@ -405,8 +402,8 @@ and findings list.
   (NFR-1/2/3/5/8/9 + chaos).
 - **Self-bootstrap**: `pytest tests/self_bootstrap -m slow` runs S1..S5.
 - **Evidence ledgers**: `evidence/round-1-evidence.md` … `round-5-evidence.md`.
-- **Latest release notes**: [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)
+- **Latest release notes**: [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
   (overwritten per release; v0.7.0+ policy).
 - **Historical archive (v0.0.1 → present)**:
-  [`CHANGELOG.md`](../CHANGELOG.md) — search for `## [0.4.0]` for the
+  [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) — search for `## [0.4.0]` for the
   GA release notes; `[0.4.1]` for the Lark notification minor; etc.

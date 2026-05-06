@@ -1,5 +1,5 @@
 ---
-name: popolaloom
+name: popola-loom
 version: 0.7.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
@@ -58,7 +58,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 | `popola popolad stop` | SIGTERM 5s → SIGKILL，清 pid + sock | `popola popolad stop` |
 | `popola eval run --output PATH` | 跑 8-dim PopolaLoom-nines self-eval | `popola eval run -o /tmp/nines.toml` |
 | `popola init` | 自动检测 IDE 并装 SKILL.md | `popola init` |
-| `popola init cursor --global` | 装到 `~/.cursor/skills/popolaloom/` | `popola init cursor --global` |
+| `popola init cursor --global` | 装到 `~/.cursor/skills/popola-loom/` | `popola init cursor --global` |
 | `popola init local --mode=core` | 仅 scaffold `.local/` 工作区 | `popola init local --mode=core` |
 | `popola init --list` | 打印检测到的 IDE + 安装路径 | `popola init --list` |
 | `popola doctor` | 五项综合自检（v0.5.0+，Stage S4） | `popola doctor` |
@@ -211,12 +211,12 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 
 ## Version + upgrade
 
-- **Current**: 0.4.1 — `popola init` (Stage S2/S3 of the v0.5.0 milestone, available on `feature/v0.5.0-skill-install`) 自动安装本 SKILL.md 到 `<scope>/.cursor/skills/popolaloom/SKILL.md`、`<scope>/.claude/skills/popolaloom/SKILL.md`、`$CODEX_HOME/skills/popolaloom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage S5 of v0.5.0 bumps `__version__` (and this frontmatter) to 0.5.0 in lockstep.
-- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popolaloom/.popolaloom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
+- **Current**: 0.4.1 — `popola init` (Stage S2/S3 of the v0.5.0 milestone, available on `feature/v0.5.0-skill-install`) 自动安装本 SKILL.md 到 `<scope>/.cursor/skills/popola-loom/SKILL.md`、`<scope>/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage S5 of v0.5.0 bumps `__version__` (and this frontmatter) to 0.5.0 in lockstep.
+- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
 - **Upgrade**:
   ```bash
   pip install --upgrade popolaloom
-  popola skill upgrade --target=cursor   # v0.5.0+ Stage S4，比对 SHA256 + backup .popolaloom-bak.<ts>
+  popola skill upgrade --target=cursor   # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
   popola init                             # 兜底：手动 re-run 触发 idempotent install
   ```
 - **Drift detection (v0.5.0+ Stage S4)**: `popola doctor` 走 5 项审计（Skill / Daemon / Lark-cli / ArkTower / IDE config），任一 ✗ 退 1，全 ✓ 退 0；脚本可信赖此 exit code。
