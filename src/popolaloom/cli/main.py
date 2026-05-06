@@ -438,32 +438,70 @@ def _attach_streaming(task_id: str, *, from_index: int) -> None:
         return
 
 
-def _consume_sse(response: httpx.Response, *, terminate_on_terminal: bool) -> None:
+def _consume_sse(response: httpx.Response, *, terminate_on_terminal: bool) -> bool:
     """Iterate raw SSE response, parse each ``data:`` frame, render one line.
 
     Args:
         response: an open streaming :class:`httpx.Response`.
         terminate_on_terminal: when True, stop iterating once a terminal
             event is seen (we still let the server close naturally too).
+
+    Returns:
+        bool: ``True`` if a terminal event (``task.completed`` /
+        ``task.failed`` / ``task.canceled``) or a server-side
+        ``event: end-of-stream`` marker was observed. Callers can use
+        this to distinguish "stream ended cleanly" from "stream broke
+        mid-flight" (BUG-C in v0.7.0 feedback).
+
+    BUG-C (v0.7.1): when the server's ``StreamingResponse`` returns
+    after writing many SSE frames, ``httpx`` occasionally misclassifies
+    the resulting EOF as a :class:`httpx.ReadTimeout` instead of a
+    clean stream close. We catch ReadTimeout here and, when at least
+    one terminal event has already been rendered, treat it as a normal
+    stream-end (the producer is done; nothing more is coming). When the
+    timeout fires *before* any terminal event we re-raise so the caller
+    can decide (server hung mid-stream is still an error).
     """
-    for raw_line in response.iter_lines():
-        if not raw_line:
-            continue
-        if raw_line.startswith("data: "):
-            payload = raw_line[len("data: "):]
-        elif raw_line.startswith(":"):
-            continue
-        else:
-            continue
-        try:
-            envelope = json.loads(payload)
-        except json.JSONDecodeError:
-            logger.warning("Skipping un-parsable SSE frame: %r", payload[:200])
-            continue
-        typer.echo(_format_event(envelope))
-        terminal_types = {"task.completed", "task.failed", "task.canceled"}
-        if terminate_on_terminal and envelope.get("type") in terminal_types:
-            continue
+    terminal_types = {"task.completed", "task.failed", "task.canceled"}
+    saw_terminal = False
+    try:
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+            if raw_line.startswith("data: "):
+                payload = raw_line[len("data: "):]
+            elif raw_line.startswith("event:"):
+                event_kind = raw_line[len("event:"):].strip()
+                if event_kind == "end-of-stream":
+                    saw_terminal = True
+                    break
+                continue
+            elif raw_line.startswith(":"):
+                continue
+            else:
+                continue
+            try:
+                envelope = json.loads(payload)
+            except json.JSONDecodeError:
+                logger.warning("Skipping un-parsable SSE frame: %r", payload[:200])
+                continue
+            typer.echo(_format_event(envelope))
+            if envelope.get("type") in terminal_types:
+                saw_terminal = True
+                if terminate_on_terminal:
+                    break
+    except httpx.ReadTimeout:
+        if not saw_terminal:
+            logger.warning(
+                "_consume_sse: ReadTimeout before any terminal event was seen; "
+                "re-raising to caller"
+            )
+            raise
+        logger.debug(
+            "_consume_sse: ReadTimeout after terminal event observed — "
+            "treating as clean stream-end (BUG-C)"
+        )
+    return saw_terminal
 
 
 # ── list ──────────────────────────────────────────────────────────────────
