@@ -183,10 +183,11 @@ jobs:
           PR_NUMBER: ${{ github.event.pull_request.number }}
         run: |
           BODY="$(jq -r '.reason as $r | .conditions[] | "- **\(.name)**: \(.verdict) — \(.reason) (observed: `\(.observed)`, threshold: `\(.threshold)`)"' gate_result.json)"
-          gh pr comment "$PR_NUMBER" --body "## Auto-merge gate FAILED
-
-$(jq -r '.reason' gate_result.json)
-
-$BODY
-
-Fix the failing condition(s) above and push again to re-run the gate."
+          REASON="$(jq -r '.reason' gate_result.json)"
+          {
+            printf '## Auto-merge gate FAILED\n\n'
+            printf '%s\n\n' "$REASON"
+            printf '%s\n\n' "$BODY"
+            printf 'Fix the failing condition(s) above and push again to re-run the gate.\n'
+          } > comment.md
+          gh pr comment "$PR_NUMBER" --body-file comment.md
