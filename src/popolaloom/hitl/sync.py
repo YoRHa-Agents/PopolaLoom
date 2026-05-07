@@ -21,6 +21,7 @@ from __future__ import annotations
 import json
 import logging
 import sqlite3
+import threading
 import uuid
 from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
@@ -138,10 +139,16 @@ class HITLStore:
     Args:
         connection: open ``sqlite3.Connection``. Must have row factory
             set to :class:`sqlite3.Row` for the dict-style fetches.
+
+    Concurrent access may occur when the asyncio RPC bridge fans out multiple
+    HITL operations onto thread-pool threads against the **same**
+    underlying connection (:class:`~threading.RLock` wraps every public DB
+    call so callers never trip ``sqlite3`` thread-safety assertions).
     """
 
     def __init__(self, connection: sqlite3.Connection) -> None:
         self.conn = connection
+        self._conn_lock = threading.RLock()
 
     # ── CRUD ──
 
@@ -171,23 +178,24 @@ class HITLStore:
         resolved_id = hitl_id or prompt.prompt_id or f"hitl-{uuid.uuid4().hex[:12]}"
         now = datetime.now(UTC)
         deadline = deadline_at or (now + timedelta(seconds=prompt.deadline_seconds))
-        self.conn.execute(
-            """
-            INSERT INTO popola_hitl
-                (hitl_id, trigger, status, prompt_json,
-                 created_at, deadline_at, task_id)
-            VALUES (?, ?, 'pending', ?, ?, ?, ?)
-            """,
-            (
-                resolved_id,
-                prompt.trigger,
-                prompt.model_dump_json(),
-                now.isoformat(),
-                deadline.isoformat(),
-                task_id,
-            ),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """
+                INSERT INTO popola_hitl
+                    (hitl_id, trigger, status, prompt_json,
+                     created_at, deadline_at, task_id)
+                VALUES (?, ?, 'pending', ?, ?, ?, ?)
+                """,
+                (
+                    resolved_id,
+                    prompt.trigger,
+                    prompt.model_dump_json(),
+                    now.isoformat(),
+                    deadline.isoformat(),
+                    task_id,
+                ),
+            )
+            self.conn.commit()
         logger.info(
             "HITLStore.create: hitl_id=%s trigger=%s deadline_at=%s task_id=%s",
             resolved_id, prompt.trigger, deadline.isoformat(), task_id,
@@ -196,40 +204,43 @@ class HITLStore:
 
     def get(self, hitl_id: str) -> dict[str, Any] | None:
         """Fetch the row by id (None when missing)."""
-        cur = self.conn.execute(
-            "SELECT * FROM popola_hitl WHERE hitl_id = ?",
-            (hitl_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return _row_to_dict(row)
+        with self._conn_lock:
+            cur = self.conn.execute(
+                "SELECT * FROM popola_hitl WHERE hitl_id = ?",
+                (hitl_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return None
+            return _row_to_dict(row)
 
     def list_pending(self, *, task_id: str | None = None) -> list[dict[str, Any]]:
         """List all rows with ``status='pending'`` (optional task_id filter)."""
-        if task_id is not None:
-            cur = self.conn.execute(
-                "SELECT * FROM popola_hitl WHERE status = 'pending' AND task_id = ? "
-                "ORDER BY created_at",
-                (task_id,),
-            )
-        else:
-            cur = self.conn.execute(
-                "SELECT * FROM popola_hitl WHERE status = 'pending' "
-                "ORDER BY created_at",
-            )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        with self._conn_lock:
+            if task_id is not None:
+                cur = self.conn.execute(
+                    "SELECT * FROM popola_hitl WHERE status = 'pending' AND task_id = ? "
+                    "ORDER BY created_at",
+                    (task_id,),
+                )
+            else:
+                cur = self.conn.execute(
+                    "SELECT * FROM popola_hitl WHERE status = 'pending' "
+                    "ORDER BY created_at",
+                )
+            return [_row_to_dict(r) for r in cur.fetchall()]
 
     def list_overdue(self) -> list[dict[str, Any]]:
         """List pending rows whose deadline has passed (used by timeout job)."""
         now_iso = datetime.now(UTC).isoformat()
-        cur = self.conn.execute(
-            "SELECT * FROM popola_hitl WHERE status = 'pending' "
-            "AND deadline_at IS NOT NULL AND deadline_at < ? "
-            "ORDER BY deadline_at",
-            (now_iso,),
-        )
-        return [_row_to_dict(r) for r in cur.fetchall()]
+        with self._conn_lock:
+            cur = self.conn.execute(
+                "SELECT * FROM popola_hitl WHERE status = 'pending' "
+                "AND deadline_at IS NOT NULL AND deadline_at < ? "
+                "ORDER BY deadline_at",
+                (now_iso,),
+            )
+            return [_row_to_dict(r) for r in cur.fetchall()]
 
     # ── Atomic transitions ──
 
@@ -263,28 +274,29 @@ class HITLStore:
             MarkAnsweredResult with ``ok`` indicating winner status.
         """
         now_iso = datetime.now(UTC).isoformat()
-        cursor = self.conn.execute(
-            """
-            UPDATE popola_hitl
-               SET status = 'answered',
-                   answered_at = ?,
-                   answered_via = ?,
-                   answer_option_id = ?,
-                   answer_reason = ?,
-                   answer_responder_id = ?
-             WHERE hitl_id = ? AND status = 'pending'
-            """,
-            (now_iso, via, option_id, reason, responder_id, hitl_id),
-        )
-        self.conn.commit()
-        if cursor.rowcount == 1:
-            logger.info(
-                "HITLStore.mark_answered: hitl_id=%s via=%s option=%s (winner)",
-                hitl_id, via, option_id,
+        with self._conn_lock:
+            cursor = self.conn.execute(
+                """
+                UPDATE popola_hitl
+                   SET status = 'answered',
+                       answered_at = ?,
+                       answered_via = ?,
+                       answer_option_id = ?,
+                       answer_reason = ?,
+                       answer_responder_id = ?
+                 WHERE hitl_id = ? AND status = 'pending'
+                """,
+                (now_iso, via, option_id, reason, responder_id, hitl_id),
             )
-            return MarkAnsweredResult(ok=True)
+            self.conn.commit()
+            if cursor.rowcount == 1:
+                logger.info(
+                    "HITLStore.mark_answered: hitl_id=%s via=%s option=%s (winner)",
+                    hitl_id, via, option_id,
+                )
+                return MarkAnsweredResult(ok=True)
 
-        existing = self.get(hitl_id)
+            existing = self.get(hitl_id)
         if existing is None:
             logger.warning("HITLStore.mark_answered: hitl_id=%s does not exist", hitl_id)
             return MarkAnsweredResult(ok=False, already_status=None)
@@ -294,7 +306,9 @@ class HITLStore:
             "HITLStore.mark_answered: hitl_id=%s lost race (status=%s via=%s)",
             hitl_id, already_status, already_via,
         )
-        valid_channels = {"lark", "ide", "cli", "email", "signal", "mcp", "web"}
+        valid_channels = {
+            "lark", "ide", "cli", "email", "signal", "mcp", "web", "cloud",
+        }
         narrowed_via: HITLChannel | None
         if isinstance(already_via, str) and already_via in valid_channels:
             narrowed_via = already_via  # type: ignore[assignment]
@@ -314,13 +328,14 @@ class HITLStore:
         """
         if status not in {"timeout", "cancelled"}:
             raise ValueError(f"mark_status only handles timeout/cancelled; got {status}")
-        cursor = self.conn.execute(
-            "UPDATE popola_hitl SET status = ? "
-            "WHERE hitl_id = ? AND status = 'pending'",
-            (status, hitl_id),
-        )
-        self.conn.commit()
-        return cursor.rowcount == 1
+        with self._conn_lock:
+            cursor = self.conn.execute(
+                "UPDATE popola_hitl SET status = ? "
+                "WHERE hitl_id = ? AND status = 'pending'",
+                (status, hitl_id),
+            )
+            self.conn.commit()
+            return cursor.rowcount == 1
 
     # ── Lark-specific tracking ──
 
@@ -333,17 +348,18 @@ class HITLStore:
         attempts_increment: int = 1,
     ) -> None:
         """Record the outcome of a ``send_lark_card`` invocation."""
-        self.conn.execute(
-            """
-            UPDATE popola_hitl
-               SET lark_message_id = COALESCE(?, lark_message_id),
-                   lark_send_attempts = lark_send_attempts + ?,
-                   lark_last_send_error = ?
-             WHERE hitl_id = ?
-            """,
-            (message_id, attempts_increment, last_send_error, hitl_id),
-        )
-        self.conn.commit()
+        with self._conn_lock:
+            self.conn.execute(
+                """
+                UPDATE popola_hitl
+                   SET lark_message_id = COALESCE(?, lark_message_id),
+                       lark_send_attempts = lark_send_attempts + ?,
+                       lark_last_send_error = ?
+                 WHERE hitl_id = ?
+                """,
+                (message_id, attempts_increment, last_send_error, hitl_id),
+            )
+            self.conn.commit()
 
     def append_lark_event_id(self, hitl_id: str, event_id: str) -> bool:
         """Append a Lark event_id to ``lark_event_ids`` (de-duped JSON array).
@@ -352,36 +368,38 @@ class HITLStore:
         it was already present (used for de-duplication of webhook
         retries by the listener).
         """
-        cur = self.conn.execute(
-            "SELECT lark_event_ids FROM popola_hitl WHERE hitl_id = ?",
-            (hitl_id,),
-        )
-        row = cur.fetchone()
-        if row is None:
-            return False
-        raw = row[0]
-        ids: list[str]
-        if raw is None:
-            ids = []
-        else:
-            try:
-                parsed = json.loads(raw)
-                ids = list(parsed) if isinstance(parsed, list) else []
-            except json.JSONDecodeError:
-                logger.warning(
-                    "HITLStore.append_lark_event_id: %s has bad JSON in lark_event_ids; resetting",
-                    hitl_id,
-                )
+        with self._conn_lock:
+            cur = self.conn.execute(
+                "SELECT lark_event_ids FROM popola_hitl WHERE hitl_id = ?",
+                (hitl_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                return False
+            raw = row[0]
+            ids: list[str]
+            if raw is None:
                 ids = []
-        if event_id in ids:
-            return False
-        ids.append(event_id)
-        self.conn.execute(
-            "UPDATE popola_hitl SET lark_event_ids = ? WHERE hitl_id = ?",
-            (json.dumps(ids), hitl_id),
-        )
-        self.conn.commit()
-        return True
+            else:
+                try:
+                    parsed = json.loads(raw)
+                    ids = list(parsed) if isinstance(parsed, list) else []
+                except json.JSONDecodeError:
+                    logger.warning(
+                        "HITLStore.append_lark_event_id: %s has bad JSON in "
+                        "lark_event_ids; resetting",
+                        hitl_id,
+                    )
+                    ids = []
+            if event_id in ids:
+                return False
+            ids.append(event_id)
+            self.conn.execute(
+                "UPDATE popola_hitl SET lark_event_ids = ? WHERE hitl_id = ?",
+                (json.dumps(ids), hitl_id),
+            )
+            self.conn.commit()
+            return True
 
     # ── Cross-channel cancel ──
 
@@ -457,30 +475,33 @@ class HITLStore:
         except Exception:
             logger.exception("process_timeout: invalid prompt_json for %s", hitl_id)
             return False
-        cursor = self.conn.execute(
-            """
-            UPDATE popola_hitl
-               SET status = 'timeout',
-                   answered_at = ?,
-                   answered_via = ?,
-                   answer_option_id = ?,
-                   answer_reason = ?
-             WHERE hitl_id = ? AND status = 'pending'
-            """,
-            (
-                datetime.now(UTC).isoformat(),
-                "cli",  # synthetic default — closest to "no human, popolad fallback"
-                prompt.default_option_id,
-                "deadline reached, default option applied",
-                hitl_id,
-            ),
-        )
-        self.conn.commit()
-        return cursor.rowcount == 1
+        with self._conn_lock:
+            cursor = self.conn.execute(
+                """
+                UPDATE popola_hitl
+                   SET status = 'timeout',
+                       answered_at = ?,
+                       answered_via = ?,
+                       answer_option_id = ?,
+                       answer_reason = ?
+                 WHERE hitl_id = ? AND status = 'pending'
+                """,
+                (
+                    datetime.now(UTC).isoformat(),
+                    "cli",  # synthetic default — closest to "no human, popolad fallback"
+                    prompt.default_option_id,
+                    "deadline reached, default option applied",
+                    hitl_id,
+                ),
+            )
+            self.conn.commit()
+            return cursor.rowcount == 1
 
     def fold_reply(self, reply: HITLReply) -> MarkAnsweredResult:
         """Convenience: forward an :class:`HITLReply` into ``mark_answered``."""
-        if reply.via not in {"lark", "ide", "cli", "mcp", "web", "email", "signal"}:
+        if reply.via not in {
+            "lark", "ide", "cli", "mcp", "web", "email", "signal", "cloud",
+        }:
             raise ValueError(f"unsupported reply channel for HITL store: {reply.via!r}")
         return self.mark_answered(
             reply.hitl_id,

@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.4
+version: 0.8.5
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -9,8 +9,8 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola --help"
 tier: 1
-token_estimate: 2950
-last_updated: "2026-05-06"
+token_estimate: 3200
+last_updated: "2026-05-08"
 ---
 
 # PopolaLoom Skill
@@ -43,6 +43,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 | Command | Purpose | Example |
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
+| `popola dispatch ... --cli=cursor-cloud` | 派发任务到 Cursor **Cloud Agents** REST（远端跑，不占本机 subprocess） | 见下文 Workflow 6 |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
 | `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
 | `popola dispatch --replay <handoff_id>` | 按之前写下的 envelope 重派发（v0.7.3+） | `popola dispatch --replay cursor-fix-bug-foo-py-3a7f9c1d` |
@@ -183,6 +184,46 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
    popola eval show --json
    ```
 
+### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+)
+
+云端 Background Agent：**不走本机 subprocess**，而是用 httpx 调 Cursor Cloud Agents REST（`CloudCursorClient`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()` + **cloud poller** 线程对齐状态事件。
+
+先决：**非空 `CURSOR_API_KEY` 环境变量** — HTTP Basic：`username=api_key`、`password=` 空串（适配器读环境变量，`CloudCursorAdapter.is_available()` 亦以此为准）。
+
+派发命令形态（与工作区 Decision matrix Q6 对齐：默认 **`autoCreatePR=false`**，需要的话用 flag 打开）：
+
+```bash
+export CURSOR_API_KEY="cr_..."
+popola dispatch "implement smoke-test stub in README" \
+  --cli=cursor-cloud \
+  --cwd ~/src/myrepo \
+  --cli-flag repo_url=https://github.com/acme/monorepo \
+  --cli-flag starting_ref=main \
+  --cli-flag model=composer-2 \
+  --cli-flag auto_create_pr=false
+```
+
+支持的 `--cli-flag extra` keys（传给 `cursor_cloud.CursorCloudAdapter` / REST）：
+
+| Key | 说明 |
+|---|---|
+| `repo_url` | Git HTTPS 克隆地址（或与 `pr_url` 二选一） |
+| `pr_url` | 直接基于已有 PR URL 派发（与 `repo_url` 二选一） |
+| `starting_ref` | branch / tag，默认 `"main"` |
+| `model` | 云端模型 id，默认 `"composer-2"` |
+| `auto_create_pr` | bool，默认 `false` |
+| `work_on_current_branch` | bool，默认 `false` |
+| `skip_reviewer_request` | bool，`auto_create_pr=true` 时可选 |
+| `env_vars` | `dict[str,str]` JSON blob（透传到 payload `envVars`） |
+| `timeout_s` | HTTP 单次请求超时 float |
+| `api_key` | 覆盖环境变量里的 key（一般由测试/DI 用；生产不推荐写进 envelope） |
+
+**与本地 `cursor` subprocess 的差异（一眼）**：`popola list` / `popola status` 会带出 `runtime="cloud"`、`cursor_agent_id`（通常 `bc-*`）、`cursor_run_id`、`cloud_phase`。取消：`popola cancel` 在云路径走 **`cancel_run` REST**，不是 `SIGTERM`。HITL：若云端任务需要通过 Popola daemon 请人拍板走 Lark，可走 **`cloud`** 通道：`POST /hitl/cloud/request` → block `GET /hitl/cloud/wait/{hitl_id}` → Lark 侧照旧 first-responder wins → **`POST /hitl/cloud/answer/{hitl_id}`**。
+
+**Opt-in quota smoke**：导出 `CURSOR_API_KEY` 后跑 `pytest tests/real_cursor_cloud/ -m real_cursor_cloud`，否则该目录四项 case 仅 **skipped**（见 `pytest` marker `real_cursor_cloud`）。
+
+出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7。
+
 ## Configuration
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
@@ -200,6 +241,7 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 | `CODEX_HOME` | Codex skill / config 目录 | `~/.codex/` |
 | `POPOLA_USE_GRAPH` | 是否启用 LangGraph 子图（v0.3.0+） | `1` |
 | `LARK_PRIORITY_BOT_ID` | 出口卡用哪个 bot 发（multi-bot setup） | (unset → 默认 bot) |
+| `CURSOR_API_KEY` | Cursor Cloud Agents REST Basic 用户名 (= API key)，密码空 | (unset → `--cli=cursor-cloud` 不可用 / `CursorCloudAdapter.is_available()==False`) |
 
 > **Lark gating**：当 `lark-cli` 不在 PATH **或** `LARK_HITL_TARGET_OPEN_ID` unset 时，daemon 静默退化为只发本地事件 + 写本机 NDJSON（不抛异常，per the No Silent Failures + degrade-gracefully 双约束）。
 

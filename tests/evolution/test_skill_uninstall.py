@@ -1,10 +1,9 @@
-"""Default-lane tests for :mod:`popolaloom.evolution.skill_uninstall` (v0.8.4).
+"""Default-lane tests for :mod:`popolaloom.evolution.skill_uninstall`.
 
-Per the v0.8.4 acceptance contract — covers the uninstall API
-(happy path, idempotency, dry-run, scope fallback, all-target
-aggregator, marker-removal contract, unknown-target error path,
-dataclass invariants) so the new surface lands with the same
-≥ 8-test floor as the v0.5.0 install / upgrade suites.
+Covers the uninstall API (happy path, idempotency, dry-run, scope fallback,
+all-target aggregator, marker-removal contract, unknown-target error path,
+dataclass invariants) so the surface stays aligned with the v0.5.0+ install /
+upgrade suites.
 
 All tests use ``tmp_path`` + ``monkeypatch`` so they never touch the
 developer's real ``~/.cursor/`` etc. — same fixture shape as

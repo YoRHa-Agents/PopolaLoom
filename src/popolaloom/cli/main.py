@@ -822,7 +822,25 @@ def _summarize_data(event_type: str, data: Any) -> str:
     if event_type == "task.dispatched":
         return f"cli={data.get('cli')!r} prompt={data.get('prompt')!r}"
     if event_type in {"task.completed", "task.failed"}:
-        return f"exit_code={data.get('exit_code')}"
+        parts: list[str] = [f"exit_code={data.get('exit_code')}"]
+        runtime = data.get("runtime")
+        if runtime and runtime != "local":
+            parts.append(f"runtime={runtime}")
+        error_kind = data.get("error_kind")
+        if error_kind:
+            parts.append(f"error_kind={error_kind}")
+        err = data.get("error")
+        if isinstance(err, dict):
+            et = err.get("error_type")
+            if et:
+                parts.append(f"error_type={et}")
+        return " ".join(parts)
+    if event_type == "cloud.queued" and data:
+        return (
+            f"agent_id={data.get('agent_id')!r} "
+            f"run_id={data.get('run_id')!r} "
+            f"initial_phase={data.get('initial_phase')!r}"
+        )
     if event_type == "process.started":
         return f"pid={data.get('pid')} session_id={data.get('session_id')}"
     if event_type == "stream.truncated":

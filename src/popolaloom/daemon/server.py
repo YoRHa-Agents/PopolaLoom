@@ -69,6 +69,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from popolaloom.adapters.cursor_cloud import (
+    CloudCursorClient,
+    CursorCloudConflictError,
+    CursorCloudError,
+)
 from popolaloom.daemon.event_log import EventLog
 from popolaloom.daemon.graph import GraphCallbacks, build_main_graph
 from popolaloom.daemon.graph import TaskState as GraphTaskState
@@ -162,6 +167,8 @@ class Popolad:
             ``POPOLA_USE_GRAPH`` 环境变量 (默认 ``"1"`` 即开)。Stage B 起
             production daemon 始终走 graph 路径; Stage C 可显式 ``False``
             做 bootstrap 调试。
+        cloud_client: v0.8.5 可选 :class:`~popolaloom.adapters.cursor_cloud.CloudCursorClient`
+            （测试注入）；``None`` 时在首次云取消时按 ``CURSOR_API_KEY`` 惰性构造。
     """
 
     def __init__(
@@ -173,6 +180,7 @@ class Popolad:
         event_bus_bridge: PopolaEventBusBridge | None = None,
         checkpointer: _Saver | None = None,
         use_graph: bool | None = None,
+        cloud_client: CloudCursorClient | None = None,
     ) -> None:
         self._events_dir = Path(events_dir) if events_dir is not None else _default_events_dir()
         self._events_dir.mkdir(parents=True, exist_ok=True)
@@ -180,6 +188,7 @@ class Popolad:
         self._task_repository = task_repository
         self._persistence = persistence
         self._event_bus_bridge = event_bus_bridge
+        self._cloud_client: CloudCursorClient | None = cloud_client
         self._state = StateStore()
         self._supervisor = Supervisor(state_store=self._state)
         self._event_logs: dict[str, EventLog] = {}
@@ -967,6 +976,9 @@ class Popolad:
             raise RuntimeError(
                 f"task {task_id} already in terminal state {handle.state}; cannot cancel"
             )
+        if handle.runtime == "cloud":
+            return self._cancel_cloud_task(handle)
+
         pid = handle.pid
         if pid is None:
             # Orphan-reap path: rehydrated handles from a previous daemon process that
@@ -1073,6 +1085,157 @@ class Popolad:
             "escalated_to_sigkill": escalated,
             "pid": pid,
         }
+
+    def _resolve_cloud_cursor_client(self) -> CloudCursorClient:
+        """Return the injected client or lazily construct one from ``CURSOR_API_KEY``."""
+        if self._cloud_client is not None:
+            return self._cloud_client
+        api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+        if not api_key:
+            raise RuntimeError(
+                "CURSOR_API_KEY is required to cancel cloud-runtime tasks "
+                "(inject Popolad(cloud_client=...) in tests)"
+            )
+        self._cloud_client = CloudCursorClient(api_key)
+        return self._cloud_client
+
+    def _cancel_cloud_task(self, handle: TaskHandle) -> dict[str, Any]:
+        """Cancel a cloud-runtime task via Cursor ``POST .../runs/.../cancel``."""
+        task_id = handle.task_id
+        event_log = self._ensure_task_event_log(task_id, handle)
+
+        if not handle.cursor_agent_id or not handle.cursor_run_id:
+            err_detail = (
+                "missing cursor_agent_id or cursor_run_id "
+                f"(agent_id={handle.cursor_agent_id!r}, run_id={handle.cursor_run_id!r})"
+            )
+            logger.error("cloud cancel: %s for task=%s", err_detail, task_id)
+            event_log.append(
+                "task.failed",
+                {
+                    "task_id": task_id,
+                    "runtime": "cloud",
+                    "error_kind": "cloud_cancel_no_handle",
+                    "error_detail": err_detail,
+                    "agent_id": handle.cursor_agent_id,
+                    "run_id": handle.cursor_run_id,
+                },
+            )
+            raise RuntimeError(f"cloud cancel failed: {err_detail}")
+
+        client = self._resolve_cloud_cursor_client()
+        agent_id = handle.cursor_agent_id
+        run_id = handle.cursor_run_id
+        assert agent_id is not None and run_id is not None
+
+        now = datetime.now(UTC)
+        try:
+            client.cancel_run(agent_id, run_id)
+        except CursorCloudConflictError as exc:
+            logger.warning(
+                "cloud cancel 409 for task=%s (agent_busy / not cancellable): %s",
+                task_id,
+                exc,
+            )
+            try:
+                self._state.update(
+                    task_id,
+                    state=TaskState.CANCELED,
+                    completed_at=now,
+                )
+            except KeyError:
+                logger.warning(
+                    "cloud cancel 409: task %s vanished from state store", task_id
+                )
+            event_log.append(
+                "task.canceled",
+                {
+                    "task_id": task_id,
+                    "runtime": "cloud",
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "cancel_kind": "best_effort_after_409",
+                },
+            )
+            return {
+                "task_id": task_id,
+                "requested_signal": "cloud_cancel",
+                "escalated_to_sigkill": False,
+                "pid": None,
+                "result": "cloud_cancel_best_effort_409",
+            }
+        except CursorCloudError as exc:
+            event_log.append(
+                "task.failed",
+                {
+                    "task_id": task_id,
+                    "runtime": "cloud",
+                    "error_kind": (
+                        "cloud_cancel_network_error"
+                        if exc.status_code is None
+                        else "cloud_cancel_failed"
+                    ),
+                    "error_detail": str(exc),
+                    "agent_id": agent_id,
+                    "run_id": run_id,
+                    "error": {
+                        "error_type": type(exc).__name__,
+                        "is_retryable": exc.is_retryable,
+                        "message": str(exc),
+                        "status_code": exc.status_code,
+                    },
+                },
+            )
+            if exc.status_code is None:
+                logger.error(
+                    "cloud cancel network/transport error for task=%s: %s",
+                    task_id,
+                    exc,
+                )
+            else:
+                logger.error(
+                    "cloud cancel HTTP error for task=%s (status=%s): %s",
+                    task_id,
+                    exc.status_code,
+                    exc,
+                )
+            raise
+
+        try:
+            self._state.update(
+                task_id,
+                state=TaskState.CANCELED,
+                completed_at=now,
+            )
+        except KeyError:
+            logger.warning("cloud cancel: task %s vanished from state store", task_id)
+        event_log.append(
+            "task.canceled",
+            {
+                "task_id": task_id,
+                "runtime": "cloud",
+                "agent_id": agent_id,
+                "run_id": run_id,
+            },
+        )
+        return {
+            "task_id": task_id,
+            "requested_signal": "cloud_cancel",
+            "escalated_to_sigkill": False,
+            "pid": None,
+            "result": "cloud_canceled",
+        }
+
+    def _ensure_task_event_log(self, task_id: str, handle: TaskHandle) -> EventLog:
+        """Return the task's :class:`EventLog`, registering one if needed."""
+        with self._event_logs_lock:
+            existing = self._event_logs.get(task_id)
+            if existing is not None:
+                return existing
+        log = EventLog(handle.event_log_path, source=f"popola/{task_id}")
+        with self._event_logs_lock:
+            self._event_logs[task_id] = log
+        return log
 
     def _soft_cancel_orphan(
         self,
@@ -1240,6 +1403,10 @@ class Popolad:
                     "latest_event_index": int,
                     "arktower_task_id": str | None,
                     "persisted": bool,
+                    "runtime": str,
+                    "cursor_agent_id": str | None,
+                    "cursor_run_id": str | None,
+                    "cloud_phase": str | None,
                 }
         """
         summary: dict[str, Any] = {
@@ -1248,6 +1415,10 @@ class Popolad:
             "state": str(handle.state),
             "pid": handle.pid,
             "started_at": handle.started_at.isoformat(timespec="milliseconds"),
+            "runtime": handle.runtime,
+            "cursor_agent_id": handle.cursor_agent_id,
+            "cursor_run_id": handle.cursor_run_id,
+            "cloud_phase": handle.cloud_phase,
         }
         if not full:
             return summary

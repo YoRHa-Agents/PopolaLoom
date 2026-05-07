@@ -1,18 +1,9 @@
-"""Default-lane subprocess tests for ``install.sh`` (v0.8.4 unified installer).
+"""Default-lane subprocess tests for repo-root ``install.sh``.
 
-Per the v0.8.4 acceptance contract — covers the bash bootstrapper's
-CLI surface (``--help`` / ``version``), each verb's dry-run output
-(``install`` / ``update`` / ``uninstall``), and the validation error
-paths (unknown verb / invalid target / invalid scope).
+Covers ``--help`` / ``version`` output, verb dry-run lines, validation error
+paths, and keeps ``pip`` uninvoked (``--dry-run`` everywhere).
 
-Each test runs the script via :func:`subprocess.run` with
-``cwd=tmp_path`` so the script never pollutes the repo.  Every test
-uses ``--dry-run`` to keep the I/O footprint at zero — the script is
-expected to print the would-be commands and return 0 (or non-zero
-for explicit error paths) without invoking pip / popola.
-
-Skipped on Windows since bash is required; the project as a whole
-targets unix-like hosts.
+Skipped on Windows since bash is required.
 """
 
 from __future__ import annotations
@@ -24,6 +15,20 @@ from pathlib import Path
 import pytest
 
 INSTALL_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "install.sh"
+
+
+def _install_script_shell_version_from_header() -> str:
+    txt = INSTALL_SCRIPT_PATH.read_text(encoding="utf-8")
+    marker = 'readonly POPOLA_INSTALL_SCRIPT_VERSION="'
+    start = txt.find(marker)
+    if start == -1:
+        pytest.fail("install.sh must declare POPOLA_INSTALL_SCRIPT_VERSION")
+    rest = txt[start + len(marker) :]
+    end = rest.find('"')
+    if end == -1:
+        pytest.fail("Malformed POPOLA_INSTALL_SCRIPT_VERSION in install.sh")
+    return rest[:end]
+
 
 pytestmark = pytest.mark.skipif(
     sys.platform.startswith("win"),
@@ -75,10 +80,11 @@ def test_install_script_help_returns_zero(tmp_path: Path) -> None:
 
 def test_install_script_version_returns_zero(tmp_path: Path) -> None:
     """``install.sh version`` exits 0 and prints the script version."""
+    expected = _install_script_shell_version_from_header()
     result = _run(["version"], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     assert "install.sh" in result.stdout
-    assert "0.8.4" in result.stdout
+    assert expected in result.stdout
 
 
 def test_install_script_unknown_verb_returns_nonzero_with_message(tmp_path: Path) -> None:
@@ -109,13 +115,13 @@ def test_install_script_install_dry_run_with_version_pin(tmp_path: Path) -> None
             "--dry-run",
             "--no-daemon",
             "--no-skills",
-            "--version=0.8.4",
+            "--version=9.9.9",
         ],
         cwd=tmp_path,
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
-    assert "popolaloom==0.8.4" in out
+    assert "popolaloom==9.9.9" in out
 
 
 def test_install_script_install_dry_run_with_git_source(tmp_path: Path) -> None:
@@ -184,7 +190,7 @@ def test_install_script_pin_version_outside_pypi_errors(tmp_path: Path) -> None:
             "install",
             "--dry-run",
             "--from=git",
-            "--version=0.8.4",
+            "--version=9.9.9",
         ],
         cwd=tmp_path,
     )

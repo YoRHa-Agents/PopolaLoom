@@ -12,6 +12,13 @@ Day-1 路径选择 (出处: spec §3.1 Mermaid + 06 §0.0 Q7 答案):
   ``task.failed`` (含 ``exit_code``), 然后调可选的 ``on_exit`` 回调,
   让 :class:`Popolad` 同步更新 :class:`StateStore`。
 
+v0.8.5 (Cloud Agent Stage 2): ``cursor-cloud`` 适配器通过 argv 前缀
+:data:`~popolaloom.adapters.cursor_cloud.CLOUD_BUILD_COMMAND_MARKER` 标记
+云运行时。:meth:`spawn` 在检测到该前缀时走 :meth:`_spawn_cloud` —
+无子进程、返回 ``0`` 作为「无 PID / runtime=cloud」哨兵, 由
+:class:`~popolaloom.daemon.cloud_poller.CloudPollLoop` 后台轮询驱动
+终态与 ``on_exit``。
+
 v0.2.0 修复 (Stage A A6):
 
 - R-007: ``stdout/stderr.join(timeout=30.0)`` (原 5s 太短, 大输出场景
@@ -25,6 +32,7 @@ v0.2.0 修复 (Stage A A6):
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import subprocess
@@ -33,6 +41,7 @@ from collections.abc import Callable
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+from popolaloom.adapters.cursor_cloud import CLOUD_BUILD_COMMAND_MARKER
 from popolaloom.daemon.event_log import EventLog
 
 if TYPE_CHECKING:
@@ -117,7 +126,21 @@ class Supervisor:
 
         Returns:
             int: 子进程 PID (popolad 立即可见, 不等子进程完成)。
+            v0.8.5: 云运行时 (``cmd`` 以 ``CLOUD_BUILD_COMMAND_MARKER`` 开头)
+            返回 ``0`` 作为哨兵 — 表示未创建本地子进程、无 PID;
+            存活由 ``runtime=cloud`` 与云轮询线程体现。
         """
+        # v0.8.5: cloud-marker fast-path (zero subprocess for cloud-runtime tasks)
+        if len(cmd) >= 3 and cmd[:2] == CLOUD_BUILD_COMMAND_MARKER:
+            return self._spawn_cloud(
+                task_id,
+                cmd,
+                cwd,
+                env,
+                event_log,
+                on_exit,
+            )
+
         cwd_str = str(cwd) if cwd is not None else None
 
         proc = subprocess.Popen(  # noqa: S603 - 调用方负责传入安全的 cmd
@@ -180,6 +203,261 @@ class Supervisor:
         wait_thread.start()
 
         return pid
+
+    def _spawn_cloud(
+        self,
+        task_id: str,
+        cmd: list[str],
+        cwd: Path | None,
+        env: dict[str, str] | None,
+        event_log: EventLog,
+        on_exit: Callable[[str, int], None] | None,
+    ) -> int:
+        """Cloud-runtime spawn: POST /v1/agents → start poller thread, return 0.
+
+        No subprocess is created. Returns 0 as a sentinel meaning "no PID";
+        callers that compare ``pid > 0`` for liveness see it as "not a live process",
+        which is correct — the actual liveness is encoded in the cloud
+        agent state machine, observed by the poller thread.
+
+        Side effects:
+        - BEFORE any other side effect: tags TaskHandle.runtime="cloud" so the
+          task is observable as a cloud-runtime task even if subsequent steps
+          (marker decode, missing api_key, create_agent failure) fail early.
+        - Updates StateStore with cursor_agent_id / cursor_run_id / runtime=cloud /
+          state=STARTING via the injected state_store.
+        - Emits cloud.queued event.
+        - Starts a daemon background thread running the cloud_poller loop.
+
+        Failure modes (No Silent Failures):
+        - Malformed marker JSON: emit task.failed with error_kind=marker_decode_error,
+          call on_exit(task_id, 1), return 0.
+        - CursorCloudError on create_agent: emit task.failed with full error info,
+          call on_exit(task_id, 1), return 0.
+        - Missing CURSOR_API_KEY: emit task.failed with error_kind=missing_api_key,
+          call on_exit(task_id, 1), return 0.
+        """
+        from popolaloom.adapters.cursor_cloud import CloudCursorClient, CursorCloudError
+        from popolaloom.daemon.cloud_poller import run_poll_loop
+        from popolaloom.daemon.state import TaskState
+
+        _ = env
+        _ = cwd
+
+        def _fail(
+            *,
+            error_kind: str,
+            error_detail: str | None = None,
+            err: CursorCloudError | None = None,
+        ) -> int:
+            payload: dict[str, Any] = {
+                "task_id": task_id,
+                "exit_code": 1,
+                "runtime": "cloud",
+                "agent_id": None,
+                "run_id": None,
+                "terminal_phase": None,
+                "error_kind": error_kind,
+            }
+            if error_detail is not None:
+                payload["error_detail"] = error_detail
+            if err is not None:
+                payload["error"] = {
+                    "error_type": type(err).__name__,
+                    "is_retryable": err.is_retryable,
+                    "message": str(err),
+                }
+            logger.error(
+                "cloud spawn failed task=%s kind=%s detail=%s",
+                task_id,
+                error_kind,
+                error_detail or err,
+            )
+            event_log.append("task.failed", payload)
+            if on_exit is not None:
+                self._safe_on_exit(on_exit, task_id, 1)
+            return 0
+
+        if self._state_store is None:
+            return _fail(
+                error_kind="cloud_create_failed",
+                error_detail="Supervisor requires state_store for cloud runtime",
+            )
+
+        self._state_store.update(task_id, runtime="cloud")
+
+        try:
+            payload = json.loads(cmd[2])
+        except json.JSONDecodeError as exc:
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail=f"invalid marker JSON: {exc}",
+            )
+
+        if not isinstance(payload, dict):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="marker payload must be a JSON object",
+            )
+
+        prompt = payload.get("prompt")
+        extra_raw = payload.get("extra")
+        if extra_raw is not None and not isinstance(extra_raw, dict):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="marker payload 'extra' must be object or null",
+            )
+        extra = extra_raw if isinstance(extra_raw, dict) else {}
+        if not isinstance(prompt, str):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="marker payload requires string 'prompt'",
+            )
+
+        raw_override = extra.get("api_key")
+        if raw_override is not None and str(raw_override).strip():
+            api_key = str(raw_override).strip()
+        else:
+            api_key = str(os.environ.get("CURSOR_API_KEY", "")).strip()
+        if not api_key:
+            return _fail(error_kind="missing_api_key")
+
+        model = str(extra.get("model", "composer-2"))
+        repo_url = extra.get("repo_url")
+        if repo_url is not None and not isinstance(repo_url, str):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="extra.repo_url must be str when present",
+            )
+        pr_url = extra.get("pr_url")
+        if pr_url is not None and not isinstance(pr_url, str):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="extra.pr_url must be str when present",
+            )
+
+        env_vars_param: dict[str, str] | None = None
+        if "env_vars" in extra:
+            ev = extra.get("env_vars")
+            if ev is None:
+                env_vars_param = None
+            elif not isinstance(ev, dict):
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail="extra.env_vars must be object or null",
+                )
+            elif not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in ev.items()
+            ):
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail="extra.env_vars must be dict[str, str]",
+                )
+            else:
+                env_vars_param = dict(ev)
+
+        timeout_s_param: float | None = None
+        if extra.get("timeout_s") is not None:
+            try:
+                timeout_s_param = float(extra["timeout_s"])
+            except (TypeError, ValueError):
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail="extra.timeout_s must be int or float",
+                )
+
+        client: CloudCursorClient | None = None
+        try:
+            client = CloudCursorClient(api_key)
+            resp = client.create_agent(
+                prompt,
+                model,
+                repo_url,
+                starting_ref=str(extra.get("starting_ref", "main")),
+                auto_create_pr=bool(extra.get("auto_create_pr", False)),
+                work_on_current_branch=bool(extra.get("work_on_current_branch", False)),
+                skip_reviewer_request=bool(extra.get("skip_reviewer_request", False)),
+                pr_url=pr_url,
+                env_vars=env_vars_param,
+                timeout_s=timeout_s_param,
+            )
+        except ValueError as exc:
+            if client is not None:
+                client.close()
+            return _fail(
+                error_kind="cloud_create_failed",
+                error_detail=str(exc),
+            )
+        except CursorCloudError as exc:
+            if client is not None:
+                client.close()
+            payload_out: dict[str, Any] = {
+                "task_id": task_id,
+                "exit_code": 1,
+                "runtime": "cloud",
+                "agent_id": None,
+                "run_id": None,
+                "terminal_phase": None,
+                "error_kind": "cloud_create_failed",
+                "error": {
+                    "error_type": type(exc).__name__,
+                    "is_retryable": exc.is_retryable,
+                    "message": str(exc),
+                },
+            }
+            logger.error("cursor-cloud create_agent failed task=%s: %s", task_id, exc)
+            event_log.append("task.failed", payload_out)
+            if on_exit is not None:
+                self._safe_on_exit(on_exit, task_id, 1)
+            return 0
+
+        agent_id = (resp.get("agent") or {}).get("id")
+        run_id = (resp.get("run") or {}).get("id")
+        if not agent_id or not run_id:
+            if client is not None:
+                client.close()
+            return _fail(
+                error_kind="cloud_create_failed",
+                error_detail="create_agent response missing agent.id or run.id",
+            )
+
+        self._state_store.update(
+            task_id,
+            runtime="cloud",
+            cursor_agent_id=agent_id,
+            cursor_run_id=run_id,
+            state=TaskState.STARTING,
+            cloud_phase="CREATING",
+        )
+        event_log.append(
+            "cloud.queued",
+            {
+                "task_id": task_id,
+                "agent_id": agent_id,
+                "run_id": run_id,
+                "runtime": "cloud",
+                "initial_phase": "CREATING",
+            },
+        )
+        logger.info(
+            "cloud task queued task=%s agent=%s run=%s",
+            task_id,
+            agent_id,
+            run_id,
+        )
+
+        poll_thread = run_poll_loop(
+            task_id,
+            agent_id,
+            run_id,
+            client=client,
+            state_store=self._state_store,
+            event_log=event_log,
+            on_exit=on_exit,
+        )
+        with self._lock:
+            self._workers[task_id] = [poll_thread]
+        return 0
 
     def _drain_stream(
         self,

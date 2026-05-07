@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.8.4"
+version = "0.8.5"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -39,6 +39,7 @@ dependencies = [
     "typer",
     "rich",
     "mcp",
+    "httpx>=0.27",
     "nicegui",
     "textual",
 ]
@@ -60,6 +61,7 @@ dev = [
     "mypy",
     "hypothesis>=6.100",
     "responses>=0.25",
+    "respx>=0.21",
     "freezegun>=1.4",
     "syrupy>=4.7",
     "pytest-benchmark>=4.0",
@@ -133,6 +135,7 @@ markers = [
     "e2e: end-to-end project-level tests (Tier 5)",
     "nightly: tests run nightly only (Tier 5)",
     "real_cli: tests requiring real cursor/claude/codex binaries",
+    "real_cursor_cloud: tests requiring a real CURSOR_API_KEY env var (Tier 4+)",
     "real_lark: tests requiring real Lark bot credentials",
 ]
 

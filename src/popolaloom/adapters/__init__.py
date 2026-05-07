@@ -15,11 +15,11 @@ Public surface (v0.2.0 Stage E post R-009 split):
   :meth:`popolaloom.daemon.server.Popolad.dispatch_task` accepts as its
   ``adapter`` kwarg (signature ``Callable[[cli, prompt, cwd, extra], list[str]]``
   — Stage E unified 4-arg signature per :data:`popolaloom.daemon.AdapterCallback`).
-- :class:`CursorAdapter` / :class:`ClaudeAdapter` / :class:`CodexAdapter` —
-  the 3 default concrete classes (Phase 1 CLI subset, 出处: spec §3.2);
-  all satisfy :class:`CommandBuilder`.
+- :class:`CursorAdapter` / :class:`ClaudeAdapter` / :class:`CodexAdapter` /
+  :class:`CursorCloudAdapter` — default concrete classes (Phase 1 CLI subset
+  + v0.8.5 cloud REST sibling); all satisfy :class:`CommandBuilder`.
 
-On module import the 3 default adapters are auto-registered, so
+On module import the default adapters are auto-registered, so
 ``from popolaloom.adapters import build_command`` works zero-config.
 """
 
@@ -37,6 +37,7 @@ from popolaloom.adapters.base import (
 from popolaloom.adapters.claude import ClaudeAdapter
 from popolaloom.adapters.codex import CodexAdapter
 from popolaloom.adapters.cursor import CursorAdapter
+from popolaloom.adapters.cursor_cloud import CursorCloudAdapter
 
 __all__ = [
     "Adapter",
@@ -44,6 +45,7 @@ __all__ = [
     "CodexAdapter",
     "CommandBuilder",
     "CursorAdapter",
+    "CursorCloudAdapter",
     "Runtime",
     "build_command",
     "get_adapter",
@@ -53,13 +55,18 @@ __all__ = [
 
 
 def _register_defaults() -> None:
-    """Auto-register cursor / claude / codex adapters at import time.
+    """Auto-register cursor / claude / codex / cursor-cloud adapters at import.
 
     Idempotent — Python module cache ensures this runs once per interpreter,
     but we guard against ``importlib.reload()`` cases (used in some test
     scenarios) by skipping any name already present in ``_REGISTRY``.
     """
-    for adapter in (CursorAdapter(), ClaudeAdapter(), CodexAdapter()):
+    for adapter in (
+        CursorAdapter(),
+        ClaudeAdapter(),
+        CodexAdapter(),
+        CursorCloudAdapter(),
+    ):
         if adapter.name not in list_registered():
             register_adapter(adapter)
 

@@ -12,6 +12,38 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 (intentionally empty — accumulating for v0.9.0.)
 
+## [0.8.5] — 2026-05-08
+
+**Theme**: Cursor Cloud Agent (Background Agent) integration shipped as sibling adapter **`--cli=cursor-cloud`** (Option α — see `.local/research/v0.8.5_cloud_agent/research.md` §6 and user-judgment matrix `.local/research/v0.8.5_cloud_agent/00-decision-matrix-zh.md` §7). Tasks target Cursor’s REST API (`https://api.cursor.com/v1/agents`), appear under the Cloud Agents surfaces (`https://cursor.com/dashboard/cloud-agents`), and traverse new non-terminal daemon states **`QUEUED` / `STARTING`** while poller-followed. The **cloud HITL bridge** exposes three authenticated RPC lanes so a remote agent run can defer to Lark-resolved human approvals with the existing first-responder-wins store. Companion research: `.local/research/v0.8.5_cloud_agent/` (**4 files**, `research.md`, `00-decision-matrix-zh.md`, `01-external-research.md`, `02-integration-analysis.md`).
+
+### Added
+
+- **`cursor-cloud` adapter** (Option α from `.local/research/v0.8.5_cloud_agent/research.md` §6). Dispatches via Cursor's Cloud Agent REST API (`POST https://api.cursor.com/v1/agents`), so tasks appear at `https://cursor.com/agents` and `https://cursor.com/dashboard/cloud-agents` instead of running as local subprocesses. Includes `CloudCursorClient` (httpx, HTTP Basic auth), `CursorCloudAdapter` registered as `--cli=cursor-cloud`, and a `CLOUD_BUILD_COMMAND_MARKER` sentinel that the supervisor detects to skip subprocess spawn.
+- **Cloud-runtime task lifecycle:** new `TaskState.QUEUED` / `TaskState.STARTING` non-terminal states + `TaskHandle.runtime` / `cursor_agent_id` / `cursor_run_id` / `cloud_phase` fields + `StateStore.cloud_handles()` helper.
+- **Cloud poller** (`src/popolaloom/daemon/cloud_poller.py`): background polling thread that maps Cursor run statuses (`CREATING` / `RUNNING` / `FINISHED` / `ERROR` / `CANCELLED` / `EXPIRED`) to PopolaLoom EventLog events + state transitions, with retry/backoff and a `max_polls` safety cap.
+- **`Popolad.cancel_task` cloud branch:** when `handle.runtime == "cloud"`, calls `CloudCursorClient.cancel_run(...)` instead of `os.kill`. Handles 409 (`agent_busy`) as best-effort cancel, 4xx-other as `cloud_cancel_failed`, network errors as `cloud_cancel_network_error` — all surfaced via EventLog (No Silent Failures).
+- **Cloud HITL bridge** (`src/popolaloom/hitl/cloud_bridge.py` + 3 new RPC endpoints): `POST /hitl/cloud/request`, `GET /hitl/cloud/wait/{hitl_id}`, `POST /hitl/cloud/answer/{hitl_id}`. Lets a cloud-running agent block on human approval routed through Lark + cross-channel SQLite first-responder-wins logic.
+- `HITLChannel` literal expanded to include `"cloud"`; `migrations/006_popola_hitl.sql` CHECK constraint updated to allow it.
+- `real_cursor_cloud` pytest marker for opt-in smoke tests gated on `CURSOR_API_KEY` env var (4 smoke cases live in `tests/real_cursor_cloud/`).
+
+### Changed
+
+- `Supervisor.spawn` now detects the cloud marker and routes to `_spawn_cloud()`; local subprocess path is byte-equivalent for non-cloud commands.
+- `Popolad.__init__` accepts an optional `cloud_client` parameter (DI for testability; defaults to lazy construction).
+- `_task_summary` (and thus `popola list` / `popola status`) surfaces `runtime`, `cursor_agent_id`, `cursor_run_id`, `cloud_phase` for every task; values are `"local"`/`None` for the unchanged local path.
+- `HITLStore` now uses a per-connection `RLock` so concurrent `asyncio.to_thread` HTTP handlers do not race on `sqlite3.InterfaceError`.
+
+### Tests
+
+- **+97 default-lane tests** (1632 → 1729): 30 (foundation), 47 (daemon integration), 21 (HITL bridge); a 1-line invariant update to `tests/matrix/tier1/test_state_fsm_property.py` added `QUEUED` and `STARTING` to the expected non-terminal set.
+- 4 new opt-in `real_cursor_cloud` tests (skipped without `CURSOR_API_KEY`).
+
+### Files
+
+- 5 NEW: `src/popolaloom/adapters/cursor_cloud.py`, `src/popolaloom/daemon/cloud_poller.py`, `src/popolaloom/hitl/cloud_bridge.py`, plus 8 new test files; ~1700 LOC of new product code + tests.
+- 10 MOD across `src/popolaloom/{adapters,daemon,hitl}/` and `migrations/`, `pyproject.toml`, etc.
+- Research artifacts at `.local/research/v0.8.5_cloud_agent/` (4 files, 551 lines): `research.md`, `00-decision-matrix-zh.md`, `01-external-research.md`, `02-integration-analysis.md`.
+
 ## [0.8.4] — 2026-05-07
 
 **Theme**: unified bash installer + symmetric Skill teardown. Ships `install.sh` at the repo root — a one-line POSIX-bash bootstrap that wraps `pip install popolaloom` + `popola skill install --target=<...>` + `popola popolad start` + `popola doctor` into a single shell command, with matching `update` and `uninstall` verbs across global vs project scope and the cursor / claude / codex / copilot agent CLIs. The previous installer surface was the `popola init` Typer command (still works) and the LLM-driven `install-popola` Skill (still works); the new bash script is a fresh-machine bootstrap so an operator can reach "installed + Skills registered + daemon optional" without needing an agent CLI in the loop. The companion `popola skill uninstall` Typer verb (NEW) is the inverse of `popola skill install` and lets the bash script's `uninstall` verb surgically remove SKILL.md + the `.popola-loom-version` marker before `pip uninstall popolaloom`.

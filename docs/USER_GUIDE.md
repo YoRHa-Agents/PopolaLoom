@@ -6,7 +6,7 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.8.4)
+# PopolaLoom — User Guide (v0.8.5)
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
 
@@ -23,6 +23,7 @@ translation_url: /zh/USER_GUIDE.html
 - [HITL workflow](#hitl-workflow)
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
+- [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085)
 - [Hands-off envelope (v0.8.0+)](#hands-off-envelope)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -378,7 +379,65 @@ popola dispatch "..." --cli=cursor \
 
 Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapter versions); the value-parse rules raise on whitelist violations (No Silent Failures for typed knobs).
 
-## Hands-off envelope
+## Cloud Agent dispatch (v0.8.5+)
+
+### Prerequisites
+
+1. **Daemon** — identical to other adapters: `popola popolad start` (Unix socket RPC).
+2. **API key** — export a non-empty **`CURSOR_API_KEY`**. PopolaLoom authenticates with Cursor’s Cloud Agents REST using **HTTP Basic** (username = API key, password empty) through `CloudCursorClient`.
+
+Without the key, `--cli=cursor-cloud` is rejected at adapter availability checks; the historical `--cli=cursor` subprocess path is unchanged.
+
+### Dispatch
+
+```bash
+export CURSOR_API_KEY="cr_..."   # example shape only — use your Cursor dashboard key material
+popola dispatch "Plan database migration scaffolding" \
+  --cli=cursor-cloud \
+  --cwd ~/workspace/acme-backend \
+  --cli-flag repo_url=https://github.com/acme/monorepo \
+  --cli-flag starting_ref=main \
+  --cli-flag model=composer-2 \
+  --cli-flag auto_create_pr=false
+```
+
+The adapter (`CursorCloudAdapter`) packs your prompt + validated `extra` keys into JSON behind `CLOUD_BUILD_COMMAND_MARKER`. `Supervisor.spawn` recognises the sentinel and calls **`_spawn_cloud()`** instead of `Popen`.
+
+### Behaviour vs local adapters
+
+| Surface | Local `cursor` / other CLIs | `cursor-cloud` |
+|---|---|---|
+| Execution | subprocess on workstation | Cursor-managed cloud workload |
+| `popola cancel` | SIGTERM escalation | REST `cancel_run`; explicit EventLog tails on HTTP failures |
+| `popola status` | `pid`, `runtime=local`, etc. | `runtime=cloud`, `cursor_agent_id` (`bc-*` prefix observed in API), `cursor_run_id`, `cloud_phase` |
+| Browser tooling | IDE local session | Inspect runs at **`https://cursor.com/dashboard/cloud-agents`** (+ agents index) |
+
+The cloud poller thread maps remote phases (`CREATING`, `RUNNING`, `FINISHED`, `ERROR`, `CANCELLED`, `EXPIRED`, …) into existing EventLog / FSM semantics so SSE consumers behave consistently.
+
+### HITL bridging endpoints
+
+Automations that run **outside** the IDE but still want first-responder HITL can call the authenticated daemon HTTP API:
+
+| Verb | Route | Purpose |
+|---|---|---|
+| POST | `/hitl/cloud/request` | Register a structured question for cloud-hosted agents |
+| GET | `/hitl/cloud/wait/{hitl_id}` | Block until answered / deadline (long-poll friendly) |
+| POST | `/hitl/cloud/answer/{hitl_id}` | Submit a human-authored answer (paired with Lark + SQLite store) |
+
+These compose with existing Lark fan-out: the **`cloud`** `HITLChannel` participates in identical first-responder-wins bookkeeping as Lark / MCP / IDE channels (`mark_answered`).
+
+### Operational notes
+
+1. **`auto_create_pr` defaults false** (`--cli-flag auto_create_pr=true` opts in) per release decision matrix.
+2. Prefer **narrow prompts** — every dispatch still records the Markdown handoff envelope for audit, but quota accrues on Cursor’s side.
+3. Regression / smoke coverage lives under `tests/real_cursor_cloud/` with marker **`real_cursor_cloud`**; exporting `CURSOR_API_KEY` runs four cheap live tests (`create` + immediate `cancel`, metadata GETs, bogus-key sentinel). Omit the env var locally or in CI for **skipped-not-failed** semantics.
+
+Canonical design references:
+
+- `.local/research/v0.8.5_cloud_agent/research.md`
+- `.local/research/v0.8.5_cloud_agent/00-decision-matrix-zh.md`
+
+## Hands-off envelope (v0.8.0+)
 
 v0.7.1 introduced the `popolaloom.handoff` substrate (Pydantic v2 `HandoffEnvelope` + Markdown front-matter ser/deser + slug-hash addressing + atomic writer + active/archive 双层); v0.7.2 wired it into `Popolad.dispatch_with_envelope` (E3 internal unification) so every dispatch persists a file-based payload + injects `POPOLA_HANDOFF_FILE` / `POPOLA_HANDOFF_ID` into the spawn env (C5 双通道); v0.7.3 added `popola dispatch --replay`, the HITL `FeedbackEnvelope` companion (Q7=yes), and the legacy `RelayHandoffEnvelope → HandoffEnvelope` bridge.
 

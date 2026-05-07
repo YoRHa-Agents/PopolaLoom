@@ -38,10 +38,10 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import Any, Literal
 
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import StreamingResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from popolaloom import __version__
@@ -59,6 +59,8 @@ from popolaloom.daemon.primitives.supervise import (
     get_default_registry,
 )
 from popolaloom.daemon.server import AdapterCallback, Popolad
+from popolaloom.hitl import HITLChannel, HITLReply
+from popolaloom.hitl.cloud_bridge import CloudHITLBridge, bridge_for_daemon
 
 logger = logging.getLogger(__name__)
 
@@ -137,6 +139,72 @@ class HitlAnswerResponse(BaseModel):
     already_via: str | None = None
 
 
+class CloudHITLRequestBody(BaseModel):
+    """Body of ``POST /hitl/cloud/request`` (v0.8.5 cloud-agent HITL bridge)."""
+
+    task_id: str = Field(..., min_length=1)
+    cursor_agent_id: str | None = None
+    cursor_run_id: str | None = None
+    prompt_title: str = Field(..., min_length=1)
+    prompt_body: str = Field(..., min_length=1)
+    options: list[dict[str, str]] = Field(
+        ...,
+        min_length=2,
+        description="Each entry must include id + label (≥ 2 options).",
+    )
+    metadata: dict[str, Any] | None = None
+    timeout_s: float | None = Field(
+        default=None,
+        gt=0,
+        le=86400,
+        description="Optional per-request deadline (seconds); capped by HITL schema at 86400.",
+    )
+
+
+class CloudHITLRequestResponse(BaseModel):
+    """Immediate acknowledgement for ``POST /hitl/cloud/request``."""
+
+    hitl_id: str
+    status: Literal["pending"] = "pending"
+    deadline_at: str
+    cursor_agent_id: str | None = None
+    cursor_run_id: str | None = None
+
+
+class CloudHITLWaitAnswerPayload(BaseModel):
+    """Answer payload returned by ``GET /hitl/cloud/wait/{hitl_id}``."""
+
+    option_id: str
+    reason: str | None = None
+    responder_id: str | None = None
+    channel: str
+
+
+class CloudHITLWaitResponse(BaseModel):
+    """Long-poll result for ``GET /hitl/cloud/wait/{hitl_id}``."""
+
+    hitl_id: str
+    status: Literal["pending", "answered", "timeout"]
+    answer: CloudHITLWaitAnswerPayload | None = None
+
+
+class CloudHITLAnswerBody(BaseModel):
+    """Body of ``POST /hitl/cloud/answer/{hitl_id}``."""
+
+    option_id: str = Field(..., min_length=1)
+    reason: str | None = None
+    responder_id: str = Field(..., min_length=1)
+    channel: str = "cloud"
+
+
+class CloudHITLAnswerResponse(BaseModel):
+    """JSON body for successful cloud HITL answer recording."""
+
+    ok: bool
+    channel: str | None = None
+    already_answered_by: str | None = None
+
+
 class RelayRequest(BaseModel):
     """Body of ``POST /relay`` (v0.3.0 F2.5)."""
 
@@ -212,6 +280,56 @@ _DAEMON_STATE: dict[str, Any] = {
 Stored in module-level dict (not a typed singleton attribute) so reload /
 recreate semantics are explicit; tests construct fresh instances via
 :func:`create_app`."""
+
+
+_VALID_HITL_REPLY_CHANNELS: frozenset[str] = frozenset(
+    {"lark", "ide", "cli", "email", "signal", "mcp", "web", "cloud"}
+)
+
+
+def _narrow_hitl_channel(raw: str) -> HITLChannel:
+    """Map a wire string to :data:`~popolaloom.hitl.HITLChannel`."""
+    lowered = raw.strip().lower()
+    if lowered not in _VALID_HITL_REPLY_CHANNELS:
+        allowed = sorted(_VALID_HITL_REPLY_CHANNELS)
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"invalid HITL channel {raw!r}; "
+                f"expected one of {allowed}"
+            ),
+        )
+    return lowered  # type: ignore[return-value]
+
+
+def _cloud_wait_sync(
+    bridge: CloudHITLBridge,
+    hitl_id: str,
+    timeout_cap: float,
+) -> tuple[str, HITLReply | None]:
+    """Return ``(status_key, reply?)`` for the HTTP long-poll surface.
+
+    ``status_key`` is one of ``answered`` / ``pending`` / ``timeout`` / ``missing``.
+    """
+    reply = bridge.await_answer(hitl_id, timeout_s=timeout_cap, poll_interval_s=1.0)
+    row = bridge.store.get(hitl_id)
+    if row is None:
+        return "missing", None
+    if reply is not None:
+        return "answered", reply
+    st = str(row.get("status", ""))
+    if st == "pending":
+        return "pending", None
+    return "timeout", None
+
+
+def _reply_to_wait_payload(reply: HITLReply) -> CloudHITLWaitAnswerPayload:
+    return CloudHITLWaitAnswerPayload(
+        option_id=reply.option_id,
+        reason=reply.reason,
+        responder_id=reply.responder_id,
+        channel=str(reply.via),
+    )
 
 
 def _build_default_popolad() -> Popolad:
@@ -592,6 +710,206 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
         if store is None:
             raise HTTPException(status_code=503, detail="HITL store not wired up")
         return await asyncio.to_thread(store.list_pending, task_id=task_id)
+
+    @app.post("/hitl/cloud/request", response_model=CloudHITLRequestResponse)
+    async def hitl_cloud_request(req: CloudHITLRequestBody) -> CloudHITLRequestResponse:
+        """Persist a cloud-agent HITL prompt and fan out to Lark (best-effort)."""
+        bridge = bridge_for_daemon(popolad.hitl_store, send_lark=True)
+        if bridge is None:
+            raise HTTPException(
+                status_code=503,
+                detail="HITL store not wired up; popolad started without F4 wiring",
+            )
+        logger.info(
+            "hitl.cloud.request entry task_id=%s cursor_agent_id=%s cursor_run_id=%s",
+            req.task_id,
+            req.cursor_agent_id,
+            req.cursor_run_id,
+        )
+        for opt in req.options:
+            if "id" not in opt or "label" not in opt:
+                raise HTTPException(
+                    status_code=422,
+                    detail="each option must include 'id' and 'label' keys",
+                )
+            if not str(opt["id"]).strip() or not str(opt["label"]).strip():
+                raise HTTPException(
+                    status_code=422,
+                    detail="option id and label must be non-empty strings",
+                )
+
+        event_log = popolad.event_log(req.task_id)
+
+        def _submit() -> Any:
+            return bridge.submit_request(
+                task_id=req.task_id,
+                cursor_agent_id=req.cursor_agent_id,
+                cursor_run_id=req.cursor_run_id,
+                prompt_title=req.prompt_title,
+                prompt_body=req.prompt_body,
+                options=req.options,
+                metadata=req.metadata,
+                timeout_s=req.timeout_s,
+                event_log=event_log,
+            )
+
+        try:
+            cloud_req = await asyncio.to_thread(_submit)
+        except Exception as exc:
+            logger.exception("hitl.cloud.request failed for task_id=%s", req.task_id)
+            raise HTTPException(
+                status_code=400,
+                detail=f"failed to create cloud HITL request: {exc}",
+            ) from exc
+
+        deadline_iso = cloud_req.deadline_at.isoformat()
+        if event_log is not None:
+            try:
+                event_log.append(
+                    "hitl.cloud_requested",
+                    {
+                        "task_id": req.task_id,
+                        "hitl_id": cloud_req.hitl_id,
+                        "cursor_agent_id": req.cursor_agent_id,
+                        "cursor_run_id": req.cursor_run_id,
+                        "prompt_title": req.prompt_title,
+                        "options_count": len(req.options),
+                        "deadline_at": deadline_iso,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "hitl.cloud.request event_log append failed task_id=%s hitl_id=%s",
+                    req.task_id,
+                    cloud_req.hitl_id,
+                )
+
+        logger.info(
+            "hitl.cloud.request exit hitl_id=%s task_id=%s deadline_at=%s",
+            cloud_req.hitl_id,
+            req.task_id,
+            deadline_iso,
+        )
+        return CloudHITLRequestResponse(
+            hitl_id=cloud_req.hitl_id,
+            deadline_at=deadline_iso,
+            cursor_agent_id=req.cursor_agent_id,
+            cursor_run_id=req.cursor_run_id,
+        )
+
+    @app.get("/hitl/cloud/wait/{hitl_id}", response_model=None)
+    async def hitl_cloud_wait(
+        hitl_id: str,
+        timeout_s: float = 55.0,
+    ) -> JSONResponse:
+        """Long-poll Human-in-the-loop state for a cloud-sourced prompt."""
+        bridge = bridge_for_daemon(popolad.hitl_store, send_lark=False)
+        if bridge is None:
+            raise HTTPException(status_code=503, detail="HITL store not wired up")
+        logger.info("hitl.cloud.wait entry hitl_id=%s timeout_s=%s", hitl_id, timeout_s)
+
+        capped = max(0.1, min(60.0, timeout_s))
+
+        def _wait() -> tuple[str, HITLReply | None]:
+            return _cloud_wait_sync(bridge, hitl_id, capped)
+
+        status_key, reply = await asyncio.to_thread(_wait)
+        logger.info(
+            "hitl.cloud.wait poll finished hitl_id=%s status_key=%s",
+            hitl_id,
+            status_key,
+        )
+
+        if status_key == "missing":
+            raise HTTPException(status_code=404, detail=f"HITL id not found: {hitl_id}")
+        if status_key == "answered" and reply is not None:
+            body = CloudHITLWaitResponse(
+                hitl_id=hitl_id,
+                status="answered",
+                answer=_reply_to_wait_payload(reply),
+            )
+            logger.info("hitl.cloud.wait exit hitl_id=%s status=answered", hitl_id)
+            return JSONResponse(status_code=200, content=body.model_dump())
+        if status_key == "timeout":
+            out = CloudHITLWaitResponse(hitl_id=hitl_id, status="timeout", answer=None)
+            logger.info("hitl.cloud.wait exit hitl_id=%s status=timeout", hitl_id)
+            return JSONResponse(status_code=200, content=out.model_dump())
+        payload = CloudHITLWaitResponse(
+            hitl_id=hitl_id, status="pending", answer=None
+        ).model_dump()
+        logger.info("hitl.cloud.wait exit hitl_id=%s status=pending http=202", hitl_id)
+        return JSONResponse(status_code=202, content=payload)
+
+    @app.post(
+        "/hitl/cloud/answer/{hitl_id}",
+        responses={
+            200: {"model": CloudHITLAnswerResponse},
+            409: {"model": CloudHITLAnswerResponse},
+        },
+    )
+    async def hitl_cloud_answer(hitl_id: str, req: CloudHITLAnswerBody) -> JSONResponse:
+        """Record a HITL answer from MCP/CLI/cloud surfaces (non-Lark callers)."""
+        bridge = bridge_for_daemon(popolad.hitl_store, send_lark=False)
+        if bridge is None:
+            raise HTTPException(status_code=503, detail="HITL store not wired up")
+        channel = _narrow_hitl_channel(req.channel)
+
+        logger.info(
+            "hitl.cloud.answer entry hitl_id=%s option_id=%s channel=%s",
+            hitl_id,
+            req.option_id,
+            channel,
+        )
+
+        row_before = bridge.store.get(hitl_id)
+        if row_before is None:
+            raise HTTPException(status_code=404, detail=f"HITL id not found: {hitl_id}")
+        task_id = str(row_before.get("task_id") or "")
+
+        def _answer() -> tuple[bool, str | None]:
+            return bridge.submit_answer(
+                hitl_id,
+                req.option_id,
+                responder_id=req.responder_id,
+                reason=req.reason,
+                channel=channel,
+            )
+
+        ok, already = await asyncio.to_thread(_answer)
+        payload = CloudHITLAnswerResponse(
+            ok=ok,
+            channel=channel if ok else None,
+            already_answered_by=None if ok else (already or "unknown"),
+        )
+
+        event_log = popolad.event_log(task_id) if task_id else None
+        if ok and task_id and event_log is not None:
+            try:
+                event_log.append(
+                    "hitl.cloud_answered",
+                    {
+                        "task_id": task_id,
+                        "hitl_id": hitl_id,
+                        "option_id": req.option_id,
+                        "channel": channel,
+                        "responder_id": req.responder_id,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "hitl.cloud.answer event_log append failed task_id=%s hitl_id=%s",
+                    task_id,
+                    hitl_id,
+                )
+
+        status_code = 200 if ok else 409
+        logger.info(
+            "hitl.cloud.answer exit hitl_id=%s ok=%s http=%s",
+            hitl_id,
+            ok,
+            status_code,
+        )
+        return JSONResponse(status_code=status_code, content=payload.model_dump())
 
     @app.get("/attach_stream/{task_id}")
     async def attach_stream(task_id: str, request: Request, since: int = 0) -> StreamingResponse:
