@@ -1,7 +1,7 @@
 """Default-lane tests for ``popola skill install / doctor / upgrade / uninstall``.
 
-Originally landed in v0.5.0 Stage S4 (3 verbs); v0.8.4 adds the
-``uninstall`` verb per the v0.8.3 feedback. The suite exercises:
+Originally landed in v0.5.0 Stage S4 (3 verbs); later releases add the
+``uninstall`` verb (see install-script / skill feedback closure). The suite exercises:
 
 * one happy-path test per verb × per primary target;
 * the ``--target=all`` aggregator path;
@@ -301,14 +301,14 @@ def test_skill_upgrade_up_to_date_when_content_matches(
     assert payload[0]["up_to_date"] is True
 
 
-# ── uninstall verb (v0.8.4 — closes feedback_for_v0.8.3.md) ──────────────
+# ── uninstall verb ────────────────────────────────────────────────
 
 
 def test_skill_uninstall_cursor_global_removes_skill(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """``uninstall --target=cursor --global`` removes the SKILL.md + marker (acceptance v0.8.4)."""
+    """``uninstall --target=cursor --global`` removes the SKILL.md + marker."""
     _cwd, fake_home = isolated_home
 
     install_result = runner.invoke(skill_app, ["install", "--target=cursor", "--global"])
@@ -346,7 +346,7 @@ def test_skill_uninstall_dry_run_does_not_remove(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
 ) -> None:
-    """``uninstall ... --dry-run`` reports DRY rows without unlinking (acceptance v0.8.4)."""
+    """``uninstall ... --dry-run`` reports DRY rows without unlinking."""
     _cwd, fake_home = isolated_home
 
     install_result = runner.invoke(skill_app, ["install", "--target=cursor", "--global"])

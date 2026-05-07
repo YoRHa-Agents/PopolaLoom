@@ -1,6 +1,6 @@
 # PopolaLoom
 
-> **v0.8.4** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
+> **v0.8.5** — Same local-first weave as earlier releases plus **Cursor Cloud Agents** wiring via **`--cli=cursor-cloud`** (REST + httpx, Option α research). Tasks can run on Cursor’s cloud surface (`https://cursor.com/dashboard/cloud-agents`) instead of (`or in parallel with`) a local subprocess. **Requires non-empty `CURSOR_API_KEY` for cloud**. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment where applicable (local adapters), and makes replay deterministic via `popola dispatch --replay <id>`.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -80,6 +80,18 @@ popola dispatch "review src/foo.py for bugs" --cli=codex \
 
 Supported KEYs per adapter: see [`docs/USER_GUIDE.md#adapter-passthrough`](docs/USER_GUIDE.md#adapter-passthrough).
 
+### Cloud Agent dispatch (v0.8.5+)
+
+PopolaLoom now speaks Cursor’s Background Agent REST alongside the historical local CLIs:
+
+- **Invocation**: start `popolad`, export `CURSOR_API_KEY`, then `popola dispatch "<prompt>" --cli=cursor-cloud --cli-flag repo_url=https://github.com/you/repo [--cli-flag model=composer-2 ...]`.
+- **Why daemon still matters**: the supervisor swaps `Popen` for `CloudCursorClient.create_agent(...)`, persists `cursor_agent_id` / `cursor_run_id`, and tracks phases via the cloud poller so `attach`/`status`/`cancel` semantics stay cohesive with local workloads.
+- **Observability**: browser dashboard **https://cursor.com/dashboard/cloud-agents** complements `popola status <task>` (shows `runtime=cloud`).
+- **HITL bridge**: synchronous HTTP callers (or MCP-side harnesses) can wait on human approvals through `POST /hitl/cloud/request`, `GET /hitl/cloud/wait/{hitl_id}`, `POST /hitl/cloud/answer/{hitl_id}` authenticated like the rest of `popolad`.
+- **Opt-in QA**: `pytest tests/real_cursor_cloud/ -m real_cursor_cloud` only after exporting the API key — four cheap tests (create+cancel sentinel, metadata GETs, bogus-key auth assertion); default CI lane **deselects** `-m real_cursor_cloud`.
+
+Hands-off envelopes still publish for bookkeeping, but spawned remote agents consume prompt via Cursor’s infra — see [`RELEASE_NOTES.md`](RELEASE_NOTES.md) §Highlights.
+
 ## Hands-off envelope (v0.7.1+ foundation, v0.7.2+ E3, v0.7.3+ replay/feedback)
 
 Starting in v0.7.2, every `popola dispatch` call writes a **file-based handoff envelope** to `.local/.agent/handoff/<handoff_id>.md` (gitignored) and injects `POPOLA_HANDOFF_FILE` + `POPOLA_HANDOFF_ID` into the spawned sub-CLI's environment. The envelope is a Markdown file with YAML front-matter (cat-friendly debugging) and the prompt as body — auditable, replayable, addressable by content-derived id (`<cli>-<slug>-<8hex>`).
@@ -116,7 +128,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.8.4 — Unified install script + `popola skill uninstall`.** Builds on v0.8.3 by shipping a one-line bash bootstrap installer (`install.sh`) that wraps `pip install` + `popola skill install` + `popola popolad start` + `popola doctor` for fresh machines, plus a matching `popola skill uninstall` Typer verb so operators have a complete install / update / uninstall surface across pip + Skills × global / project × cursor / claude / codex / copilot. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
+**v0.8.5 — Cursor Cloud Agents + daemon poller + cloud HITL bridge.** Ships the sibling **`cursor-cloud` adapter**, non-terminal **`QUEUED` / `STARTING`** states with enriched `popola status` telemetry (agent + run identifiers + Cursor phase mapping), deterministic REST cancellations, Lark-friendly `/hitl/cloud/*` bridging, Tier-4+ opt-in **`real_cursor_cloud`** smoke tests, and exhaustive documentation bumps (see Decision matrix `.local/research/v0.8.5_cloud_agent/00-decision-matrix-zh.md` §7). **Unified install tooling from v0.8.4 remains unchanged** (`install.sh` / `popola skill uninstall`).
 
 | Capability | Status |
 |---|---|
@@ -145,7 +157,9 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 | **v0.7.3 / v0.8.0**: `to_handoff_envelope(relay_env)` legacy bridge | OK live |
 | **v0.8.4**: `install.sh` unified installer (install / update / uninstall × global / project × cursor/claude/codex/copilot) | OK live |
 | **v0.8.4**: `popola skill uninstall --target=<...>` Typer verb | OK live |
-| 1632 default-lane tests / 94%+ coverage | OK live |
+| **v0.8.5**: `--cli=cursor-cloud` + daemon cloud poller + `/hitl/cloud/*` RPC + `CURSOR_API_KEY` | OK live (`cursor` local path unchanged) |
+| **v0.8.5**: Tier-4+ `pytest -m real_cursor_cloud` quartet (skipped unless env var opt-in) | OK live |
+| 1729 default-lane tests / 94%+ coverage | OK live |
 
 ## Architecture (TL;DR)
 
@@ -193,9 +207,9 @@ pip install -e ".[dev]"
 Verify the install:
 
 ```bash
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.4
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.5
 which popola                                                    # → /usr/local/bin/popola (or similar)
-popola version                                                  # → "popolaloom 0.8.4"
+popola version                                                  # → "popolaloom 0.8.5"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Quick fix:

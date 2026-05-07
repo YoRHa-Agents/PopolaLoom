@@ -3,6 +3,16 @@
 只承担"当前活跃 task 的运行时句柄"职责; 持久化 (跨 daemon 重启 + 历史
 查询) 走 ArkTower SQLite 任务池 (Stage C 接入)。
 
+v0.8.5 Stage 1 (Cloud Agent integration):
+
+- New non-terminal states ``QUEUED`` (waiting for cloud VM allocation)
+  and ``STARTING`` (VM provisioning + repo clone) for cloud runtime.
+- ``TaskHandle.runtime`` distinguishes local subprocess vs cloud agent.
+- ``cursor_agent_id`` / ``cursor_run_id`` / ``cloud_phase`` track the
+  Cursor side of the dispatch.
+- Local runtime is unaffected: existing flows still go
+  ``PENDING -> RUNNING -> {COMPLETED|FAILED|CANCELED}``.
+
 设计 invariants:
 
 - ``StateStore`` 内部 dict 的写入用 :class:`threading.Lock` 保护, 因为
@@ -10,7 +20,7 @@
   并发。
 - ``TaskState`` 是 :class:`enum.StrEnum`, 直接序列化即字符串, 与 spec
   §3.5.3 ``status`` enum 对齐 (但注意 spec 用的是 ArkTower 10-state FSM,
-  本枚举只覆盖 popolad 进程级关注的 5 个; 完整 FSM 转换交给 ArkTower)。
+  本枚举覆盖 popolad 进程级关注的状态集; 完整 FSM 转换交给 ArkTower)。
 
 v0.2.0 新增 (Stage A A3):
 
@@ -37,12 +47,17 @@ class TaskState(StrEnum):
 
     注意: ArkTower ``TaskStatus`` 有 10 个 (submitted/queued/in_progress/
     review/input_required/blocked/completed/failed/canceled/timed_out)。
-    本枚举只覆盖 popolad 关心的 5 个粗粒度子集; ``RUNNING`` 对应
+    本枚举覆盖 popolad 关心的粗粒度子集; ``RUNNING`` 对应
     ArkTower ``IN_PROGRESS``, 后续 awaiting_input 等会在 Stage B
     HITL 接入时扩展。
+
+    ``QUEUED`` / ``STARTING`` 为 v0.8.5 新增的非终态 cloud-runtime 阶段;
+    本地子进程派发路径不会经过它们 (仍 ``PENDING`` → ``RUNNING``)。
     """
 
     PENDING = "pending"
+    QUEUED = "queued"
+    STARTING = "starting"
     RUNNING = "running"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -83,6 +98,19 @@ class TaskHandle:
             计数契约 + 让 v0.4.1 Stage L2 通知卡能区分"用户主动取消"
             vs "升级 SIGKILL 强杀"两类。默认 ``False``;
             :meth:`cancel_task` 仅在 SIGKILL 真发出时翻转。
+        runtime: ``"local"`` (subprocess) 或 ``"cloud"`` (Cursor Cloud Agent).
+            Default ``"local"`` keeps every existing dispatch path unchanged.
+            v0.8.5 (Option α): only ``cursor-cloud`` adapter sets
+            ``runtime="cloud"`` — ergonomically derived from ``cli`` at
+            registration time.
+        cursor_agent_id: Cloud agent durable id (``bc-...``); ``None`` for
+            local runtime or before the cloud ``POST /v1/agents`` call returns.
+        cursor_run_id: Cloud run id; ``None`` for local; one popola task =
+            one Cursor run in v0.8.5 (follow-up runs deferred to v0.8.6).
+        cloud_phase: Fine-grained cloud lifecycle string (``CREATING`` /
+            ``RUNNING`` / ``FINISHED`` / ``ERROR`` / ``CANCELLED`` / ``EXPIRED``)
+            as reported by the poller; complements the coarse ``state`` field.
+            ``None`` for local runtime.
     """
 
     task_id: str
@@ -97,6 +125,10 @@ class TaskHandle:
     completed_at: datetime | None = None
     persisted: bool = False
     cancel_escalated_to_sigkill: bool = False
+    runtime: str = "local"
+    cursor_agent_id: str | None = None
+    cursor_run_id: str | None = None
+    cloud_phase: str | None = None
 
     def is_terminal(self) -> bool:
         """``True`` iff this task is in a terminal state (no further transitions)."""
@@ -142,6 +174,10 @@ class StateStore:
         completed_at: datetime | None = None,
         persisted: bool | None = None,
         cancel_escalated_to_sigkill: bool | None = None,
+        runtime: str | None = None,
+        cursor_agent_id: str | None = None,
+        cursor_run_id: str | None = None,
+        cloud_phase: str | None = None,
     ) -> TaskHandle:
         """Update mutable fields on a registered handle and return the new value.
 
@@ -150,6 +186,10 @@ class StateStore:
         *before* sending the signal — the supervisor wait-thread
         consults this flag right before emitting the ``task.canceled``
         terminal event so its ``data.sigkill_escalated`` is accurate.
+
+        v0.8.5: optional cloud kwargs ``runtime``, ``cursor_agent_id``,
+        ``cursor_run_id``, ``cloud_phase`` — each field is assigned only when
+        the corresponding argument is not ``None`` (pass-through semantics).
 
         Raises:
             KeyError: 当 ``task_id`` 未注册。
@@ -172,7 +212,20 @@ class StateStore:
                 handle.persisted = persisted
             if cancel_escalated_to_sigkill is not None:
                 handle.cancel_escalated_to_sigkill = cancel_escalated_to_sigkill
+            if runtime is not None:
+                handle.runtime = runtime
+            if cursor_agent_id is not None:
+                handle.cursor_agent_id = cursor_agent_id
+            if cursor_run_id is not None:
+                handle.cursor_run_id = cursor_run_id
+            if cloud_phase is not None:
+                handle.cloud_phase = cloud_phase
             return handle
+
+    def cloud_handles(self) -> list[TaskHandle]:
+        """Return handles where ``runtime == "cloud"`` (snapshot copy)."""
+        with self._lock:
+            return [h for h in self._tasks.values() if h.runtime == "cloud"]
 
     def list_active(self) -> list[TaskHandle]:
         """Return handles whose state is not terminal (snapshot copy)."""

@@ -55,7 +55,7 @@ CREATE TABLE IF NOT EXISTS popola_hitl (
     -- Reply metadata (set when status transitions to 'answered').
     answered_via      TEXT CHECK(
         answered_via IS NULL
-        OR answered_via IN ('lark', 'ide', 'cli', 'mcp', 'web', 'email', 'signal')
+        OR answered_via IN ('lark', 'ide', 'cli', 'mcp', 'web', 'email', 'signal', 'cloud')
     ),
     answer_option_id  TEXT,
     answer_reason     TEXT,

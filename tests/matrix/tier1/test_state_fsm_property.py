@@ -200,9 +200,20 @@ def test_terminal_handle_excluded_from_list_active() -> None:
 
 
 def test_is_terminal_classification_matches_enum_set() -> None:
-    """TaskHandle.is_terminal() agrees with the documented terminal enum members."""
+    """TaskHandle.is_terminal() agrees with the documented terminal enum members.
+
+    v0.8.5: ``QUEUED`` and ``STARTING`` are non-terminal cloud-runtime
+    states (Cursor Cloud Agent VM allocation + provisioning); they join
+    ``PENDING`` and ``RUNNING`` in the active set and never appear in
+    ``_TERMINAL_STATES``.
+    """
     expected_terminal = {TaskState.COMPLETED, TaskState.FAILED, TaskState.CANCELED}
-    expected_active = {TaskState.PENDING, TaskState.RUNNING}
+    expected_active = {
+        TaskState.PENDING,
+        TaskState.QUEUED,
+        TaskState.STARTING,
+        TaskState.RUNNING,
+    }
     for state in TaskState:
         handle = _make_handle(f"x-{state.value}", state=state)
         if state in expected_terminal:

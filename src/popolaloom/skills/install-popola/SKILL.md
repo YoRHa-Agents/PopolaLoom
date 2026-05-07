@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.8.4
+version: 0.8.5
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -9,8 +9,8 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola init --help"
 tier: 1
-token_estimate: 1800
-last_updated: "2026-05-06"
+token_estimate: 1900
+last_updated: "2026-05-08"
 triggers:
   - "install popola"
   - "install popola-loom"
@@ -55,6 +55,10 @@ Trigger this Skill (NOT the canonical `popola-loom` Skill) on any of:
 > **Note**: The user-facing Skill identifier was renamed from `popolaloom` to `popola-loom` in v0.7.1+; the legacy phrasings (`install popolaloom`, `装 popolaloom`, etc.) remain as triggers above so existing muscle memory keeps working. The Python package name `popolaloom` is unchanged.
 
 The canonical `popola-loom/SKILL.md` (loaded after install) assumes `popola` is already on PATH and the daemon can be started. If that assumption fails on the host machine, run THIS Skill first.
+
+### Cloud Agent prerequisite (v0.8.5+)
+
+If you will drive **Cursor Background / Cloud Agents** through PopolaLoom (`--cli=cursor-cloud`), provision a **`CURSOR_API_KEY`** alongside your shell profile **before** invoking `popola dispatch`. This is unrelated to ordinary local `cursor-agent` binaries — omit the key entirely if you only use `--cli=cursor|claude|codex|kimi|copilot` subprocess adapters.
 
 ## Pre-flight checks (run first, in order)
 

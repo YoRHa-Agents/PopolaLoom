@@ -24,7 +24,7 @@ Validation rules (per spec §12 + workspace rule "No Silent Failures"):
 - ``options`` ≥ 2 distinct entries (binary choice at minimum).
 - ``default_option_id`` MUST match one of ``options[i].id``.
 - ``channels`` ≥ 2 distinct values from {``lark``, ``ide``, ``cli``,
-  ``email``, ``signal``, ``mcp``, ``web``}.
+  ``email``, ``signal``, ``mcp``, ``web``, ``cloud``}.
 - ``deadline_seconds`` is positive and ≤ 86400 (1-day cap so a stalled
   prompt doesn't pin a task forever).
 
@@ -64,10 +64,16 @@ HITLTrigger = Literal[
 so the channel renderer can pick an appropriate template (e.g.
 round_floor → 3-option escalation card)."""
 
-HITLChannel = Literal["lark", "ide", "cli", "email", "signal", "mcp", "web"]
-"""7-value enum per spec §12.8 + v0.3.0 F4 (Lark / IDE / CLI / MCP / Web
-+ legacy email / signal stubs). Every prompt MUST be wired to ≥ 2 of
-these channels so a stale Lark bot can't silently drop the prompt."""
+HITLChannel = Literal[
+    "lark", "ide", "cli", "email", "signal", "mcp", "web", "cloud"
+]
+"""8-value literal per spec §12.8 + v0.3.0 F4 + v0.8.5 cloud-agent HITL bridge.
+
+Adds ``cloud`` for answers submitted through the Cursor cloud-agent HTTP
+surface (alongside Lark / IDE / CLI / MCP / Web + legacy email / signal).
+
+Every prompt MUST be wired to ≥ 2 distinct channels so a stale Lark bot
+can't silently drop the prompt."""
 
 ArtifactType = Literal[
     "event_log",
