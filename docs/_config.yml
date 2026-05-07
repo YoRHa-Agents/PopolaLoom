@@ -7,13 +7,15 @@ description: >-
   process bus, HITL via 5 channels — all on a single popolad UDS
   daemon. Sibling of ArkTower; built on top of DevolaFlow.
 
-# Theme: jekyll-theme-cayman is one of the GitHub-Pages-supported
-# default themes (https://pages.github.com/themes/) — clean two-
-# column layout, no extra Gemfile / bundle install required for
-# Pages-hosted builds.
-theme: jekyll-theme-cayman
+# Theme: NieR-Popola custom layout in _layouts/default.html
+# (cream + amber + gold serif aesthetic — see assets/css/nier-popola.css).
+# No `theme:` key — we ship our own layout, fonts via Google Fonts CDN,
+# zero Gemfile / bundle install needed for Pages-hosted builds.
 url: https://YoRHa-Agents.github.io
 baseurl: /PopolaLoom
+
+# Site version (rendered in the footer by _layouts/default.html)
+popola_version: "0.8.1"
 
 # Site metadata
 github:
@@ -42,3 +44,11 @@ exclude:
 relative_links:
   enabled: true
   collections: true
+
+# Default front-matter — every Markdown page picks up _layouts/default.html
+# unless it explicitly overrides `layout:` in its own front-matter.
+defaults:
+  - scope:
+      path: ""
+    values:
+      layout: default
