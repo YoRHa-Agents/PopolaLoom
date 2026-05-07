@@ -4,19 +4,20 @@ title: PopolaLoom
 description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / Copilot)
 ---
 
-# PopolaLoom
+<section class="hero">
+  <h1 data-i18n="hero.title">PopolaLoom</h1>
+  <p class="tagline" data-i18n="hero.tagline">A loom that weaves agents.</p>
+  <p data-i18n="hero.lead">Local-first meta-orchestrator that sits on top of every agent CLI on your machine — Cursor, Claude Code, Codex, Kimi, GitHub Copilot — and gives them a single dispatch surface, a persistent task bus, and a unified HITL channel.</p>
+  <div class="cta-cluster">
+    <a class="cta-button" href="QUICKSTART.html" data-i18n="hero.cta_start">5-minute Quickstart</a>
+    <a class="cta-button" href="https://github.com/YoRHa-Agents/PopolaLoom" data-i18n="hero.cta_github">GitHub</a>
+    <a class="cta-button" href="USER_GUIDE.html" data-i18n="hero.cta_guide">User Guide</a>
+  </div>
+</section>
 
-> Meta-orchestrator over local agent CLIs. Per-task isolation, persistent process bus, HITL via 5 channels — all on a single `popolad` UDS daemon.
+<hr class="ornament">
 
-[GitHub](https://github.com/YoRHa-Agents/PopolaLoom) · [Quickstart](QUICKSTART.md) · [User Guide](USER_GUIDE.md) · [Demo](DEMO.md) · [Release Notes](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) · [Changelog](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
-
-## What is PopolaLoom?
-
-PopolaLoom is a local-first **meta-orchestrator** that sits on top of every agent CLI on your machine — Cursor, Claude Code, Codex, Kimi, GitHub Copilot — and gives them a single dispatch surface, a persistent task bus, and a unified HITL channel. Think of it as the "loom" (织机) that weaves N agent CLIs into one coherent run-graph: each per-task strand is its own subprocess managed by the `popolad` UDS daemon.
-
-It is the multi-task / multi-CLI sibling of [DevolaFlow](https://github.com/YoRHa-Agents/DevolaFlow) (the per-task quality framework) and ships **vendored** with the relevant subset of [ArkTower](https://github.com/YoRHa-Agents/ArkTower) (the task pool / SQLite persistence / EventBus). On a fresh machine, `pip install popolaloom` gives you `popola dispatch` + `popola attach` + `popola doctor` with zero sibling clones.
-
-## 5-minute install
+<h2 data-i18n="install.heading">Install in one line</h2>
 
 ```bash
 pip install popolaloom
@@ -26,37 +27,51 @@ popola dispatch "echo hello popola" --cli=cursor
 popola doctor                        # 4-subsystem health check
 ```
 
-→ Full guide: [Quickstart](QUICKSTART.md)
+<hr class="ornament">
 
-## Key features
+<h2 data-i18n="features.heading">Why PopolaLoom?</h2>
 
-- **Single dispatch surface** — `popola dispatch "..." --cli=cursor|claude|codex|kimi|copilot` instead of N command shapes.
-- **Cross-terminal task survival** — `popolad` UDS daemon with persistent SQLite task pool; tasks outlive shell close, SSH disconnect, even reboots.
-- **Vendored ArkTower** — task pool / EventBus / 4 SQL migrations bundled under `popolaloom._vendored.arktower`; no sibling repo required.
-- **HITL across 5 channels** — Lark / IDE / CLI / MCP / Web; first responder wins via atomic cross-channel sync.
-- **Skill-based auto-discovery** — `popola init` writes `SKILL.md` into Cursor / Claude / Codex / Copilot; host agents auto-load it.
-- **MCP-native** — 9 dispatch / inspect / HITL verbs over stdio for any MCP-aware IDE.
-- **8-dim self-eval baseline** — `popola eval run` produces a PopolaLoom-nines composite score with per-dimension evidence pipelines.
-- **Idempotent installer** — re-running `popola init` prints `SKIP <path> (already installed)` instead of clobbering operator edits.
+<div class="feature-grid">
+  <div class="feature-card">
+    <h3 data-i18n="feature.dispatch.title">Single dispatch surface</h3>
+    <p data-i18n="feature.dispatch.body">popola dispatch "..." --cli=cursor|claude|codex|kimi|copilot — one command shape across every agent CLI on your machine.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.survival.title">Cross-terminal task survival</h3>
+    <p data-i18n="feature.survival.body">popolad UDS daemon with persistent SQLite task pool; tasks outlive shell close, SSH disconnect, even reboots.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.handoff.title">Hands-off envelope (v0.8.0+)</h3>
+    <p data-i18n="feature.handoff.body">Every dispatch persists a Markdown front-matter envelope to .local/.agent/handoff/ — auditable, replayable via popola dispatch --replay &lt;id&gt;, addressable by content-derived slug-hash.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.hitl.title">HITL across 5 channels</h3>
+    <p data-i18n="feature.hitl.body">Lark / IDE / CLI / MCP / Web — first responder wins via atomic cross-channel sync. LangGraph interrupt() broadcasts to all five.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.skill.title">Skill-based auto-discovery</h3>
+    <p data-i18n="feature.skill.body">popola init writes SKILL.md into Cursor / Claude / Codex / Copilot; host agents auto-load it. install-popola Skill (v0.7.0+) walks fresh installs.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.eval.title">8-dim PopolaLoom-nines self-eval</h3>
+    <p data-i18n="feature.eval.body">popola eval run produces a composite score with per-dimension evidence pipelines — dispatch_isolation, hitl_latency, attach_correctness, cross_cli_handoff, and four more.</p>
+  </div>
+</div>
 
-## Install via your AI agent
+<hr class="ornament">
 
-Just say `install popola` to any host agent (Cursor, Claude Code, Codex, GitHub Copilot) — the `install-popola` Skill (v0.7.0+) handles the install for you. The Skill walks the agent through `pip install popolaloom` → `popola init <ide> --global` → `popola popolad start` → `popola doctor`, mirroring the conventional `/install-devola-flow` slash-command shape.
+<h2 data-i18n="docs.heading">Documentation</h2>
 
-## Getting started
+<ul>
+  <li><a href="QUICKSTART.html" data-i18n="docs.quickstart">Quickstart — 5-minute onboarding (install → first task)</a></li>
+  <li><a href="USER_GUIDE.html" data-i18n="docs.user_guide">User Guide — full reference (CLI verbs, MCP, HITL, Lark, hands-off envelope)</a></li>
+  <li><a href="DEMO.html" data-i18n="docs.demo">Demo — walkthroughs, example outputs, self-evolution journey</a></li>
+  <li><a href="https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md" data-i18n="docs.release_notes">Release Notes (v0.8.0+ floats here)</a></li>
+  <li><a href="https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md" data-i18n="docs.changelog">CHANGELOG — full v0.0.1 → v0.8.x history</a></li>
+</ul>
 
-| Doc | What it covers |
-|---|---|
-| [Quickstart](QUICKSTART.md) | 5-minute onboarding (install → first task) |
-| [User Guide](USER_GUIDE.md) | Full CLI + MCP + HITL reference |
-| [Demo](DEMO.md) | Walkthroughs + example outputs + self-evolution journey |
+<hr class="ornament">
 
-## Latest release: v0.7.0
+<h2 data-i18n="status.heading">Project status</h2>
 
-PopolaLoom v0.7.0 closes the four user-feedback items from v0.6.1: (1) `.local/` is now gitignored as a strictly local-only working surface (on-disk files preserved); (2) ten per-version `release-notes-v*.md` files consolidate into a single floating `RELEASE_NOTES.md` plus the `CHANGELOG.md` historical archive; (3) comprehensive docs refresh (`README.md` + `docs/QUICKSTART.md` + `docs/USER_GUIDE.md` + this Jekyll site + `docs/DEMO.md` v0.7.0 era refresh); (4) NEW `install-popola` Skill at `src/popolaloom/skills/install-popola/SKILL.md` mirroring the `/install-devola-flow` workflow.
-
-→ Full notes: [RELEASE_NOTES.md](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) · Historical archive: [CHANGELOG.md](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
-
-## License
-
-MIT — see [LICENSE](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/LICENSE) (project repo).
+<p data-i18n="status.lead">v0.8.1 — Hands-off envelope stable + NieR-Popola web design. 1597 default-lane tests, 94.42% coverage, popolaloom.handoff module 100% line + branch coverage. License MIT.</p>
