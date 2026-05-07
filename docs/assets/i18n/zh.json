@@ -35,5 +35,6 @@
   "docs.changelog": "CHANGELOG —— v0.0.1 → v0.8.x 完整历史",
   "status.heading": "项目状态",
   "status.lead": "v0.8.1 —— Hands-off envelope 稳定 + NieR-Popola 风 web 设计。1597 个 default-lane 测试、94.42% 覆盖率、popolaloom.handoff 模块 100% 行+分支覆盖率。MIT 许可。",
-  "footer.tagline": "织 agent 之机。"
+  "footer.tagline": "织 agent 之机。",
+  "notice.en_only": "本页面暂仅有英文版 —— 仅 header / footer / 着陆页支持中文。"
 }
