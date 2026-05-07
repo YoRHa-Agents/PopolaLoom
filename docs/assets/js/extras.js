@@ -29,12 +29,12 @@
     const codeEl = pre.querySelector('code');
     if (codeEl) return codeEl.textContent;
     // Fallback for rare <pre> without <code>: temporarily swap the button
-    // for a comment placeholder, read pre.textContent, then put the button
+    // for a temporary marker, read pre.textContent, then put the button
     // back. Avoids reading the ⎘ glyph as part of the copied payload.
-    const placeholder = document.createComment('copy-btn-placeholder');
-    pre.replaceChild(placeholder, btn);
+    const marker = document.createComment('copy-btn-marker');
+    pre.replaceChild(marker, btn);
     const text = pre.textContent;
-    pre.replaceChild(btn, placeholder);
+    pre.replaceChild(btn, marker);
     return text;
   }
 

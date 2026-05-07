@@ -1,4 +1,4 @@
-/* PopolaLoom v0.8.1 — client-side i18n switcher (vanilla, no deps).
+/* PopolaLoom v0.8.2 — client-side i18n switcher (vanilla, no deps).
  *
  * Strategy: localStorage-persisted lang state + per-page fetch of JSON dict
  * + DOM textContent rewrite over [data-i18n="key"] attributes. No router
@@ -44,10 +44,14 @@
   }
   const I18N_BASE = deriveBaseUrl() + '/assets/i18n/';
 
+  const PAGE_LANG = document.documentElement.dataset.pageLang;
+  const TRANSLATION_URL = document.documentElement.dataset.translationUrl;
+
   const _dicts = Object.create(null);
   let _enDict = null;
 
   function getCurrentLang() {
+    if (PAGE_LANG && SUPPORTED_LANGS.includes(PAGE_LANG)) return PAGE_LANG;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored && SUPPORTED_LANGS.includes(stored)) return stored;
@@ -85,6 +89,9 @@
 
   function lookup(key, dict) {
     if (!dict) return undefined;
+    if (Object.prototype.hasOwnProperty.call(dict, key)) {
+      return typeof dict[key] === 'string' ? dict[key] : undefined;
+    }
     const parts = key.split('.');
     let cur = dict;
     for (const p of parts) {
@@ -116,7 +123,7 @@
     });
 
     const titleEl = document.querySelector('title');
-    if (titleEl) {
+    if (titleEl && !PAGE_LANG) {
       const t = lookup('page.title', dict) ?? lookup('page.title', fallback);
       if (t) titleEl.textContent = t;
     }
@@ -208,6 +215,11 @@
       btn.addEventListener('click', async () => {
         const cur = getCurrentLang();
         const next = cur === 'en' ? 'zh' : 'en';
+        if (TRANSLATION_URL) {
+          setCurrentLang(next);
+          window.location.href = TRANSLATION_URL;
+          return;
+        }
         await setLangAndRender(next);
         maybeShowEnOnlyNotice(next);
       });

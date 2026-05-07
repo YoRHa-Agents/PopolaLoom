@@ -1,56 +1,67 @@
 ---
 layout: default
 title: Demo
-description: Walkthroughs, example outputs, and self-evolution journey from v0.3.5 to v0.8.1.
+description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.8.2.
+lang: en
+translation_url: /zh/DEMO.html
 ---
 
-# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.8.1)
+# PopolaLoom — Product Demo
 
-> 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
-> Skill install + `popola doctor` aggregate health check, an
-> interactive setup wizard (v0.5.5+), an `install-popola` Skill (v0.7.0+),
-> a **hands-off envelope** for file-based dispatch payloads (v0.8.0+),
-> and a **NieR-Popola web design** with bilingual zh/en + day/night
-> theme toggle (v0.8.1+).
+> One local sidecar daemon turns Cursor, Claude, Codex, Kimi, and Copilot
+> into a persistent task bus with auditable handoff files and human-in-the-loop
+> fanout.
 
-## v0.8.1 web design (NEW)
+## What this demo proves
 
-The v0.8.1 minor lands the GitHub Pages site overhaul that closes
-`feedback_for_v0.7.0.md` items #1–3 / TRACKER `BL-UI-1`. **No
-source-code changes** — the entire patch only touches `docs/` static
-assets + version metadata.
+PopolaLoom is not another IDE. It is a local-first control plane over the
+agent CLIs already installed on your machine:
 
-Visit <https://yorha-agents.github.io/PopolaLoom/> to see:
+1. **One dispatch surface** — `popola dispatch "..." --cli=cursor|claude|codex|copilot`.
+2. **Persistent task state** — `popolad` owns process lifetime, task state, and event logs across terminals.
+3. **File-backed handoff** — every dispatch writes a Markdown envelope under `.local/.agent/handoff/`.
+4. **HITL fanout** — Lark, IDE, CLI, MCP, and Web channels race to provide one atomic answer.
 
-- **NieR-Popola visual system** — cream + amber + mechanized gold
-  palette in light mode, near-black + warm off-white + brighter
-  gold in dark mode; Cormorant Garamond serif headings, Inter
-  body, JetBrains Mono code; geometric ◆ ornament between sections.
-- **Bilingual zh / en switcher** — top-right `EN ↔ 中文` button,
-  `localStorage["popola.lang"]` persisted, no page reload. 37-key
-  dictionaries on both sides; technical terms (CLI / MCP / HITL /
-  dispatch) kept in English in the zh dict.
-- **Day/night toggle** — top-right `☾ ↔ ☀` button. First visit:
-  resolves from `matchMedia(prefers-color-scheme)`; subsequent
-  visits respect explicit user pick. Anti-FOUC `@media` block in
-  CSS gives instant dark first-paint for OS-dark visitors.
-- **Hero + 6-card feature-grid** landing page on `index.md`.
-- **Pure static** — Google Fonts CDN, vanilla JS, no Gemfile / no
-  npm. Lighthouse-friendly.
+## Five-minute path
 
-Note: `QUICKSTART.md`, `USER_GUIDE.md`, this `DEMO.md` are kept
-single-language (technical reference; deeper bilingual coverage is
-on the BL-UI follow-up). The header / footer / landing page are
-fully bilingual.
+```bash
+pip install popolaloom
+popola init
+popola popolad start
+popola dispatch "echo hello from popola" --cli=cursor
+popola list --all
+popola doctor
+```
 
-## v0.8.0 hands-off envelope (NEW — biggest v0.8.x feature)
+Expected shape:
 
-The v0.8.0 minor (rolled up from v0.7.1 → v0.7.2 → v0.7.3 patches)
-introduces a **file-based dispatch payload** that is auditable,
-replayable, addressable by content-derived slug-hash, and
-delivered to the spawned sub-CLI via two complementary channels.
+```text
+cursor-23e74ec18917
+Summary: 4/4 subsystems checked. 0 FAIL.
+```
 
-### Walkthrough — what every `popola dispatch` now does
+## Design and implementation flow
+
+```text
+popola CLI / MCP tool
+  -> UDS RPC
+  -> popolad daemon
+  -> HandoffEnvelope written to .local/.agent/handoff/
+  -> adapter builds cursor/claude/codex argv
+  -> subprocess emits stdout/stderr/state events
+  -> NDJSON event log + optional Lark card
+  -> attach/status/list read the same durable state
+```
+
+The important implementation choice is that complex task context is a file
+contract, not an argv string. The daemon owns the file, task state, and event
+log; each agent CLI stays isolated and native.
+
+## Hands-off envelope walkthrough
+
+Every `popola dispatch` persists a file-based payload that is auditable,
+replayable, addressable by content-derived slug-hash, and delivered to the
+spawned sub-CLI through environment variables.
 
 ```bash
 $ popola dispatch "fix the bug in foo.py — there's a NoneType error around line 42" --cli=cursor
@@ -122,6 +133,26 @@ $ popola handoff archive cursor-fix-the-bug-in-foo-py-3a7f9c1d cursor-1f0a2b8d4e
 - **Cross-CLI handoff** — the existing `relay()` primitive (cursor → claude → codex chain) gets a stable on-disk audit trail per hop via the v0.7.3 `to_handoff_envelope()` bridge.
 - **HITL feedback companion** — `popolaloom.handoff.FeedbackEnvelope` (Q7=yes, v0.7.3+) mirrors the dispatch envelope schema for HITL answers; foundation slice ships, live `popola feedback ... --persist` wiring scheduled for v0.8.x.
 
+## HITL walkthrough
+
+When a LangGraph node needs human input, it calls `interrupt()` and the daemon
+emits a `task.elicited` event:
+
+```text
+task.elicited
+  -> Lark card
+  -> IDE chooser
+  -> CLI pending/feedback
+  -> MCP elicitation
+  -> Web surface
+```
+
+The first response wins through `hitl/sync.py:mark_answered`; the state
+writeback emits `state.resumed`, and late responders see the already-answered
+result instead of racing the task twice.
+
+## Historical appendix
+
 ### What v0.8.0 added (rolled up from v0.7.1 → v0.7.3)
 
 | Slice | Theme | Test count delta | Coverage |
@@ -155,7 +186,7 @@ migrations. The four threads:
    [`docs/QUICKSTART.md`](QUICKSTART.md) (5-minute onboarding) +
    [`docs/USER_GUIDE.md`](USER_GUIDE.md) (full reference); a
    GitHub Pages-ready Jekyll site under `docs/index.md` +
-   `docs/_config.yml` (scaffolded; enable in repo Settings → Pages →
+   `docs/_config.yml` (the Pages site surface; enable in repo Settings → Pages →
    Source = `docs/`).
 4. **NEW `install-popola` Skill** — at
    `src/popolaloom/skills/install-popola/SKILL.md` (~165 lines, Tier 1,

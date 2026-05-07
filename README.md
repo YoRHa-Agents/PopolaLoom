@@ -1,6 +1,6 @@
 # PopolaLoom
 
-> **v0.8.0** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. **NEW in v0.8.0**: file-backed hands-off envelope (`popolaloom.handoff`) — every dispatch persists a `cat`-friendly Markdown envelope to `.local/.agent/handoff/<id>.md` and injects it into the spawned sub-CLI's environment. Replayable via `popola dispatch --replay <id>`.
+> **v0.8.2** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -108,7 +108,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 |---|---|---|
 | [`docs/QUICKSTART.md`](docs/QUICKSTART.md) | First-time users | 5-minute onboarding (install → first task) |
 | [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) | Operators | Full reference (CLI verbs, MCP, HITL, Lark, config) |
-| [`docs/DEMO.md`](docs/DEMO.md) | Evaluators | Walkthroughs, example outputs, self-evolution journey |
+| [`docs/DEMO.md`](docs/DEMO.md) | Evaluators | Product demo, example outputs, design rationale, implementation flow |
 | [`docs/index.md`](docs/index.md) | Web visitors | GitHub Pages landing page (`https://YoRHa-Agents.github.io/PopolaLoom/`) |
 | [`RELEASE_NOTES.md`](RELEASE_NOTES.md) | Release watchers | LATEST version's release notes (overwritten per release) |
 | [`CHANGELOG.md`](CHANGELOG.md) | Archaeology | Full historical archive of every version |
@@ -116,7 +116,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.8.0 — Hands-off envelope stable.** See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the v0.8.0 closure ledger; [`CHANGELOG.md`](CHANGELOG.md) for the v0.0.1 → v0.8.0 history.
+**v0.8.2 — Docs/web remediation.** The public site now has working zh/en switching for the main docs pages, a clearer demo walkthrough, and docs contract tests. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
 
 | Capability | Status |
 |---|---|
@@ -134,7 +134,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 | `install-popola` Skill (mirrors `/install-devola-flow`) | OK live (v0.7.0+) |
 | Single floating `RELEASE_NOTES.md` (per-version files retired) | OK live (v0.7.0+) |
 | `.local/` is gitignored (local-only working surface) | OK live (v0.7.0+) |
-| GitHub Pages site (`docs/index.md` + `docs/_config.yml`) | scaffolded |
+| GitHub Pages site (`docs/index.md` + `docs/_config.yml`) | OK live |
 | **v0.7.1**: BUG-A/B/C fixed (cancel orphan, rehydrate spawn-aborted, attach `--no-follow` EOF) | OK live |
 | **v0.7.2 / v0.8.0**: `popolaloom.handoff` module (HandoffEnvelope schema_v1 + writer + archive + loader) | OK live (100% cov) |
 | **v0.7.2 / v0.8.0**: `Popolad.dispatch_with_envelope` (E3 internal unification, all dispatch goes through one path) | OK live |
@@ -163,7 +163,7 @@ See [`docs/DEMO.md`](docs/DEMO.md) for example outputs and full session walkthro
 ## Install
 
 ```bash
-pip install popolaloom              # from PyPI (pending publish — see VENDORING.md)
+pip install popolaloom
 # OR from a clone (development):
 pip install -e ".[dev]"
 ```
@@ -171,9 +171,9 @@ pip install -e ".[dev]"
 Verify the install:
 
 ```bash
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.7.0
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.2
 which popola                                                    # → /usr/local/bin/popola (or similar)
-popola version                                                  # → "popolaloom 0.7.0"
+popola version                                                  # → "popolaloom 0.8.2"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Quick fix:
@@ -185,7 +185,7 @@ echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 
 For step-by-step install with troubleshooting, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md). For an LLM-driven install workflow, ask any host agent (Cursor / Claude / Codex / Copilot) `install popola` — the new `install-popola` Skill (added in v0.7.0; see `src/popolaloom/skills/install-popola/SKILL.md`) walks them through it.
 
-> **PyPI publish status**: `popolaloom` is not yet on PyPI. Once ArkTower lands on PyPI (or a private index), the `popolaloom._vendored.arktower` directory can be deleted and `pyproject.toml` reverted to a normal version pin (`arktower>=0.1`). The `[tool.hatch.metadata] allow-direct-references = true` setting is preserved for that transition. See [`VENDORING.md`](VENDORING.md) "When to stop vendoring".
+> **Packaging note**: PopolaLoom vendors the ArkTower subset required for task persistence, so a wheel install does not need a sibling ArkTower checkout. If ArkTower later becomes a normal package dependency, [`VENDORING.md`](VENDORING.md) documents how to retire the vendored copy.
 
 ## Skills (v0.5.0+, two Skills as of v0.7.0)
 
