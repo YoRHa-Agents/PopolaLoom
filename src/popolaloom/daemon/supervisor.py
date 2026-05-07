@@ -221,6 +221,9 @@ class Supervisor:
         agent state machine, observed by the poller thread.
 
         Side effects:
+        - BEFORE any other side effect: tags TaskHandle.runtime="cloud" so the
+          task is observable as a cloud-runtime task even if subsequent steps
+          (marker decode, missing api_key, create_agent failure) fail early.
         - Updates StateStore with cursor_agent_id / cursor_run_id / runtime=cloud /
           state=STARTING via the injected state_store.
         - Emits cloud.queued event.
@@ -280,6 +283,8 @@ class Supervisor:
                 error_kind="cloud_create_failed",
                 error_detail="Supervisor requires state_store for cloud runtime",
             )
+
+        self._state_store.update(task_id, runtime="cloud")
 
         try:
             payload = json.loads(cmd[2])

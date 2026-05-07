@@ -244,6 +244,39 @@ def test_missing_api_key_emits_task_failed(
     cb.assert_called_once_with(task_id, 1)
 
 
+def test_spawn_cloud_failed_path_still_tags_runtime_cloud(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Missing API key after valid marker: runtime=cloud before task.failed."""
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    sup, store, log, task_id = cloud_task_env
+    update_calls: list[tuple[str, dict[str, Any]]] = []
+    orig_update = store.update
+
+    def capture_update(tid: str, **kwargs: Any) -> TaskHandle:
+        update_calls.append((tid, dict(kwargs)))
+        return orig_update(tid, **kwargs)
+
+    store.update = capture_update  # type: ignore[method-assign]
+
+    cmd = _marker_cmd("hi", {"repo_url": "https://github.com/o/r"})
+    sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+    log.fsync()
+
+    failed = next(e for e in log.tail() if e["type"] == "task.failed")
+    assert failed["data"]["error_kind"] == "missing_api_key"
+
+    assert update_calls, "expected state_store.update to be called"
+    first_tid, first_kw = update_calls[0]
+    assert first_tid == task_id
+    assert first_kw == {"runtime": "cloud"}
+
+    handle = store.get(task_id)
+    assert handle is not None
+    assert handle.runtime == "cloud"
+
+
 def test_poller_thread_registered_in_workers(
     cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
     mocker: MockerFixture,
