@@ -1,4 +1,4 @@
-"""relay primitive — cross-CLI handoff (v0.3.0 F2.2).
+"""relay primitive — cross-CLI handoff (v0.3.0 F2.2; v0.7.3 bridge to HandoffEnvelope).
 
 Spawns a child task (typically on a different CLI) carrying a payload
 from the source task, with the source task linked as ``parent_task_id``
@@ -9,13 +9,24 @@ self-bootstrap S5, F4 HITL renderers) can inspect it.
 Design (per spec §4.2 + §4.3 owned_files invariant; see
 ``.local/memory/specs/popolaloom/spec.md``):
 
-- :class:`RelayHandoffEnvelope` Pydantic v2 model = the wire schema for
-  the handoff payload.  Validated strictly (``extra="forbid"``).
+- :class:`RelayHandoffEnvelope` Pydantic v2 model = the v0.3.0 wire
+  schema for the handoff payload.  Validated strictly (``extra="forbid"``).
 - :func:`relay` = the primitive function.  Reuses the existing
   :meth:`Popolad.dispatch_task` to spawn the child, threading the
   envelope through ``extra["handoff_envelope"]``.
 - Returns the new ``child_task_id`` (popola task id, NOT ArkTower id —
   matches the dispatch contract).
+
+v0.7.3 bridge — :func:`to_handoff_envelope` converts a v0.3.0
+``RelayHandoffEnvelope`` into the new v0.8.0
+:class:`popolaloom.handoff.HandoffEnvelope`. The two coexist during
+the transition: relay() still emits the legacy schema into
+``extra["handoff_envelope"]`` (so any v0.3.0–v0.7.2 consumer keeps
+working unchanged), but new code paths can call
+``to_handoff_envelope(relay_env)`` to obtain a HandoffEnvelope and
+write it via :func:`popolaloom.handoff.write_envelope` for file-based
+audit. Future v0.8.x or v0.9.0 may flip relay() to emit the new
+schema natively + deprecate ``RelayHandoffEnvelope``.
 
 Workspace rule "No Silent Failures": when ``source_task_id`` doesn't
 exist in the popolad state store we raise :class:`ValueError`; the RPC
@@ -25,12 +36,14 @@ layer maps that to ``HTTP 400``.
 from __future__ import annotations
 
 import logging
+from datetime import UTC, datetime
 from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
 if TYPE_CHECKING:
     from popolaloom.daemon.server import Popolad
+    from popolaloom.handoff import HandoffEnvelope
 
 logger = logging.getLogger(__name__)
 
@@ -158,3 +171,87 @@ def relay(
         reason,
     )
     return child_task_id
+
+
+def to_handoff_envelope(
+    relay_env: RelayHandoffEnvelope,
+    *,
+    prompt: str | None = None,
+    cwd: str | None = None,
+) -> HandoffEnvelope:
+    """Convert a v0.3.0 :class:`RelayHandoffEnvelope` to the v0.8.0 :class:`HandoffEnvelope`.
+
+    v0.7.3 bridge — provides a forward-migration path for code that
+    currently dispatches via :func:`relay` and wants to also write a
+    file-based handoff envelope (for audit / replay / cross-CLI hand-off).
+
+    Field mapping:
+
+    - ``source_cli`` → ``source_cli`` (verbatim).
+    - ``target_cli`` → ``target_cli`` (verbatim).
+    - ``source_task_id`` → ``parent_task_id`` (the new schema's relay
+      linkage field).
+    - ``payload`` (free-form dict) → folded into ``adapter_extra`` under
+      a single ``"_relay_payload"`` key so downstream consumers can
+      detect a relay-origin envelope vs a fresh dispatch.
+    - ``constraints`` → ``constraints`` (verbatim).
+    - ``reason`` → ``reason`` (verbatim).
+    - Synthesised: ``handoff_id`` via :func:`generate_handoff_id` over
+      the relay's natural key (target_cli + reason + source_task_id);
+      ``created_at`` = now UTC; ``tags`` = ``["relay-bridged"]``.
+
+    The ``prompt`` and ``cwd`` are NOT carried by RelayHandoffEnvelope (it
+    pre-dates the v0.8.0 envelope), so they must be supplied by the caller
+    or default to a synthesised relay prompt + ``None`` respectively.
+
+    Args:
+        relay_env: source envelope (Pydantic v2 instance).
+        prompt: optional override for the new envelope's ``prompt``.
+            ``None`` (default) synthesises ``"[relay from <source_id>] <reason>"``
+            mirroring :func:`relay`'s child-prompt convention.
+        cwd: optional override for the new envelope's ``cwd``. ``None``
+            (default) leaves it unset (popolad will use its CWD).
+
+    Returns:
+        HandoffEnvelope: validated new-schema envelope.
+
+    Raises:
+        TypeError: if ``relay_env`` is not a RelayHandoffEnvelope.
+    """
+    from popolaloom.handoff import HandoffEnvelope, generate_handoff_id
+
+    if not isinstance(relay_env, RelayHandoffEnvelope):
+        raise TypeError(
+            f"to_handoff_envelope expects RelayHandoffEnvelope, "
+            f"got {type(relay_env).__name__}"
+        )
+
+    resolved_prompt = (
+        prompt
+        if prompt is not None
+        else f"[relay from {relay_env.source_task_id}] {relay_env.reason}"
+    )
+
+    adapter_extra: dict[str, Any] = {}
+    if relay_env.payload:
+        adapter_extra["_relay_payload"] = dict(relay_env.payload)
+
+    return HandoffEnvelope(
+        handoff_id=generate_handoff_id(
+            relay_env.target_cli,
+            resolved_prompt,
+            parent_task_id=relay_env.source_task_id,
+            adapter_extra=adapter_extra,
+            constraints=dict(relay_env.constraints) if relay_env.constraints else None,
+        ),
+        created_at=datetime.now(UTC),
+        source_cli=relay_env.source_cli,
+        target_cli=relay_env.target_cli,
+        parent_task_id=relay_env.source_task_id,
+        prompt=resolved_prompt,
+        cwd=cwd,
+        adapter_extra=adapter_extra,
+        constraints=dict(relay_env.constraints) if relay_env.constraints else {},
+        reason=relay_env.reason,
+        tags=["relay-bridged"],
+    )

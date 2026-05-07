@@ -21,6 +21,7 @@ description: Comprehensive reference for the popola CLI, MCP integration, HITL f
 - [HITL workflow](#hitl-workflow)
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
+- [Hands-off envelope (v0.7.1+ / v0.7.2+ / v0.7.3+)](#hands-off-envelope)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Architecture deep-dive](#architecture-deep-dive)
@@ -275,6 +276,126 @@ popola dispatch "..." --cli=cursor \
 ```
 
 Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapter versions); the value-parse rules raise on whitelist violations (No Silent Failures for typed knobs).
+
+## Hands-off envelope
+
+v0.7.1 introduced the `popolaloom.handoff` substrate (Pydantic v2 `HandoffEnvelope` + Markdown front-matter ser/deser + slug-hash addressing + atomic writer + active/archive 双层); v0.7.2 wired it into `Popolad.dispatch_with_envelope` (E3 internal unification) so every dispatch persists a file-based payload + injects `POPOLA_HANDOFF_FILE` / `POPOLA_HANDOFF_ID` into the spawn env (C5 双通道); v0.7.3 added `popola dispatch --replay`, the HITL `FeedbackEnvelope` companion (Q7=yes), and the legacy `RelayHandoffEnvelope → HandoffEnvelope` bridge.
+
+### Why a file?
+
+- **Length**: prompts above 16 KB blow argv on macOS / hit the kernel `MAX_ARG_STRLEN` cliff on Linux. A file dodges this entirely.
+- **Audit**: every dispatch leaves a Markdown receipt under `.local/.agent/handoff/<id>.md` (gitignored as of v0.7.0); inspect with `cat`, search with `grep`, archive with `popola handoff archive`.
+- **Replay**: `popola dispatch --replay <id>` re-issues the exact dispatch from disk — the slug-hash id is content-derived so the same prompt/cli/extra always maps to the same id.
+- **Cross-CLI handoff**: the existing `relay()` primitive (cursor → claude → codex chain) gets a stable on-disk audit trail per hop (via `to_handoff_envelope` bridge).
+
+### Envelope shape (Markdown front-matter)
+
+```
+---
+schema_version: '1'
+handoff_id: cursor-fix-bug-in-foo-py-3a7f9c1d
+created_at: '2026-05-06T14:30:00+00:00'
+source_cli: null
+target_cli: cursor
+parent_task_id: null
+cwd: null
+adapter_extra: {}
+constraints: {}
+reason: null
+tags: []
+---
+fix the bug in foo.py — there's a NoneType error around line 42
+```
+
+The Pydantic v2 model `popolaloom.handoff.HandoffEnvelope` enforces `extra="forbid"` so unknown front-matter keys raise (No Silent Failures). The id format is `<target_cli>-<slug-from-prompt>-<8hex content hash>` where the hex covers `(target_cli, prompt, parent_task_id, adapter_extra, constraints)`.
+
+### `popola handoff` CLI (filesystem-only — no daemon required)
+
+| Verb | Purpose | Example |
+|---|---|---|
+| `popola handoff list [--json] [--handoff-dir DIR]` | List active envelopes (newest first) | `popola handoff list` |
+| `popola handoff show <id> [--json] [--handoff-dir DIR]` | Print Markdown envelope (or JSON) | `popola handoff show cursor-fix-bug-foo-py-3a7f9c1d` |
+| `popola handoff archive <id> <task_id> [--archive-root DIR]` | Snapshot to `<archive_root>/<task_id>/<id>.md` | `popola handoff archive <id> cursor-23e74ec18917` |
+| `popola dispatch --replay <id>` | Re-run the exact prior dispatch | `popola dispatch --replay cursor-fix-bug-foo-py-3a7f9c1d` |
+
+`--handoff-dir` overrides the active root resolution order: explicit arg > `$POPOLA_HANDOFF_DIR` env > `.local/.agent/handoff/` (default).
+
+### Channel injection (C5 双通道)
+
+The dispatch path injects two complementary channels:
+
+1. **env (primary, always live)**: `POPOLA_HANDOFF_FILE=<abs path>` + `POPOLA_HANDOFF_ID=<slug-hash>` are added to the spawn env. The agent inside the sub-CLI (cursor-agent / claude / codex / ...) can `cat $POPOLA_HANDOFF_FILE` to inspect the original dispatch — including audit-only fields (`reason`, `tags`) that don't fit into a single argv prompt.
+2. **flag (forward-compat, opt-in)**: when `--cli-flag popola_handoff_flag=true` is set, the cmd argv is post-processed to append `--popola-handoff-file <path>`. **Off by default** because vanilla `cursor-agent` / `claude` / `codex` don't recognise the flag yet — auto-injecting would break their argv parsing. The flag stays as a hook for sub-CLIs that gain native support later.
+
+The env-channel always wins over caller-provided base_env keys with the same name (anti-impersonation invariant — see `tests/daemon/test_dispatch_with_envelope.py::test_handoff_with_envelope_overlay_overrides_caller_env`).
+
+### HITL feedback envelope (v0.7.3+, Q7=yes — foundation slice)
+
+`popolaloom.handoff.FeedbackEnvelope` mirrors the dispatch envelope's design choices for HITL answers (the user's typed reply to a `LangGraph.interrupt()` prompt). Filename pattern: `<task_id>-fb-<8hex>.md` (the `-fb-` infix marks feedback files distinct from dispatch envelopes in the same active dir). Schema fields: `feedback_id`, `task_id`, `hitl_id`, `answer` (body), `reason`, `tags`, `responder`, `channel` (which HITL channel — `cli`/`lark`/`ide`/`mcp`/`web` — submitted the reply).
+
+v0.7.3 ships the writer + schema; the live `popola feedback ...` CLI flow does NOT yet auto-persist (avoiding daemon-side coordination risk). Callers can manually call `write_feedback(env)` from custom scripts. v0.7.4+ will add `popola feedback ... --persist` to wire it into the live HITL flow.
+
+### Legacy `RelayHandoffEnvelope` bridge (v0.7.3+)
+
+The v0.3.0 `popolaloom.daemon.primitives.RelayHandoffEnvelope` used by the relay primitive predates the v0.8.0 envelope schema. v0.7.3 ships `to_handoff_envelope(relay_env, prompt=..., cwd=...)` to convert old → new (mapping `source_task_id → parent_task_id`, folding `payload → adapter_extra["_relay_payload"]`, tagging with `"relay-bridged"`). The relay primitive itself still emits the legacy schema unchanged so v0.3.0–v0.7.2 consumers keep working; new code paths can call the bridge then `write_envelope` for file-based audit.
+
+### Programmatic API
+
+```python
+from datetime import UTC, datetime
+from popolaloom.handoff import (
+    HandoffEnvelope,
+    FeedbackEnvelope,
+    generate_handoff_id,
+    generate_feedback_id,
+    write_envelope,
+    write_feedback,
+    list_active_envelopes,
+    load_envelope,
+    archive_envelope,
+)
+
+# Build + write a dispatch envelope manually (rarely needed — Popolad does this for you)
+env = HandoffEnvelope(
+    handoff_id=generate_handoff_id("cursor", "fix bug"),
+    created_at=datetime.now(UTC),
+    target_cli="cursor",
+    prompt="fix bug",
+    reason="user reported during code review",
+    tags=["v0.7.x"],
+)
+path = write_envelope(env)
+
+# Iterate active envelopes
+for s in list_active_envelopes():
+    print(s.handoff_id, s.path, s.size_bytes, s.mtime)
+
+# Archive a finished task's envelope
+archive_envelope(path, "cursor-23e74ec18917")
+```
+
+The full module surface (`from popolaloom.handoff import ...`):
+
+| Symbol | Kind | Purpose |
+|---|---|---|
+| `HandoffEnvelope` | Pydantic v2 | Dispatch envelope schema |
+| `FeedbackEnvelope` | Pydantic v2 | HITL feedback companion (v0.7.3+) |
+| `HandoffSummary` | frozen dataclass | Lightweight listing entry (id/path/size/mtime) |
+| `generate_handoff_id` | function | `<cli>-<slug>-<8hex>` |
+| `generate_feedback_id` | function | `<task_id>-fb-<8hex>` |
+| `slugify_prompt` | function | Prompt → safe ASCII slug |
+| `content_hash` | function | Canonical-JSON SHA-256 first 8 hex |
+| `write_envelope` | function | Atomic write to active root |
+| `write_feedback` | function | Atomic write of feedback envelope |
+| `envelope_path` / `feedback_path` | function | Canonical path resolution (no I/O) |
+| `archive_envelope` | function | Copy active → `<archive_root>/<task_id>/` (D4) |
+| `archive_dir_for` | function | Canonical archive dir (no I/O) |
+| `list_active_envelopes` | function | Enumerate active envelopes |
+| `load_envelope` | function | Read + parse a specific envelope |
+| `resolve_envelope_path` | function | Canonical path resolution (no I/O) |
+| `DEFAULT_HANDOFF_ROOT` | constant | `Path(".local/.agent/handoff")` |
+| `DEFAULT_ARCHIVE_ROOT` | constant | `Path(".local/.agent/archive")` |
+| `HANDOFF_SCHEMA_VERSION` / `FEEDBACK_SCHEMA_VERSION` | constant | Anchor for forward-compat schema evolution |
 
 ## Configuration
 

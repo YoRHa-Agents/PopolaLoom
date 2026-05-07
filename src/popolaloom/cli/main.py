@@ -37,6 +37,7 @@ import json
 import logging
 import os
 import time
+from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
@@ -77,6 +78,7 @@ def _register_subcommand_groups() -> None:
     """
     from popolaloom.cli.doctor_cmd import doctor_command
     from popolaloom.cli.eval import app as eval_app
+    from popolaloom.cli.handoff_cmd import app as handoff_app
     from popolaloom.cli.init_cmd import app as init_app
     from popolaloom.cli.popolad import app as popolad_app
     from popolaloom.cli.skill_cmd import app as skill_app
@@ -92,6 +94,11 @@ def _register_subcommand_groups() -> None:
         skill_app,
         name="skill",
         help="Install / audit / upgrade the PopolaLoom Skill",
+    )
+    app.add_typer(
+        handoff_app,
+        name="handoff",
+        help="Inspect / archive on-disk handoff envelopes (v0.7.2+)",
     )
     app.command(name="doctor")(doctor_command)
 
@@ -218,8 +225,15 @@ def list_cli() -> None:
 
 @app.command()
 def dispatch(
-    prompt: str = typer.Argument(..., help="Prompt string forwarded to the chosen CLI."),
-    cli: str = typer.Option(..., "--cli", help="CLI adapter name (cursor/claude/codex/...)."),
+    prompt: str = typer.Argument(
+        "",
+        help="Prompt string forwarded to the chosen CLI. May be empty when --replay is set.",
+    ),
+    cli: str = typer.Option(
+        "",
+        "--cli",
+        help="CLI adapter name (cursor/claude/codex/...). May be empty when --replay is set.",
+    ),
     cwd: Path | None = typer.Option(  # noqa: B008
         None,
         "--cwd",
@@ -234,6 +248,16 @@ def dispatch(
         None,
         "--events-dir",
         help="Override events_dir (advisory; daemon owns actual write path). R-014 part.",
+    ),
+    replay: str = typer.Option(
+        "",
+        "--replay",
+        help=(
+            "Replay a previously written handoff envelope by id "
+            "(e.g. cursor-fix-bug-foo-py-3a7f9c1d). When set, overrides "
+            "prompt / --cli / --cwd / --cli-flag from the envelope's "
+            "stored values (v0.7.3+)."
+        ),
     ),
     wait: bool = typer.Option(
         False,
@@ -251,8 +275,29 @@ def dispatch(
         help="Emit machine-readable JSON instead of a plain task_id line.",
     ),
 ) -> None:
-    """Dispatch a new task to popolad and (optionally) wait for completion."""
-    extra = _parse_cli_flags(cli_flag)
+    """Dispatch a new task to popolad and (optionally) wait for completion.
+
+    v0.7.3+ ``--replay HANDOFF_ID`` reads a previously written envelope from
+    ``$POPOLA_HANDOFF_DIR`` (or ``.local/.agent/handoff/``) and uses its
+    ``target_cli`` / ``prompt`` / ``cwd`` / ``adapter_extra`` as the
+    dispatch payload — exact replay of a prior dispatch (or a relay'd /
+    HITL'd one) without re-typing the prompt or its flags.
+    """
+    if replay:
+        _resolved = _resolve_replay(replay, prompt, cli, cwd, cli_flag)
+        prompt = _resolved.prompt
+        cli = _resolved.cli
+        cwd = _resolved.cwd
+        extra = _resolved.adapter_extra
+    else:
+        if not prompt:
+            typer.echo("error: missing prompt (or use --replay HANDOFF_ID)", err=True)
+            raise typer.Exit(code=2)
+        if not cli:
+            typer.echo("error: --cli is required (or use --replay HANDOFF_ID)", err=True)
+            raise typer.Exit(code=2)
+        extra = _parse_cli_flags(cli_flag)
+
     if events_dir is not None:
         extra.setdefault("__events_dir", str(events_dir))
 
@@ -438,32 +483,70 @@ def _attach_streaming(task_id: str, *, from_index: int) -> None:
         return
 
 
-def _consume_sse(response: httpx.Response, *, terminate_on_terminal: bool) -> None:
+def _consume_sse(response: httpx.Response, *, terminate_on_terminal: bool) -> bool:
     """Iterate raw SSE response, parse each ``data:`` frame, render one line.
 
     Args:
         response: an open streaming :class:`httpx.Response`.
         terminate_on_terminal: when True, stop iterating once a terminal
             event is seen (we still let the server close naturally too).
+
+    Returns:
+        bool: ``True`` if a terminal event (``task.completed`` /
+        ``task.failed`` / ``task.canceled``) or a server-side
+        ``event: end-of-stream`` marker was observed. Callers can use
+        this to distinguish "stream ended cleanly" from "stream broke
+        mid-flight" (BUG-C in v0.7.0 feedback).
+
+    BUG-C (v0.7.1): when the server's ``StreamingResponse`` returns
+    after writing many SSE frames, ``httpx`` occasionally misclassifies
+    the resulting EOF as a :class:`httpx.ReadTimeout` instead of a
+    clean stream close. We catch ReadTimeout here and, when at least
+    one terminal event has already been rendered, treat it as a normal
+    stream-end (the producer is done; nothing more is coming). When the
+    timeout fires *before* any terminal event we re-raise so the caller
+    can decide (server hung mid-stream is still an error).
     """
-    for raw_line in response.iter_lines():
-        if not raw_line:
-            continue
-        if raw_line.startswith("data: "):
-            payload = raw_line[len("data: "):]
-        elif raw_line.startswith(":"):
-            continue
-        else:
-            continue
-        try:
-            envelope = json.loads(payload)
-        except json.JSONDecodeError:
-            logger.warning("Skipping un-parsable SSE frame: %r", payload[:200])
-            continue
-        typer.echo(_format_event(envelope))
-        terminal_types = {"task.completed", "task.failed", "task.canceled"}
-        if terminate_on_terminal and envelope.get("type") in terminal_types:
-            continue
+    terminal_types = {"task.completed", "task.failed", "task.canceled"}
+    saw_terminal = False
+    try:
+        for raw_line in response.iter_lines():
+            if not raw_line:
+                continue
+            if raw_line.startswith("data: "):
+                payload = raw_line[len("data: "):]
+            elif raw_line.startswith("event:"):
+                event_kind = raw_line[len("event:"):].strip()
+                if event_kind == "end-of-stream":
+                    saw_terminal = True
+                    break
+                continue
+            elif raw_line.startswith(":"):
+                continue
+            else:
+                continue
+            try:
+                envelope = json.loads(payload)
+            except json.JSONDecodeError:
+                logger.warning("Skipping un-parsable SSE frame: %r", payload[:200])
+                continue
+            typer.echo(_format_event(envelope))
+            if envelope.get("type") in terminal_types:
+                saw_terminal = True
+                if terminate_on_terminal:
+                    break
+    except httpx.ReadTimeout:
+        if not saw_terminal:
+            logger.warning(
+                "_consume_sse: ReadTimeout before any terminal event was seen; "
+                "re-raising to caller"
+            )
+            raise
+        logger.debug(
+            "_consume_sse: ReadTimeout after terminal event observed — "
+            "treating as clean stream-end (BUG-C)"
+        )
+    return saw_terminal
 
 
 # ── list ──────────────────────────────────────────────────────────────────
@@ -654,6 +737,70 @@ def _parse_cli_flags(flags: list[str]) -> dict[str, Any]:
             parsed = value
         result[key] = parsed
     return result
+
+
+@dataclass(frozen=True, slots=True)
+class _ReplayPayload:
+    """Resolved dispatch parameters from a `--replay HANDOFF_ID` lookup."""
+
+    cli: str
+    prompt: str
+    cwd: Path | None
+    adapter_extra: dict[str, Any]
+
+
+def _resolve_replay(
+    handoff_id: str,
+    user_prompt: str,
+    user_cli: str,
+    user_cwd: Path | None,
+    user_cli_flag: list[str],
+) -> _ReplayPayload:
+    """Load envelope by id and produce a dispatch payload.
+
+    v0.7.3+ ``popola dispatch --replay <handoff_id>`` reads the local
+    envelope file and uses its stored fields (``target_cli`` / ``prompt`` /
+    ``cwd`` / ``adapter_extra``) as the dispatch payload — an exact replay
+    of a prior dispatch.
+
+    If the user also passed ``prompt`` / ``--cli`` / ``--cwd`` /
+    ``--cli-flag`` on the same invocation we WARN to stderr that those are
+    overridden by the envelope (No Silent Failures — the user gets
+    explicit feedback that their inline args were ignored).
+    """
+    from popolaloom.handoff import load_envelope
+
+    try:
+        env = load_envelope(handoff_id)
+    except FileNotFoundError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+    except ValueError as exc:
+        typer.echo(f"error: invalid handoff_id: {exc}", err=True)
+        raise typer.Exit(code=2) from exc
+
+    overrides: list[str] = []
+    if user_prompt:
+        overrides.append(f"prompt={user_prompt!r}")
+    if user_cli:
+        overrides.append(f"--cli={user_cli!r}")
+    if user_cwd is not None:
+        overrides.append(f"--cwd={user_cwd!s}")
+    if user_cli_flag:
+        overrides.append(f"--cli-flag (×{len(user_cli_flag)})")
+
+    if overrides:
+        typer.echo(
+            f"warning: --replay overrides inline {', '.join(overrides)} with envelope values",
+            err=True,
+        )
+
+    return _ReplayPayload(
+        cli=env.target_cli,
+        prompt=env.prompt,
+        cwd=Path(env.cwd) if env.cwd else None,
+        adapter_extra=dict(env.adapter_extra) if env.adapter_extra else {},
+    )
 
 
 def _format_event(ev: dict[str, Any]) -> str:

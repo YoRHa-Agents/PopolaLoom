@@ -74,6 +74,11 @@ from popolaloom.daemon.graph import GraphCallbacks, build_main_graph
 from popolaloom.daemon.graph import TaskState as GraphTaskState
 from popolaloom.daemon.state import StateStore, TaskHandle, TaskState
 from popolaloom.daemon.supervisor import Supervisor
+from popolaloom.handoff import (
+    HandoffEnvelope,
+    generate_handoff_id,
+    write_envelope,
+)
 
 if TYPE_CHECKING:
     from langgraph.checkpoint.base import BaseCheckpointSaver
@@ -97,6 +102,29 @@ callbacks (``(cli, prompt, cwd) -> argv``) by catching ``TypeError`` so
 v0.0.1 fakes in test fixtures do not break — but the *type alias* is
 strict 4-arg per AC #8 of v0.2.0 Stage E.
 """
+
+
+def _resolve_handoff_path(env: dict[str, str] | None) -> str | None:
+    """Resolve the active handoff envelope path for v0.7.2 C5 flag-injection.
+
+    Order of precedence:
+
+    1. ``env["POPOLA_HANDOFF_FILE"]`` if set (this is what
+       :meth:`Popolad.dispatch_with_envelope` injects into the spawn env).
+    2. ``os.environ["POPOLA_HANDOFF_FILE"]`` if the caller didn't pass an
+       explicit env dict (legacy ``dispatch_task`` paths that don't
+       construct a merged env).
+    3. ``None`` — no flag will be injected.
+
+    The flag injection itself is gated on ``extra["popola_handoff_flag"]``
+    in :meth:`Popolad._call_adapter`; this helper only resolves WHERE the
+    file lives so the flag value is correct when injection fires.
+    """
+    if env is not None:
+        path = env.get("POPOLA_HANDOFF_FILE")
+        if path:
+            return path
+    return os.environ.get("POPOLA_HANDOFF_FILE")
 
 
 def _default_events_dir() -> Path:
@@ -270,6 +298,118 @@ class Popolad:
                 return self.event_log(handle.task_id)
         return None
 
+    def dispatch_with_envelope(
+        self,
+        envelope: HandoffEnvelope,
+        *,
+        adapter: AdapterCallback | None = None,
+        base_env: dict[str, str] | None = None,
+        handoff_root: Path | str | None = None,
+    ) -> str:
+        """Canonical dispatch entry — v0.8.0 hands-off envelope (E3 internal unification).
+
+        New in v0.7.2 (per ``feedback_for_v0.8.0.md`` item #1, user-decided
+        Q5=E3): the file-backed envelope is the single source of truth for
+        dispatch payload. This method:
+
+        1. Writes the envelope to ``<handoff_root>/<handoff_id>.md`` (atomic via
+           :func:`popolaloom.handoff.write_envelope`; ``handoff_root`` resolved as
+           explicit arg → ``$POPOLA_HANDOFF_DIR`` env → ``DEFAULT_HANDOFF_ROOT``
+           = ``.local/.agent/handoff``).
+        2. Builds a env overlay containing ``POPOLA_HANDOFF_FILE`` (absolute
+           path) + ``POPOLA_HANDOFF_ID`` (slug-hash). The overlay always takes
+           precedence over caller-provided ``base_env`` to prevent
+           handoff-impersonation.
+        3. Delegates to the existing :meth:`_dispatch_via_graph` /
+           :meth:`_dispatch_legacy` with the merged env, target_cli, prompt,
+           cwd, and adapter_extra all sourced from the envelope.
+
+        :meth:`dispatch_task` is now a thin wrapper that builds an envelope
+        from kwargs and calls this method (E3 internal unification — there is
+        only one canonical dispatch path internally; the kwargs surface is
+        preserved for backward compat with rpc.py / cli/main.py / tests).
+
+        Args:
+            envelope: validated :class:`HandoffEnvelope` (Pydantic v2). Caller
+                is responsible for building it; if you have a raw prompt /
+                cli pair, use :meth:`dispatch_task` instead which builds the
+                envelope for you.
+            adapter: optional adapter callback override; defaults to
+                ``self._adapter`` injected at __init__.
+            base_env: optional base environment dict (typically a caller-
+                provided sandbox env); merged with the handoff overlay so
+                the child process sees both. ``None`` means the daemon's
+                ``os.environ`` is the base (typical case).
+            handoff_root: optional override for the active root directory.
+                ``None`` means resolve from ``$POPOLA_HANDOFF_DIR`` env var,
+                falling back to :data:`popolaloom.handoff.DEFAULT_HANDOFF_ROOT`.
+
+        Returns:
+            str: ``task_id`` (popola internal id, distinct from
+            ``envelope.handoff_id``; the two are linked via
+            ``extra["_handoff_envelope_path"]`` + the env vars).
+
+        Raises:
+            TypeError: if ``envelope`` is not a :class:`HandoffEnvelope`.
+            RuntimeError: if no adapter is available (same as
+                :meth:`dispatch_task`).
+            ValueError: if adapter returns invalid cmd (same).
+            OSError: if envelope file cannot be written (re-raised, No
+                Silent Failures).
+        """
+        if not isinstance(envelope, HandoffEnvelope):
+            raise TypeError(
+                f"dispatch_with_envelope expects HandoffEnvelope, "
+                f"got {type(envelope).__name__}"
+            )
+
+        # Resolve handoff dir: explicit arg > $POPOLA_HANDOFF_DIR > default
+        if handoff_root is None:
+            env_dir = os.environ.get("POPOLA_HANDOFF_DIR")
+            if env_dir:
+                handoff_root = env_dir
+        env_path = write_envelope(envelope, base_dir=handoff_root)
+
+        # Build env overlay; handoff vars always take precedence to avoid
+        # caller-provided POPOLA_HANDOFF_* keys impersonating the dispatch.
+        overlay = {
+            "POPOLA_HANDOFF_FILE": str(env_path.resolve()),
+            "POPOLA_HANDOFF_ID": envelope.handoff_id,
+        }
+        merged_env = (
+            {**os.environ, **overlay}
+            if base_env is None
+            else {**base_env, **overlay}
+        )
+
+        cwd = Path(envelope.cwd) if envelope.cwd else None
+        # Adapter-extra is the user-controlled passthrough; envelope-internal
+        # bookkeeping (path, id) flows via env vars (POPOLA_HANDOFF_FILE/ID)
+        # so adapters / supervisors don't need to peek at the extra dict shape.
+        # Pass None when empty so 3-arg legacy adapter fallback still triggers
+        # in _call_adapter (test fixtures from v0.0.1 still rely on it).
+        extra: dict[str, Any] | None = (
+            dict(envelope.adapter_extra) if envelope.adapter_extra else None
+        )
+
+        if self._use_graph:
+            return self._dispatch_via_graph(
+                envelope.target_cli,
+                envelope.prompt,
+                cwd,
+                merged_env,
+                adapter,
+                extra,
+            )
+        return self._dispatch_legacy(
+            envelope.target_cli,
+            envelope.prompt,
+            cwd,
+            merged_env,
+            adapter,
+            extra,
+        )
+
     def dispatch_task(
         self,
         cli: str,
@@ -281,33 +421,27 @@ class Popolad:
     ) -> str:
         """Dispatch a new task and return its ``task_id``.
 
+        v0.7.2 (Stage v0.8.0 patch 2, E3 internal unification): this method
+        is now a thin wrapper that builds a :class:`HandoffEnvelope` from the
+        kwargs and delegates to :meth:`dispatch_with_envelope`. The public
+        signature is preserved unchanged so rpc.py / cli/main.py / tests
+        keep working without modification.
+
+        For new code prefer :meth:`dispatch_with_envelope` directly — it
+        gives you control over the full envelope (including audit fields
+        like ``reason`` / ``tags`` that the kwargs surface does not expose).
+
         v0.2.0 Stage B: routes through LangGraph by default
         (``self._use_graph=True``); legacy direct path is kept behind the
-        flag for Stage C bootstrap. **Public signature unchanged** —
-        rpc.py still calls ``popolad.dispatch_task(cli, prompt, cwd, env,
-        adapter, extra)`` via :func:`asyncio.to_thread`.
-
-        Steps (graph path):
-
-        1. Generate ``task_id`` (uuid4 hex 前 12 位 + ``cli`` 前缀)。
-        2. 通过 adapter 把 (cli, prompt, cwd, extra) 翻译成 argv list (validate)。
-        3. 尝试在 ArkTower 中持久化 task (Stage C 真接入; Stage A
-           仍是 schema-parity 占位; 失败时返 None + persisted=False)。
-        4. 创建 :class:`EventLog`; 受 ``_event_logs_lock`` 保护 (R-006)。
-        5. 注册 :class:`TaskHandle` 到 StateStore (state=RUNNING)。
-        6. 写 ``task.dispatched`` CloudEvents 事件。
-        7. 构建 LangGraph 主图 (dispatch → spawn → wait → emit_terminal),
-           keyed by ``thread_id = task_id``; 后台线程跑 ``graph.invoke``。
-        8. 返回 task_id (不等待子进程)。
-
-        Steps (legacy path, ``POPOLA_USE_GRAPH=0``): same as v0.0.1 — see
-        :meth:`_dispatch_legacy` for the inline body.
+        flag for Stage C bootstrap.
 
         Args:
             cli: CLI 名 (``cursor`` / ``claude`` / ``codex`` / 测试中可任意)。
             prompt: 给 CLI 的提示词 (透传给 adapter 由后者翻译)。
             cwd: 子进程工作目录, ``None`` 沿用 popolad CWD。
-            env: 子进程环境变量字典, ``None`` 继承父进程。
+            env: 子进程环境变量字典; 与 envelope 注入的
+                ``POPOLA_HANDOFF_FILE`` / ``POPOLA_HANDOFF_ID`` overlay 合并
+                (overlay 优先)。``None`` 表示用 ``os.environ`` 作 base。
             adapter: 临时 adapter 覆盖 (优先级高于 ``__init__`` 时注入的)。
             extra: 可选 ``--cli-flag KEY=VAL`` 解析结果, 透传给 adapter。
 
@@ -317,11 +451,28 @@ class Popolad:
 
         Raises:
             RuntimeError: 当未注入 adapter 且本次也未传时。
-            ValueError: 当 adapter 返回非 list[str] / 空 list。
+            ValueError: 当 adapter 返回非 list[str] / 空 list, 或当
+                ``prompt`` 为空导致 envelope 验证失败。
         """
-        if self._use_graph:
-            return self._dispatch_via_graph(cli, prompt, cwd, env, adapter, extra)
-        return self._dispatch_legacy(cli, prompt, cwd, env, adapter, extra)
+        # E3 internal unification: every dispatch goes through
+        # dispatch_with_envelope. The envelope is the single source of truth.
+        envelope = HandoffEnvelope(
+            handoff_id=generate_handoff_id(
+                cli,
+                prompt,
+                adapter_extra=extra,
+            ),
+            created_at=datetime.now(UTC),
+            target_cli=cli,
+            prompt=prompt,
+            cwd=str(cwd) if cwd is not None else None,
+            adapter_extra=extra or {},
+        )
+        return self.dispatch_with_envelope(
+            envelope,
+            adapter=adapter,
+            base_env=env,
+        )
 
     def _dispatch_legacy(
         self,
@@ -347,7 +498,10 @@ class Popolad:
         task_id = self._make_task_id(cli)
         cwd_path = Path(cwd) if cwd is not None else None
 
-        cmd = self._call_adapter(adapter_fn, cli, prompt, cwd_path, extra)
+        handoff_path = _resolve_handoff_path(env)
+        cmd = self._call_adapter(
+            adapter_fn, cli, prompt, cwd_path, extra, handoff_path=handoff_path
+        )
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
@@ -400,6 +554,7 @@ class Popolad:
         )
 
         self._state.update(task_id, pid=pid)
+        self._record_popola_dispatch(arktower_task_id)
         return task_id
 
     def _dispatch_via_graph(
@@ -435,7 +590,10 @@ class Popolad:
         task_id = self._make_task_id(cli)
         cwd_path = Path(cwd) if cwd is not None else None
 
-        cmd = self._call_adapter(adapter_fn, cli, prompt, cwd_path, extra)
+        handoff_path = _resolve_handoff_path(env)
+        cmd = self._call_adapter(
+            adapter_fn, cli, prompt, cwd_path, extra, handoff_path=handoff_path
+        )
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
@@ -494,6 +652,7 @@ class Popolad:
             on_exit=_on_exit_internal,
         )
         self._state.update(task_id, pid=pid)
+        self._record_popola_dispatch(arktower_task_id)
 
         callbacks = self._make_graph_callbacks(
             task_id=task_id,
@@ -533,8 +692,11 @@ class Popolad:
         prompt: str,
         cwd: Path | None,
         extra: dict[str, Any] | None,
+        *,
+        handoff_path: str | None = None,
     ) -> list[str]:
-        """Call ``adapter_fn`` with the canonical 4-arg signature.
+        """Call ``adapter_fn`` with the canonical 4-arg signature, then
+        optionally inject ``--popola-handoff-file <path>`` (v0.7.2 C5 双通道).
 
         The :data:`AdapterCallback` type alias is strict 4-arg
         ``(cli, prompt, cwd, extra) -> argv`` (Stage E R-009 closure),
@@ -550,13 +712,34 @@ class Popolad:
           them — No Silent Failures rule); ``TypeError`` propagates.
         - When ``extra`` is ``None``, try 4-arg first; on ``TypeError``
           fall back to 3-arg (legacy fixtures).
+
+        v0.7.2 (per design D-080 Q3=C5 双通道): after the adapter returns
+        a base ``cmd``, if ``handoff_path`` is non-None **and** the user
+        opted in via ``extra["popola_handoff_flag"] = True``, append
+        ``["--popola-handoff-file", handoff_path]`` to the cmd. This is
+        opt-in because vanilla ``cursor-agent`` / ``claude`` / ``codex``
+        do not yet recognise the flag — auto-injecting would break their
+        argv parsing. The env-var channel (``POPOLA_HANDOFF_FILE``) is
+        always live and is the primary delivery; the flag is a
+        forward-compat hook for sub-CLIs that gain native support later.
         """
         if extra is not None:
-            return adapter_fn(cli, prompt, cwd, extra)
-        try:
-            return adapter_fn(cli, prompt, cwd, None)
-        except TypeError:
-            return adapter_fn(cli, prompt, cwd)  # type: ignore[call-arg]
+            cmd = adapter_fn(cli, prompt, cwd, extra)
+        else:
+            try:
+                cmd = adapter_fn(cli, prompt, cwd, None)
+            except TypeError:
+                cmd = adapter_fn(cli, prompt, cwd)  # type: ignore[call-arg]
+
+        # v0.7.2 C5 flag-channel injection (opt-in via popola_handoff_flag).
+        if (
+            handoff_path is not None
+            and extra is not None
+            and bool(extra.get("popola_handoff_flag"))
+        ):
+            cmd = list(cmd) + ["--popola-handoff-file", handoff_path]
+
+        return cmd
 
     def _resolve_events_dir(self, extra: dict[str, Any] | None) -> Path:
         """Resolve the events directory for a single dispatch (R-014 closure).
@@ -647,11 +830,92 @@ class Popolad:
         handles = self._state.list_all() if include_terminal else self._state.list_active()
         return [self._task_summary(h, full=include_terminal) for h in handles]
 
+    def _has_popola_dispatch_row(self, arktower_task_id: str | None) -> bool:
+        """Return True iff popola_dispatch has a row for this ArkTower task id."""
+        if arktower_task_id is None or self._persistence is None:
+            return False
+        try:
+            conn = self._persistence.connection.get_connection()
+            row = conn.execute(
+                "SELECT 1 FROM popola_dispatch WHERE task_id = ? LIMIT 1",
+                (arktower_task_id,),
+            ).fetchone()
+            return row is not None
+        except Exception:
+            logger.exception(
+                "popola_dispatch lookup failed for arktower_task_id=%s; "
+                "treating as 'row present' so cancel keeps its strict default",
+                arktower_task_id,
+            )
+            return True
+
+    def _record_popola_dispatch(
+        self,
+        arktower_task_id: str | None,
+        *,
+        runtime: str = "popen",
+        supervisor: str = "in-process",
+    ) -> None:
+        """Insert a ``popola_dispatch`` row marking this task as successfully spawned.
+
+        v0.7.1 BUG-B prerequisite: :meth:`rehydrate_from_persistence` and
+        :meth:`cancel_task` use the presence of a ``popola_dispatch``
+        row to distinguish *"spawned, then orphaned by a daemon crash"*
+        from *"never spawned because dispatch crashed pre-spawn"*. Per
+        ``migrations/005_popolaloom_extensions.sql``, the table was
+        introduced in v0.2.0 as occupied schema with the comment
+        *"Populating it is a v0.3.0 concern"*. v0.7.1 finally fills the
+        gap so the BUG-A/B heuristics are sound end-to-end (the
+        NFR-8 recovery test in tests/matrix/nfr/ regresses without this
+        insert because every legitimately-spawned task would otherwise
+        be flagged as ``spawn_aborted`` on rehydrate).
+
+        Per workspace rule "No Silent Failures": failures here are
+        logged at ERROR + swallowed (the task itself spawned fine; we
+        don't want to fail dispatch on an audit-table write). The
+        downside is that the next rehydrate may flag this task as
+        spawn_aborted; we accept that trade-off because the alternative
+        — raising and failing the user-visible dispatch — is worse.
+
+        Args:
+            arktower_task_id: ArkTower row id; ``None`` (no persistence
+                wired) is a no-op.
+            runtime: ``"popen"`` for v0.7.x in-process supervision;
+                future tmux / systemd-run runtimes will populate this
+                column accordingly.
+            supervisor: ``"in-process"`` for v0.7.x; future detached
+                supervisors set ``"subprocess"``.
+        """
+        if arktower_task_id is None or self._persistence is None:
+            return
+        try:
+            conn = self._persistence.connection.get_connection()
+            conn.execute(
+                "INSERT OR IGNORE INTO popola_dispatch "
+                "(dispatch_id, task_id, runtime, supervisor) "
+                "VALUES (?, ?, ?, ?)",
+                (
+                    f"dispatch-{arktower_task_id}",
+                    arktower_task_id,
+                    runtime,
+                    supervisor,
+                ),
+            )
+            conn.commit()
+        except Exception:
+            logger.exception(
+                "_record_popola_dispatch: failed to insert row for "
+                "arktower_task_id=%s; rehydrate will treat this task as "
+                "spawn_aborted on next daemon restart",
+                arktower_task_id,
+            )
+
     def cancel_task(
         self,
         task_id: str,
         *,
         sigterm_grace_s: float = 5.0,
+        daemon_started_at: datetime | None = None,
     ) -> dict[str, Any]:
         """Send SIGTERM to the task subprocess, escalate to SIGKILL after grace.
 
@@ -670,9 +934,20 @@ class Popolad:
         ../../../.local/memory/research/v0.5.0-skill-install-lark-research.md)
         contract bug consumed by ``evaluation/runner.py:325-331``.
 
+        v0.7.1 BUG-A fix: when ``daemon_started_at`` is supplied AND the
+        rehydrated handle predates the current daemon AND no
+        ``popola_dispatch`` row exists for the underlying ArkTower task,
+        fall through to :meth:`_soft_cancel_orphan` instead of raising
+        the legacy "race window between dispatch and spawn" error
+        forever. See Step 2 of fix/v0.7.1-* dispatch.
+
         Args:
             task_id: 已注册的 task_id。
             sigterm_grace_s: SIGTERM 后等待秒数, 超时 SIGKILL。
+            daemon_started_at: optional UTC start time of the running
+                popolad process; supplied by :mod:`popolaloom.daemon.rpc`
+                so we can identify orphan handles created by a previous
+                daemon. ``None`` keeps legacy behavior (no orphan-reap).
 
         Returns:
             dict: ``{task_id, requested_signal, escalated_to_sigkill, pid}``.
@@ -694,6 +969,18 @@ class Popolad:
             )
         pid = handle.pid
         if pid is None:
+            # Orphan-reap path: rehydrated handles from a previous daemon process that
+            # crashed before populating popola_dispatch will sit forever in this state.
+            # We can identify them by (a) no popola_dispatch row AND (b) handle.started_at
+            # older than the *current* daemon's started_at — in that case the in-memory
+            # handle was created by rehydrate, not by this daemon's dispatch path.
+            is_orphan = (
+                daemon_started_at is not None
+                and handle.started_at < daemon_started_at
+                and not self._has_popola_dispatch_row(handle.arktower_task_id)
+            )
+            if is_orphan:
+                return self._soft_cancel_orphan(task_id, handle)
             raise RuntimeError(
                 f"task {task_id} has no pid yet "
                 "(race window between dispatch and spawn)"
@@ -785,6 +1072,135 @@ class Popolad:
             "requested_signal": "SIGTERM",
             "escalated_to_sigkill": escalated,
             "pid": pid,
+        }
+
+    def _soft_cancel_orphan(
+        self,
+        task_id: str,
+        handle: TaskHandle,
+    ) -> dict[str, Any]:
+        """Reap an orphaned task left behind by a prior daemon process.
+
+        Triggered from :meth:`cancel_task` when ``popola_dispatch`` has no
+        row AND the handle's ``started_at`` predates this daemon's
+        startup time — meaning :meth:`rehydrate_from_persistence` placed
+        it in :class:`StateStore` but the original subprocess was
+        already gone with no recovery path. We persist the cancellation
+        in ArkTower + ``task_history`` (``trigger='cancel_orphan'``) and
+        emit a ``task.canceled`` NDJSON event so consumers see a clean
+        terminal state instead of looping on
+        "race window between dispatch and spawn" forever.
+
+        Per workspace rule "No Silent Failures": every persistence /
+        event-log failure inside this method is logged via
+        :func:`logger.exception` with context; we never bare-except.
+        """
+        self._state.update(
+            task_id,
+            state=TaskState.CANCELED,
+            completed_at=datetime.now(UTC),
+        )
+
+        arktower_task_id = handle.arktower_task_id
+        if self._persistence is not None and arktower_task_id is not None:
+            from popolaloom._vendored.arktower.core.models import (
+                TaskStatus as _ArkTaskStatus,
+            )
+            from popolaloom._vendored.arktower.core.models import (
+                TaskUpdate as _ArkTaskUpdate,
+            )
+
+            try:
+                existing = self._persistence.repository.get(arktower_task_id)
+                from_status_value = existing.status.value if existing else "submitted"
+            except Exception:
+                logger.exception(
+                    "orphan-reap: repository.get failed for arktower_task_id=%s; "
+                    "defaulting from_status='submitted' for audit",
+                    arktower_task_id,
+                )
+                from_status_value = "submitted"
+
+            try:
+                self._persistence.repository.update(
+                    arktower_task_id,
+                    _ArkTaskUpdate(status=_ArkTaskStatus.CANCELED),
+                )
+            except Exception:
+                logger.exception(
+                    "orphan-reap: ArkTower repository.update(CANCELED) failed for %s; "
+                    "audit row + event still emitted",
+                    arktower_task_id,
+                )
+
+            try:
+                conn = self._persistence.connection.get_connection()
+                now_iso = datetime.now(UTC).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
+                conn.execute(
+                    """INSERT INTO task_history
+                           (event_id, task_id, trigger, from_status, to_status,
+                            actor, notes, timestamp)
+                       VALUES (?,?,?,?,?,?,?,?)""",
+                    (
+                        uuid.uuid4().hex,
+                        arktower_task_id,
+                        "cancel_orphan",
+                        from_status_value,
+                        "canceled",
+                        "popolad-orphan-reaper",
+                        "orphaned_by_daemon_restart",
+                        now_iso,
+                    ),
+                )
+                conn.commit()
+            except Exception:
+                logger.exception(
+                    "orphan-reap: task_history INSERT failed for %s",
+                    arktower_task_id,
+                )
+
+        with self._event_logs_lock:
+            event_log = self._event_logs.get(task_id)
+        if event_log is None:
+            try:
+                event_log = EventLog(
+                    handle.event_log_path,
+                    source=f"popola/{task_id}",
+                )
+                with self._event_logs_lock:
+                    self._event_logs[task_id] = event_log
+            except Exception:
+                logger.exception(
+                    "orphan-reap: failed to (re)open EventLog at %s; "
+                    "skipping task.canceled emission for %s",
+                    handle.event_log_path,
+                    task_id,
+                )
+                event_log = None
+
+        if event_log is not None:
+            try:
+                event_log.append(
+                    "task.canceled",
+                    {
+                        "task_id": task_id,
+                        "reason": "orphaned_by_daemon_restart",
+                        "trigger": "cancel_orphan",
+                        "arktower_task_id": arktower_task_id,
+                    },
+                )
+            except Exception:
+                logger.exception(
+                    "orphan-reap: event_log.append(task.canceled) failed for %s",
+                    task_id,
+                )
+
+        return {
+            "task_id": task_id,
+            "requested_signal": "none",
+            "escalated_to_sigkill": False,
+            "pid": None,
+            "result": "orphaned_by_daemon_restart",
         }
 
     def event_log(self, task_id: str) -> EventLog | None:
@@ -1133,7 +1549,28 @@ class Popolad:
                 cwd: Path | None,
                 extra: dict[str, Any] | None,
             ) -> list[str]:
-                return outer._call_adapter(adapter_fn, cli, prompt, cwd, extra)
+                # v0.7.2 C5: re-resolve handoff path from os.environ since
+                # the graph callback doesn't have direct access to the
+                # outer dispatch's `env` dict; we relied on the daemon's
+                # process env carrying POPOLA_HANDOFF_FILE only when the
+                # parent dispatch_with_envelope set it via merged_env.
+                # That overlay landed in the SUBPROCESS env, not the
+                # daemon's own env, so this fallback returns None unless
+                # a higher-level caller exported the var explicitly. The
+                # graph re-call happens AFTER the actual dispatch already
+                # built the cmd, so a None here is safe — it just means
+                # the graph-mode introspective re-call won't double-add
+                # the flag (the actual cmd already has it from the first
+                # _call_adapter invocation).
+                handoff_path = _resolve_handoff_path(None)
+                return outer._call_adapter(
+                    adapter_fn,
+                    cli,
+                    prompt,
+                    cwd,
+                    extra,
+                    handoff_path=handoff_path,
+                )
 
             def supervisor_spawn(
                 self,
@@ -1270,11 +1707,24 @@ class Popolad:
             return 0
 
         handles: list[TaskHandle] = []
+        spawn_aborted_count = 0
         for ark_task in ark_tasks:
             params = ark_task.parameters or {}
             popola_task_id = params.get("popola_task_id")
             cli = params.get("cli") or ark_task.preferred_agent_type or "unknown"
             cmd = params.get("cmd") or []
+
+            # v0.7.1 BUG-B fix: only popolad-owned tasks (those with popola_task_id)
+            # need a popola_dispatch row to be considered alive. If we have a
+            # popola_task_id but NO matching popola_dispatch row, dispatch crashed
+            # before spawn — surface as failed rather than reviving a ghost RUNNING
+            # handle in StateStore. Tasks WITHOUT popola_task_id (legitimately
+            # created outside popolad — e.g. ``arktower task add``) keep current
+            # behavior because they were never expected to have a dispatch row.
+            if popola_task_id is not None and not self._has_popola_dispatch_row(ark_task.id):
+                self._handle_pre_dispatch_orphan(ark_task, str(popola_task_id), str(cli))
+                spawn_aborted_count += 1
+                continue
 
             if not popola_task_id:
                 popola_task_id = self._make_task_id(str(cli))
@@ -1308,8 +1758,83 @@ class Popolad:
         self._state.rehydrate(deduped)
         recovered_task_ids = [h.task_id for h in deduped]
         self._emit_recovered_events(deduped, recovered_task_ids)
-        logger.info("rehydrated %d in-flight task(s) from ArkTower SQLite", len(deduped))
+        logger.info(
+            "rehydrated %d in-flight task(s) from ArkTower SQLite "
+            "(skipped %d spawn-aborted orphan(s))",
+            len(deduped),
+            spawn_aborted_count,
+        )
         return len(deduped)
+
+    def _handle_pre_dispatch_orphan(
+        self,
+        ark_task: Any,
+        popola_task_id: str,
+        cli: str,
+    ) -> None:
+        """Mark an orphan ArkTower task as failed when ``popola_dispatch`` is missing.
+
+        Triggered from :meth:`rehydrate_from_persistence` when a task
+        carries a ``popola_task_id`` but no ``popola_dispatch`` row —
+        meaning the original daemon process crashed between
+        :meth:`TaskService.create_task` and :meth:`Supervisor.spawn`. We
+        close the loop persistently so the next rehydrate doesn't see
+        it again, and emit a forensic ``popolad.spawn_aborted`` event.
+
+        Per workspace rule "No Silent Failures": the persistence /
+        event-log writes are wrapped in try/except + logger.exception so
+        the rehydrate loop continues for the remaining tasks even if
+        one orphan write fails.
+        """
+        from popolaloom._vendored.arktower.core.models import (
+            TaskStatus as _ArkTaskStatus,
+        )
+        from popolaloom._vendored.arktower.core.models import (
+            TaskUpdate as _ArkTaskUpdate,
+        )
+
+        if self._persistence is not None:
+            try:
+                self._persistence.repository.update(
+                    ark_task.id,
+                    _ArkTaskUpdate(
+                        status=_ArkTaskStatus.FAILED,
+                        error="spawn_aborted_pre_dispatch",
+                    ),
+                )
+            except Exception:
+                logger.exception(
+                    "rehydrate: ArkTower repository.update(FAILED, "
+                    "error='spawn_aborted_pre_dispatch') failed for %s",
+                    ark_task.id,
+                )
+
+        event_log_path = self._events_dir / f"{popola_task_id}.jsonl"
+        try:
+            log = EventLog(event_log_path, source=f"popola/{popola_task_id}")
+            try:
+                log.append(
+                    "popolad.spawn_aborted",
+                    {
+                        "popola_task_id": popola_task_id,
+                        "arktower_task_id": ark_task.id,
+                        "cli": cli,
+                        "reason": "spawn_aborted_pre_dispatch",
+                        "detail": (
+                            "no popola_dispatch row present at rehydrate time; "
+                            "previous daemon crashed before subprocess spawn"
+                        ),
+                    },
+                )
+            finally:
+                log.close()
+        except Exception:
+            logger.exception(
+                "rehydrate: failed to emit popolad.spawn_aborted event for %s "
+                "(arktower_task_id=%s)",
+                popola_task_id,
+                ark_task.id,
+            )
 
     def _emit_recovered_events(
         self,

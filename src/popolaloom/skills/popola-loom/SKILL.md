@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.7.0
+version: 0.8.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -45,6 +45,10 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
 | `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
+| `popola dispatch --replay <handoff_id>` | 按之前写下的 envelope 重派发（v0.7.3+） | `popola dispatch --replay cursor-fix-bug-foo-py-3a7f9c1d` |
+| `popola handoff list [--json]` | 列出 active envelope（按 mtime 倒排，v0.7.2+） | `popola handoff list` |
+| `popola handoff show <handoff_id> [--json]` | 打印 active envelope 内容（默认 raw Markdown） | `popola handoff show cursor-fix-bug-foo-py-3a7f9c1d` |
+| `popola handoff archive <handoff_id> <task_id>` | 复制到 `<archive_root>/<task_id>/<id>.md`（D4 双层） | `popola handoff archive <handoff_id> cursor-23e74ec18917` |
 | `popola list` | 列出非终态任务（含 task_id / cli / state / pid） | `popola list` |
 | `popola list --all` | 含已完成 / 失败 / 取消的所有任务 | `popola list --all` |
 | `popola status <task_id>` | 单任务全字段状态（JSON 加 `--json`） | `popola status cursor-23e74ec18917` |
