@@ -12,6 +12,7 @@ description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / 
     <a class="cta-button" href="QUICKSTART.html" data-i18n="hero.cta_start">5-minute Quickstart</a>
     <a class="cta-button" href="https://github.com/YoRHa-Agents/PopolaLoom" data-i18n="hero.cta_github">GitHub</a>
     <a class="cta-button" href="USER_GUIDE.html" data-i18n="hero.cta_guide">User Guide</a>
+    <a class="cta-button" href="DEMO.html" data-i18n="hero.cta_demo">Demo</a>
   </div>
 </section>
 
@@ -60,6 +61,25 @@ popola doctor                        # 4-subsystem health check
 
 <hr class="ornament">
 
+<h2 data-i18n="design.heading">Design in one picture</h2>
+
+<div class="feature-grid">
+  <div class="feature-card">
+    <h3 data-i18n="design.sidecar.title">Sidecar, not another IDE</h3>
+    <p data-i18n="design.sidecar.body">The `popolad` daemon owns process lifetime, task state, and event logs while each agent CLI stays isolated in its own subprocess.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="design.envelope.title">File-backed handoff</h3>
+    <p data-i18n="design.envelope.body">Long prompts become audited Markdown envelopes with slug-hash ids, avoiding argv limits and making replay deterministic.</p>
+  </div>
+  <div class="feature-card">
+    <h3 data-i18n="design.hitl.title">Human-in-the-loop fanout</h3>
+    <p data-i18n="design.hitl.body">Interrupts fan out to Lark, IDE, CLI, MCP, and web surfaces; one atomic answer resumes the task and late replies back off.</p>
+  </div>
+</div>
+
+<hr class="ornament">
+
 <h2 data-i18n="docs.heading">Documentation</h2>
 
 <ul>
@@ -74,4 +94,4 @@ popola doctor                        # 4-subsystem health check
 
 <h2 data-i18n="status.heading">Project status</h2>
 
-<p data-i18n="status.lead">v0.8.1 — Hands-off envelope stable + NieR-Popola web design. 1597 default-lane tests, 94.42% coverage, popolaloom.handoff module 100% line + branch coverage. License MIT.</p>
+<p data-i18n="status.lead">v0.8.2 — Docs/web remediation: functional zh/en switching, refreshed demo walkthrough, stale-copy cleanup, and targeted docs contract tests. Hands-off envelope remains stable; license MIT.</p>

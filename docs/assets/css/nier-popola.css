@@ -402,7 +402,7 @@ main.page-content {
   outline: none;
 }
 
-/* 7. Feature grid (used by index.md in Stage B) — class .feature-grid */
+/* 7. Feature grid (used by index.md) — class .feature-grid */
 .feature-grid {
   display: grid;
   grid-template-columns: repeat(auto-fit, minmax(280px, 1fr));
@@ -422,7 +422,7 @@ main.page-content {
 .feature-card p:last-child { margin-bottom: 0; }
 
 /* ──────────────────────────────────────────────────────────────────────
-   8. prefers-color-scheme fallback (v0.8.1 Stage C)
+   8. prefers-color-scheme fallback (v0.8.2)
    First-paint dark mode for OS-dark visitors before theme.js runs (defer).
    The :not([data-theme="light"]) guard lets a JS-set 'light' override the
    OS preference, so users who explicitly pick light always get light.

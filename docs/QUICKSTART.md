@@ -2,6 +2,8 @@
 layout: default
 title: Quickstart
 description: 5-minute onboarding for PopolaLoom — install → first task → health check.
+lang: en
+translation_url: /zh/QUICKSTART.html
 ---
 
 # PopolaLoom — 5-minute Quickstart
@@ -18,16 +20,16 @@ description: 5-minute onboarding for PopolaLoom — install → first task → h
 ## Step 1 — Install popolaloom
 
 ```bash
-pip install popolaloom              # from PyPI (when published)
+pip install popolaloom
 # OR from a clone (dev):
 git clone https://github.com/YoRHa-Agents/PopolaLoom.git
 cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.1
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.2
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.8.1"
+popola version                       # → "popolaloom 0.8.2"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
@@ -125,7 +127,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor (aggregate health, NEW in v0.5.0)
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.8.1 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.8.2 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.

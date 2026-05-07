@@ -2,9 +2,11 @@
 layout: default
 title: User Guide
 description: Comprehensive reference for the popola CLI, MCP integration, HITL flows, and configuration.
+lang: en
+translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.8.1)
+# PopolaLoom — User Guide (v0.8.2)
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
 
@@ -191,7 +193,7 @@ Tasks pause at `await interrupt(prompt)` inside their LangGraph subgraph. The da
 | **IDE** | Click in the host IDE's chooser UI (Cursor / Claude / Codex) | MCP elicitation form (form-mode tool result) |
 | **CLI** | `popola pending` then `popola feedback <hitl_id> <answer>` | `cli/feedback_cmd.py` |
 | **MCP** | Programmatic via `popola_supply_feedback` tool call | `mcp/tools.py:popola_supply_feedback` |
-| **Web** | Browser dashboard (deferred to v0.7.x web surface) | `web/` (placeholder; not yet wired) |
+| **Web** | Static docs entry point and future dashboard channel | GitHub Pages now; browser dashboard remains a tracked roadmap surface |
 
 The first responder wins via the atomic `mark_answered` in `hitl/sync.py`; the late responders see "already answered (via=<channel>)" and back off. The state writeback emits a `state.resumed` event; the LangGraph subgraph picks up where it left off.
 

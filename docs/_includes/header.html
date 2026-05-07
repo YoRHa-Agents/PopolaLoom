@@ -4,9 +4,9 @@
     <span class="brand-name">PopolaLoom</span>
   </a>
   <nav class="primary-nav">
-    <a href="{{ '/QUICKSTART.html' | relative_url }}" data-i18n="nav.quickstart">Quickstart</a>
-    <a href="{{ '/USER_GUIDE.html' | relative_url }}" data-i18n="nav.user_guide">User Guide</a>
-    <a href="{{ '/DEMO.html' | relative_url }}" data-i18n="nav.demo">Demo</a>
+    <a href="{% if page.lang == 'zh' %}{{ '/zh/QUICKSTART.html' | relative_url }}{% else %}{{ '/QUICKSTART.html' | relative_url }}{% endif %}" data-i18n="nav.quickstart">Quickstart</a>
+    <a href="{% if page.lang == 'zh' %}{{ '/zh/USER_GUIDE.html' | relative_url }}{% else %}{{ '/USER_GUIDE.html' | relative_url }}{% endif %}" data-i18n="nav.user_guide">User Guide</a>
+    <a href="{% if page.lang == 'zh' %}{{ '/zh/DEMO.html' | relative_url }}{% else %}{{ '/DEMO.html' | relative_url }}{% endif %}" data-i18n="nav.demo">Demo</a>
     <a href="https://github.com/YoRHa-Agents/PopolaLoom" data-i18n="nav.github">GitHub</a>
   </nav>
   <div class="control-cluster">
