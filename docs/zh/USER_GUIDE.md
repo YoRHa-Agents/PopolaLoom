@@ -6,7 +6,7 @@ lang: zh
 translation_url: /USER_GUIDE.html
 ---
 
-# PopolaLoom — 用户指南 (v0.8.2)
+# PopolaLoom — 用户指南 (v0.8.3)
 
 > 这份指南解释 PopolaLoom 的工作模型、常用命令和关键设计。首次使用请先看 [`QUICKSTART.md`](QUICKSTART.md)，需要演示路径和示例输出请看 [`DEMO.md`](DEMO.md)。
 

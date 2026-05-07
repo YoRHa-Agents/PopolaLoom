@@ -1,4 +1,4 @@
-/* PopolaLoom v0.8.2 — UX extras (vanilla, no deps).
+/* PopolaLoom v0.8.3 — UX extras (vanilla, no deps).
  *
  * Two progressive enhancements injected at DOMContentLoaded:
  *

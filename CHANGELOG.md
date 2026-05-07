@@ -10,7 +10,40 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.8.3 / v0.9.0.)
+(intentionally empty — accumulating for v0.8.4 / v0.9.0.)
+
+## [0.8.3] — 2026-05-07
+
+**Theme**: docs/web remediation patch on top of v0.8.2. Fixes the docs i18n flat-key lookup, adds localized zh routes for the main docs pages so users can actually switch language on Quickstart / User Guide / Demo, refreshes stale demo and status copy, and adds fast docs contract tests for version sync, i18n coverage, localized routes, demo linkage, and stale placeholders. Also tightens CI: adds PyYAML stubs to the dev extras and tightens schema-version typing so strict mypy passes.
+
+User-visible feedback driver: `feedback_for_v0.8.2.md` — placeholder fields, broken zh/en switching, weak design/implementation depth, and "no demo page". v0.8.3 closes all four items.
+
+### Fixed
+
+- **`docs/assets/js/i18n.js`** — `lookup()` now matches flat dotted keys against `en.json` / `zh.json` directly, so the existing dictionaries actually translate the landing page instead of falling through to raw key text.
+- **CI lint lane (`mypy strict`)** — adds `types-PyYAML` to the dev extras and tightens `FEEDBACK_SCHEMA_VERSION` typing to `Final[Literal["1"]]`; removes a now-obsolete `# type: ignore[import-untyped]` on the lazy YAML import in `gate/automerge.py`.
+
+### Added
+
+- **Localized zh route pages** — `docs/zh/QUICKSTART.md`, `docs/zh/USER_GUIDE.md`, `docs/zh/DEMO.md` ship as full Chinese counterparts of the main docs. Front matter declares `lang` + `translation_url`, and the language toggle navigates between paired routes when present (the existing in-page DOM translation still drives the landing page).
+- **Layout language signal** — `docs/_layouts/default.html` emits `<html lang>` + `data-page-lang` + `data-translation-url` from page front matter, so `i18n.js` can pick the correct dictionary and route target without a page reload.
+- **Design strip on landing page** — `docs/index.md` gains a "Design in one picture" feature grid (Sidecar, file-backed handoff, HITL fanout) so the home page foregrounds design rationale rather than only marketing copy. New i18n keys `design.heading` / `design.sidecar.*` / `design.envelope.*` / `design.hitl.*` plus `hero.cta_demo` are mirrored in both dictionaries.
+- **Reshaped `docs/DEMO.md`** — replaces the release-ledger framing with a product walkthrough: what the demo proves, a five-minute path, design and implementation flow, hands-off envelope walkthrough, and HITL walkthrough; older release detail is preserved in a "Historical appendix".
+- **Docs contract tests** — `tests/docs/test_docs_contract.py` (NEW) asserts: package version matches `docs/_config.yml` `popola_version`; `en.json` and `zh.json` cover every landing-page `data-i18n` key with parity; `i18n.js` supports flat keys and localized routes; `docs/zh/{QUICKSTART,USER_GUIDE,DEMO}.md` exist with paired front matter; index/header link to `DEMO.html`; the primary user-facing docs contain no stale placeholder markers (`v0.8.1`, `placeholder`, `not yet wired`, `scaffolded`, etc.).
+
+### Changed
+
+- **`docs/QUICKSTART.md`** / **`docs/USER_GUIDE.md`** / **`docs/index.md`** / **`README.md`** — version strings, status leads, and outdated wording (e.g. `pending publish`, `scaffolded`, `0.7.0` install snippets) refreshed to v0.8.3.
+- **`docs/_config.yml`** — `popola_version: "0.8.2"` → `"0.8.3"`.
+- **`docs/_includes/footer.html`** — default version fallback bumped to `0.8.3`.
+- **`docs/assets/js/i18n.js` / `theme.js` / `extras.js`** — header banners bumped to v0.8.3.
+- **`tests/test_smoke.py`** — version assertions `0.8.2` → `0.8.3` (3 places).
+- `pyproject.toml` / `src/popolaloom/__init__.py` / SKILL.md (×2) / `.popola-loom-version` bumped to `0.8.3`.
+
+### Notes
+
+- Merged via PR #9 (`Fix v0.8.2 docs site remediation`) and the v0.8.3 release PR; per "Protected Branch Workflow", neither branch was pushed directly to `main`.
+- Default-lane gate unchanged: `pytest tests/docs/test_docs_contract.py tests/matrix/tier5/test_quickstart_smoke.py -q` passes (12 tests); `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean.
 
 ## [0.8.2] — 2026-05-07
 
