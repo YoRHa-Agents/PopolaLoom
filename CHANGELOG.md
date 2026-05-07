@@ -10,7 +10,47 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.8.x.)
+(intentionally empty — accumulating for v0.8.2 / v0.9.0.)
+
+## [0.8.1] — 2026-05-07
+
+**Theme**: NieR-Popola 风 GitHub Pages site，关闭 `feedback_for_v0.7.0.md` 第 1-3 条 / TRACKER `BL-UI-1`。**No source-code changes** — 整个 patch 只动 `docs/` 静态资源与版本元数据；运行时行为零变化，所有 1597 default-lane tests 维持绿。
+
+### Added
+
+- **NieR-Popola 风自定义 Jekyll 主题**（替换 `jekyll-theme-cayman`）。视觉系统：白衣 oracle 气质（cream + 暗琥珀 + 金色点缀）+ 衬线印刷感 + 几何装饰，**不**使用任何 NieR Automata 版权资产。
+  - 色板：light mode 用 cream `#f4ede4` / deep amber `#2b1f14` / mechanized gold `#c89a4a`；dark mode 用 near-black `#0a0807` / warm off-white `#e8dfd4` / brighter gold `#d4a85a`。全部走 CSS custom properties，让 dark-mode toggle 一行 JS 改 `data-theme` 即全站换肤。
+  - 字体：Cormorant Garamond（衬线 H1-H3，700 + italic 400）+ Inter（正文）+ JetBrains Mono（代码 / toggle 按钮）。Google Fonts CDN，no self-hosting。
+  - 装饰：H1/H2 下 80px gold gradient underline；section 之间 `<hr class="ornament">` 中心 ◆ 菱形 + 两侧细金线；代码块左 3px gold border；blockquote 衬线引号 + gold left rule。
+  - Popola mark：36×36 SVG 几何 logo（两同心圆 + 中心垂直 hairline，`stroke="currentColor"` 让 CSS 着色），零版权风险。配套 favicon。
+  - Sticky header（`backdrop-filter: blur(8px)`）+ responsive < 768px breakpoint。
+- **客户端双语切换器（zh-CN / en）**：`popolaloom/handoff` 风格的纯 vanilla JS。`docs/assets/js/i18n.js`（152 行 IIFE）+ `docs/assets/i18n/{en,zh}.json`（37 keys 各，parity verified）：
+  - `localStorage["popola.lang"]` 持久化；首次访问 default `'en'`。
+  - DOM 扫 `[data-i18n="key"]` 替换 textContent；dot-notation key（`hero.title` / `feature.dispatch.body`）。
+  - lang-toggle button 显示**切换到的目标**（current=en 时显 "中文"，current=zh 时显 "EN"）。
+  - 同步更新 `<html lang>` (`en` ↔ `zh-CN`) + `<title>`。
+  - Fallback chain：current dict → en dict → key literal；缺 key + 加载失败 + localStorage failure 全部 console.error（"No Silent Failures"）。
+  - baseurl 自动从 `currentScript.src` 解析，让站点在 `/PopolaLoom` 路径下也能正确 fetch JSON。
+- **客户端日夜主题切换器**：`docs/assets/js/theme.js`（124 行 IIFE）：
+  - `localStorage["popola.theme"]` 持久化；resolve 顺序：stored → `matchMedia('(prefers-color-scheme: dark)')` → `'light'` default。
+  - `[data-theme-toggle]` 点击 → 翻转 light ↔ dark → 写 localStorage → set `<html data-theme="...">` → button glyph 更新（`☾` / `☀`，显示切换到的目标）+ aria-label 更新。
+  - **OS preference 跟随**：用户没显式选过时（localStorage 空），OS dark/light 切换通过 `MediaQueryList.addEventListener('change')` 自动跟随；用户选过则尊重显式 pick。Modern + legacy listener API 兼容广泛浏览器。
+  - **抗 first-paint FOUC**：`nier-popola.css` 末尾加 `@media (prefers-color-scheme: dark) :root:not([data-theme="light"]) { ... }` fallback，OS-dark 用户首屏直出 dark 而非闪一下 light。`:not` guard 保证 JS 显式 set `light` 永远赢过 OS 偏好。
+- **重写 `docs/index.md`** 为 hero + 6-card feature-grid 着陆页：CTA 三按钮（5-min Quickstart / GitHub / User Guide）、6 个 feature card（dispatch surface / cross-terminal survival / hands-off envelope / 5-channel HITL / Skill auto-discovery / 8-dim self-eval）、docs index、status 栏。28 个 `data-i18n` hook 全部纳入翻译字典。
+
+### Changed
+
+- `docs/_config.yml`：删除 `theme: jekyll-theme-cayman`；新增 `popola_version: "0.8.1"`（footer 引用）；新增 `defaults:` 块给所有 markdown 默认 `layout: default`。
+- `tests/test_smoke.py` 版本断言 `0.8.0` → `0.8.1`。
+- `pyproject.toml` / `src/popolaloom/__init__.py` / SKILL.md (×2) / `.popola-loom-version` bumped to `0.8.1`。
+
+### Notes
+
+- `QUICKSTART.md` / `USER_GUIDE.md` / `DEMO.md` 暂保留单语（技术参考文档；双语版本视未来需求决定）。
+- 没引入 NiceGUI dynamic web app（BL-v0.8.4，仍 deferred）。
+- 没引入额外图像 / 插画资产；所有视觉装饰走 SVG + CSS。
+- Stack：纯静态（无 Gemfile / 无 build step），GitHub Pages Jekyll 直接处理 layout，字体走 Google Fonts CDN，无 npm。
+- 关闭 feedback：`FB-v0.7.0-1` / `BL-UI-1`（NieR-Popola 风 web design）合并交付。
 
 ## [0.8.0] — 2026-05-06
 
