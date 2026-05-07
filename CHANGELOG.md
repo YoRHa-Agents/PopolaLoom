@@ -10,7 +10,48 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.8.2 / v0.9.0.)
+(intentionally empty — accumulating for v0.8.3 / v0.9.0.)
+
+## [0.8.2] — 2026-05-07
+
+**Theme**: docs UX overhaul — clears the v0.7.0 content rot left in `QUICKSTART.md` / `USER_GUIDE.md` / `DEMO.md` after the v0.7.x → v0.8.0 → v0.8.1 release chain, adds a full v0.8.0 hands-off envelope walkthrough to `DEMO.md`, and ships 4 UX polish features that v0.8.1 deferred (copy buttons, anchor links, EN-only honest disclosure, refined Popola SVG mark). **No source-code changes** — entire patch only touches `docs/` static assets + version metadata.
+
+User-visible feedback driver: deployed GitHub Pages site showed `popolaloom v0.7.0 ready` + `User Guide (v0.7.0)` + a DEMO.md frozen at v0.3.5 → v0.7.0, leaving every v0.8.x reader doubting whether they were on the wrong release. v0.8.1's bilingual / day-night surface also had silent failures on doc pages with no `data-i18n` hooks. v0.8.2 fixes both.
+
+### Fixed
+
+- **`docs/QUICKSTART.md`** — 3 hardcoded `v0.7.0` strings (line 28 expected `python -c` output, line 30 expected `popola version` output, line 128 expected `quickstart.sh` final banner) all bumped to `v0.8.1`.
+- **`docs/USER_GUIDE.md`** — title `(v0.7.0)` → `(v0.8.1)` (line 7); table-of-contents entry "Hands-off envelope (v0.7.1+ / v0.7.2+ / v0.7.3+)" → "Hands-off envelope (v0.8.0+)" (line 24); "v0.7.4+ will add" → "v0.8.x patches will add" (live HITL feedback wiring schedule, line 336).
+- **`docs/DEMO.md`** — content frozen at v0.3.5 → v0.7.0, zero mention of v0.8.0 hands-off envelope (the project's biggest current feature). Major rewrite (-5/+102 lines):
+  - Front matter description + intro now span `v0.3.5 → v0.8.1`.
+  - **NEW** `## v0.8.1 web design (NEW)` section — NieR-Popola visual system, bilingual zh/en switcher, day/night toggle, hero+grid landing, anti-FOUC + anti-impersonation invariants, pure-static stack.
+  - **NEW** `## v0.8.0 hands-off envelope (NEW — biggest v0.8.x feature)` section — full walkthrough: what every `popola dispatch` now does (envelope file shape, env var injection, sub-CLI `cat`-friendly access), `popola dispatch --replay` with inline-override warning demo, `popola handoff list/show/archive` (no daemon required), "why this matters" rationale (argv limits, audit trail, deterministic replay, cross-CLI handoff bridge, `FeedbackEnvelope` companion), v0.7.1 → v0.7.3 → v0.8.0 slice rollup table (76+ new tests, 100% on `popolaloom.handoff.*`).
+  - "v0.7.0 polish (NEW)" → "v0.7.0 polish" (drop `(NEW)` marker so v0.8.x sections take the "current" role).
+  - All v0.5.x / v0.5.0 / v0.3.5 historical narratives preserved intact.
+
+### Added
+
+- **Copy-to-clipboard buttons** on every `<pre>` block — `docs/assets/js/extras.js` (NEW, 113 lines, vanilla IIFE) injects a top-right `⎘` button hidden by default + revealed on `<pre>:hover`; click copies via `navigator.clipboard.writeText` and shows `✓` / `✗` for 500 ms before reverting. Failure states `console.error` (No Silent Failures).
+- **Anchor link icons** on every `h2[id]` / `h3[id]` — same `extras.js` IIFE appends a `¶` glyph link (`aria-label="Permalink"`) hidden by default + revealed on heading hover; click updates URL hash + scroll-behavior is smooth (Stage A's `scroll-behavior: smooth` on `html`).
+- **EN-only honest disclosure toast** — `docs/assets/js/i18n.js` (MOD, +70 lines) detects pages with ≤ 5 `[data-i18n]` hooks (the chrome-only QUICKSTART/USER_GUIDE/DEMO case: 4 nav + 1 `footer.tagline`) and, when the user toggles to zh on such a page, spawns an `aria-live="polite"` toast rendering `notice.en_only`. `sessionStorage["popola.notice.dismissed.en_only"]` flag prevents per-session spam after the user dismisses with the `✕` button. Storage failures `console.error`. The toast itself carries `data-i18n="notice.en_only"` so it retranslates if the user toggles back to en while it's open.
+- **Refined Popola SVG mark + favicon** — `docs/_includes/popola-mark.svg` redesigned from "two concentric circles + vertical hairline" to a **compass / oracle motif**: outer ring (r=14) + inscribed diamond (rotate-45° square via `<polygon>`) + 4 cardinal ticks at 12/3/6/9 (small hairlines outside the ring) + center filled dot. 7 elements, all `currentColor`, zero NieR-Automata copyright risk. `docs/assets/img/favicon.svg` uses the same geometric language stripped to 3 elements (ring + diamond + center dot) for 32×32 legibility.
+- **`notice.en_only`** i18n key on both `en.json` and `zh.json` (38 ≡ 38 keys, parity verified):
+  - EN: `"This page has no Chinese translation yet — header / footer / landing page only."`
+  - ZH: `"本页面暂仅有英文版 — 仅 header / footer / 着陆页支持中文。"`
+
+### Changed
+
+- **`docs/assets/css/nier-popola.css`** (+112 lines, 3 sections appended at end) — `.copy-btn` (absolute-positioned within `<pre>`, gold border, JetBrains Mono, 150 ms opacity transition; `pre` set to `position: relative` in the same block); `.anchor-link` (inline `¶` next to h2/h3, hover-revealed, gold accent); `.lang-notice` + `.lang-notice-close` (fixed bottom-center toast, max-width clamped to viewport, fade-in keyframe, dark mode respected via `var(--bg-secondary)` + `var(--accent-primary)` border).
+- **`docs/_layouts/default.html`** (+1 line) — `<script src=".../extras.js" defer></script>` after `theme.js`.
+- **`tests/test_smoke.py`** — version assertions `0.8.1` → `0.8.2` (3 places).
+- **`docs/_config.yml`** — `popola_version: "0.8.1"` → `"0.8.2"`.
+- `pyproject.toml` / `src/popolaloom/__init__.py` / SKILL.md (×2) / `.popola-loom-version` bumped to `0.8.2`.
+
+### Notes
+
+- This release rolls up two Stage commits (`docs(v0.8.2): clear v0.7.0 content rot + DEMO.md hands-off envelope walkthrough` + `feat(v0.8.2): UX polish — copy buttons + anchor links + EN-only notice + refined Popola mark`) into a single user-visible UX improvement. Both reviewable independently in git history.
+- `QUICKSTART.md` / `USER_GUIDE.md` / `DEMO.md` remain single-language — bilingual treatment of those long technical docs still deferred to a future BL-UI patch (now honestly disclosed via the EN-only toast rather than silently failing).
+- Default-lane gate unchanged: 1597 passed, 18 skipped, 82 deselected, 0 failed; coverage 94.42%; ruff clean. No `src/popolaloom/**` changes.
 
 ## [0.8.1] — 2026-05-07
 

@@ -1,148 +1,122 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md). Per-version `release-notes-v*.md` files were consolidated into this single file in v0.7.0 (per user feedback v0.6.1#2).
 
-# PopolaLoom v0.8.1 — NieR-Popola web design
+# PopolaLoom v0.8.2 — docs UX overhaul (content rot + UX polish)
 
 > Released: 2026-05-07
-> Theme: closes `feedback_for_v0.7.0.md` items #1-3 (NieR-Popola 风 web 设计 + zh/en 切换 + 日夜主题 + demo page) / TRACKER `BL-UI-1`. **No source-code changes** — entire patch only touches `docs/` static assets + version metadata. Runtime behaviour unchanged; all 1597 default-lane tests stay green.
+> Theme: clears the v0.7.0 content rot left in `QUICKSTART.md` / `USER_GUIDE.md` / `DEMO.md` after the v0.7.x → v0.8.0 → v0.8.1 release chain, adds a full v0.8.0 hands-off envelope walkthrough to `DEMO.md`, and ships 4 UX polish features that v0.8.1 deferred (copy buttons, anchor links, EN-only honest disclosure, refined Popola SVG mark). **No source-code changes** — entire patch only touches `docs/` static assets + version metadata.
 
-## Summary
+## Why v0.8.2 right after v0.8.1?
 
-PopolaLoom v0.8.1 lands the **GitHub Pages site overhaul** that was carried over from the v0.7.0 docs cycle:
+Direct user feedback: **"网页问题也依旧是不合格的"** (the web is still substandard). Investigation revealed two distinct legs:
 
-1. **Custom NieR-Popola theme** replacing the stock `jekyll-theme-cayman` — white-clad oracle aesthetic (cream + amber + mechanized gold), serif typography (Cormorant Garamond), geometric ornaments. Zero NieR copyright risk: style inspired by Popola the character but no NieR assets shipped.
+1. **Content rot**: deployed GitHub Pages site showed `popolaloom v0.7.0 ready` + `User Guide (v0.7.0)` + a `DEMO.md` frozen at v0.3.5 → v0.7.0. Every visitor doubted whether the v0.8.x release chain actually shipped. Worse, `DEMO.md` had **zero mention of the hands-off envelope** — the project's biggest v0.8.x feature.
 
-2. **Bilingual landing page** (`zh-CN` / `en`) with a client-side JS toggle. 37-key dictionaries on each side, parity verified. Technical terms (CLI / MCP / HITL / dispatch) stay in English in the zh dict; surrounding prose translated.
+2. **UX polish gaps**: v0.8.1's bilingual + day-night surface had silent failures on doc pages (lang-toggle did nothing on QUICKSTART/USER_GUIDE/DEMO since they had no `data-i18n` hooks); no copy buttons on code blocks; no permalink ¶ on headings; the Popola SVG mark was overly minimal (just 2 concentric rings + a vertical hairline).
 
-3. **Day/night theme toggle** — two-state machine, `localStorage` persistence, `matchMedia(prefers-color-scheme)` OS-preference fallback, anti-FOUC CSS `@media` block.
+v0.8.2 fixes both legs as a single docs-only patch.
 
-4. **Hero + feature-grid landing layout** — 6 feature cards highlighting dispatch surface / cross-terminal survival / hands-off envelope / HITL / Skill auto-discovery / self-eval.
+## What's NEW · `DEMO.md` v0.8.0 hands-off envelope walkthrough
 
-The whole release is **pure static**: no Gemfile, no npm, no build step. GitHub Pages Jekyll processes the layout; Google Fonts CDN serves the fonts; vanilla JS handles i18n + theme.
+Visit <https://yorha-agents.github.io/PopolaLoom/DEMO.html> for the full walkthrough. Highlights:
 
-## What's NEW · `docs/` site
+```bash
+$ popola dispatch "fix the bug in foo.py — there's a NoneType error around line 42" --cli=cursor
+# → cursor-1f0a2b8d4e5c
 
-Visit <https://yorha-agents.github.io/PopolaLoom/> after the Pages deploy completes (auto-fires on merge to `main`).
+# behind the scenes: a Markdown front-matter envelope is written
+$ ls .local/.agent/handoff/
+cursor-fix-the-bug-in-foo-py-3a7f9c1d.md
 
-### Visual system (NieR-Popola 风)
+$ cat .local/.agent/handoff/cursor-fix-the-bug-in-foo-py-3a7f9c1d.md
+---
+schema_version: '1'
+handoff_id: cursor-fix-the-bug-in-foo-py-3a7f9c1d
+created_at: '2026-05-07T10:30:00+00:00'
+target_cli: cursor
+...
+---
+fix the bug in foo.py — there's a NoneType error around line 42
 
-| Layer | Light mode | Dark mode |
-|---|---|---|
-| Background | `#f4ede4` (cream) | `#0a0807` (near-black, warm undertone) |
-| Body text | `#2b1f14` (deep amber) | `#e8dfd4` (warm off-white) |
-| Accent | `#c89a4a` (mechanized gold) | `#d4a85a` (brighter gold) |
-| Border | `#d4c4a8` (faint gold-tinted) | `#2a2018` |
+# replay the same dispatch verbatim later
+$ popola dispatch --replay cursor-fix-the-bug-in-foo-py-3a7f9c1d
+# → cursor-2a8e3f4c5d6e (new task_id, same payload)
 
-Typography: **Cormorant Garamond** (serif, 700 + italic 400) for H1–H3, **Inter** (sans, 400 + 600) for body, **JetBrains Mono** (geometric monospace) for code + toggles.
-
-Decorative elements:
-- 80 px gold gradient underline below H1/H2
-- `<hr class="ornament">` — center ◆ diamond glyph + two 80 px gold hairlines (light → transparent → solid → transparent)
-- 3 px gold left border on `<pre>` blocks
-- 1 px gold underline on `<a>` text
-- Sticky header with `backdrop-filter: blur(8px)`
-
-### Bilingual switcher
-
-```html
-<button data-lang-toggle aria-label="Switch language">中文</button>
+# inspect / list / archive (no daemon required)
+$ popola handoff list
+$ popola handoff show cursor-fix-the-bug-in-foo-py-3a7f9c1d --json | jq .prompt
+$ popola handoff archive cursor-fix-the-bug-in-foo-py-3a7f9c1d cursor-1f0a2b8d4e5c
 ```
 
-- Click flips `localStorage["popola.lang"]` between `'en'` ↔ `'zh'`
-- DOM scan: every `[data-i18n="key"]` element gets its `textContent` rewritten from the active dict
-- `<html lang>` switches between `en` and `zh-CN`
-- Button label always shows the **target** language (current EN → button reads "中文"; current zh → button reads "EN")
-- Fallback: current dict → EN dict → key literal (No Silent Failures: every miss `console.error`s)
+DEMO.md also now has a `## v0.8.1 web design (NEW)` section documenting the NieR-Popola visual system, bilingual switcher, and day/night toggle, so first-time visitors land on a current-state snapshot instead of v0.7.0.
 
-Dictionary parity guaranteed by the build-time check (37 keys in `en.json` and `zh.json`; missing-key assert raises).
+## What's NEW · 4 UX polish features
 
-### Day/night toggle
+### 1. Copy-to-clipboard buttons on every `<pre>`
 
-```html
-<button data-theme-toggle aria-label="Switch to dark theme">☾</button>
-```
+Hover any code block on the site → top-right `⎘` button fades in. Click → copies via `navigator.clipboard.writeText`, shows `✓` for 500 ms then reverts. Failure (clipboard denied / no permission) shows `✗` + `console.error` (No Silent Failures).
 
-- Click flips `localStorage["popola.theme"]` between `'light'` ↔ `'dark'`
-- Sets `<html data-theme="...">` — CSS custom properties hot-swap the entire palette in 200 ms
-- OS-preference handling:
-  - First visit, no `localStorage` → resolve from `matchMedia('(prefers-color-scheme: dark)')`
-  - User toggles explicitly → `localStorage` write; OS preference no longer overrides
-  - User has not toggled, OS preference changes mid-session → `MediaQueryList.change` listener follows the OS automatically (modern + legacy listener API for broad browser support)
-- Anti-FOUC: `@media (prefers-color-scheme: dark) :root:not([data-theme="light"])` block in CSS provides instant dark first-paint; `:not` guard ensures JS-set `light` always beats OS preference
+### 2. Anchor permalinks on every `h2[id]` / `h3[id]`
 
-### Hero + feature-grid
+Hover any section heading → `¶` glyph fades in next to it. Click → URL hash updates + smooth scroll (Stage A's `scroll-behavior: smooth` on `<html>`). Kramdown auto-generates the IDs; we just decorate them.
 
-```
-┌────────────────────────────────────────────┐
-│         PopolaLoom                         │
-│         A loom that weaves agents.         │
-│                                            │
-│   [5-min Quickstart] [GitHub] [User Guide] │
-└────────────────────────────────────────────┘
-                   ◆──────
-┌─────────┐ ┌─────────┐ ┌─────────┐
-│dispatch │ │survival │ │handoff  │
-│surface  │ │         │ │envelope │
-└─────────┘ └─────────┘ └─────────┘
-┌─────────┐ ┌─────────┐ ┌─────────┐
-│ HITL ×5 │ │ Skill   │ │ 8-dim   │
-│ channels│ │ discover│ │ self-eval│
-└─────────┘ └─────────┘ └─────────┘
-                   ◆──────
-              Documentation
-              (links to QUICKSTART / USER_GUIDE / DEMO / RELEASE_NOTES / CHANGELOG)
-                   ◆──────
-            Project status
-```
+### 3. EN-only honest disclosure toast
 
-All 28 `data-i18n` hooks in this layout are present in both dicts.
+When a user toggles to **zh** on `QUICKSTART.html` / `USER_GUIDE.html` / `DEMO.html` (which have ≤ 5 `data-i18n` hooks — chrome only), an `aria-live="polite"` toast appears bottom-center:
 
-## Files changed (v0.8.1)
+> **本页面暂仅有英文版 — 仅 header / footer / 着陆页支持中文。**
+
+`sessionStorage["popola.notice.dismissed.en_only"]` flag prevents spam: once dismissed via `✕`, no more toasts in the session. The toast itself carries `data-i18n="notice.en_only"` so it retranslates if the user toggles back to en while it's still up.
+
+This replaces v0.8.1's silent failure (lang-toggle did nothing on doc pages) with explicit disclosure of the bilingual coverage scope. Deeper bilingual coverage of QUICKSTART/USER_GUIDE/DEMO is on the BL-UI follow-up backlog.
+
+### 4. Refined Popola SVG mark + favicon
+
+| Before (v0.8.1) | After (v0.8.2) |
+|---|---|
+| 2 concentric rings + 1 vertical hairline (3 elements) | Outer ring + inscribed diamond + 4 cardinal ticks + center dot (7 elements, compass / oracle motif) |
+
+The favicon uses the same geometric language stripped to 3 elements (ring + diamond + center dot) for 32×32 legibility. All `currentColor`, all rendered via CSS color, zero NieR-Automata copyright risk (style inspired, not copied).
+
+## Files changed (v0.8.2)
 
 | Slice | Files |
 |---|---|
-| Stage A — Theme + master layout (NEW) | `docs/_layouts/default.html`, `docs/_includes/header.html`, `docs/_includes/footer.html`, `docs/_includes/popola-mark.svg`, `docs/assets/css/nier-popola.css` (449 lines), `docs/assets/img/favicon.svg` |
-| Stage A — Config (MOD) | `docs/_config.yml` (drop `jekyll-theme-cayman`, add `popola_version` + `defaults` block) |
-| Stage B — Bilingual content + i18n (NEW) | `docs/assets/i18n/en.json`, `docs/assets/i18n/zh.json` (37 keys × 2), `docs/assets/js/i18n.js` (152 lines IIFE) |
-| Stage B — Landing page (MOD) | `docs/index.md` (full rewrite as hero + feature-grid + 28 i18n hooks) |
-| Stage C — Day/night toggle (NEW) | `docs/assets/js/theme.js` (124 lines IIFE) |
-| Stage C — CSS fallback (MOD) | `docs/assets/css/nier-popola.css` (+26 lines @media block) |
-| Bump | `pyproject.toml`, `src/popolaloom/__init__.py`, SKILL.md (×2), `.popola-loom-version`, `tests/test_smoke.py`, `CHANGELOG.md`, `RELEASE_NOTES.md` |
+| Stage A — Content rot fix (commit `ddab915`) | `docs/QUICKSTART.md` (-3/+4), `docs/USER_GUIDE.md` (-2/+3), `docs/DEMO.md` (-5/+102) |
+| Stage B — UX polish (commit `32ee843`) | `docs/assets/js/extras.js` (NEW, 113 lines), `docs/assets/js/i18n.js` (+70), `docs/assets/css/nier-popola.css` (+112), `docs/_layouts/default.html` (+1), `docs/_includes/popola-mark.svg` (REWRITE, 7 elements), `docs/assets/img/favicon.svg` (REWRITE, 3 elements), `docs/assets/i18n/{en,zh}.json` (+1 key each) |
+| Bump | `pyproject.toml`, `src/popolaloom/__init__.py`, SKILL.md (×2), `.popola-loom-version`, `docs/_config.yml`, `tests/test_smoke.py`, `CHANGELOG.md`, `RELEASE_NOTES.md` |
 
 ## Stats
 
-- **0 source-code changes** (no `src/popolaloom/**` touched, no `tests/**` semantics changed beyond version-string assertions)
-- **15 docs files** changed/created across `docs/_layouts/` + `docs/_includes/` + `docs/assets/{css,img,i18n,js}` + `docs/_config.yml` + `docs/index.md`
-- **0 new dependencies** (Google Fonts loaded via CDN, vanilla JS, no npm/Gemfile)
+- **0 source-code changes** (no `src/popolaloom/**` touched, no test semantics changed beyond version-string assertions)
+- **11 docs files** changed across `docs/` (3 content + 8 UX)
 - 1597 default-lane tests still green; coverage 94.42% unchanged
-- Lighthouse-friendly: no JS frameworks, single CSS file, lazy fonts via `preconnect`
+- i18n key parity: 38 ≡ 38 (was 37 ≡ 37 in v0.8.1; +1 for `notice.en_only`)
+- Vanilla JS, no new dependencies
 
 ## Status
 
 | Capability | Status |
 |---|---|
-| ALL v0.8.0 capabilities | unchanged ✓ |
-| GitHub Pages NieR-Popola theme | new ✓ |
-| zh / en client-side switcher | new ✓ |
-| Day/night theme toggle (with OS preference fallback) | new ✓ |
-| Hero + feature-grid landing page | new ✓ |
+| ALL v0.8.1 capabilities | unchanged ✓ |
+| Content correctness across QUICKSTART/USER_GUIDE/DEMO | ✓ (v0.8.x cohort, no v0.7.0 cruft) |
+| `DEMO.md` v0.8.0 hands-off envelope walkthrough | new ✓ |
+| `DEMO.md` v0.8.1 web design walkthrough | new ✓ |
+| Copy-to-clipboard on `<pre>` blocks | new ✓ |
+| Anchor permalinks on `h2[id]` / `h3[id]` | new ✓ |
+| EN-only honest disclosure toast | new ✓ |
+| Refined Popola SVG mark + favicon | new ✓ |
+| Bilingual coverage of QUICKSTART/USER_GUIDE/DEMO | deferred → BL-UI follow-up (now honestly disclosed) |
 | 1597 default-lane tests / 94.42% coverage | ✓ unchanged |
-
-## Out of scope / deferred
-
-- `QUICKSTART.md` / `USER_GUIDE.md` / `DEMO.md` kept single-language (technical reference; bilingual treatment in a future BL-UI-1 follow-up if needed).
-- No NiceGUI dynamic web app yet (`BL-v0.8.4` / `BL-UI-1` merged stretch).
-- No animation / motion design (intentional — static-first; can add subtle scan-lines or particle motifs in a later UI patch).
-- No image / illustration assets beyond the geometric Popola mark + favicon (zero NieR asset reuse — only style inspiration).
 
 ## Upgrade notes
 
-- **No breaking changes**: `pip install -U popolaloom` and the CLI / Python API work exactly as in v0.8.0.
-- The GitHub Pages site updates automatically on merge — the Jekyll build runs in `.github/workflows/pages.yml`.
-- If you have an old browser tab open on the site, hard-refresh (Cmd-Shift-R / Ctrl-F5) to pick up the new CSS + JS.
-- localStorage keys claimed by this release: `popola.lang` and `popola.theme`. They start empty and only get written on first toggle.
+- **No breaking changes**: `pip install -U popolaloom` and the CLI / Python API work exactly as in v0.8.1.
+- The GitHub Pages site updates automatically on merge — visit <https://yorha-agents.github.io/PopolaLoom/> after the deploy completes (1–3 min after PR merge). Hard-refresh (`Cmd-Shift-R` / `Ctrl-F5`) to bypass the CDN cache for CSS + JS.
+- New localStorage / sessionStorage keys claimed: only `sessionStorage["popola.notice.dismissed.en_only"]`. localStorage `popola.lang` and `popola.theme` from v0.8.1 unchanged.
+- All inline code blocks in QUICKSTART/USER_GUIDE/DEMO can now be one-click-copied directly from the rendered page.
 
 ## Branch / PR
 
-Branch: `feat/v0.8.1-nier-popola-web` → squash-merged to `main`. Per "Protected Branch Workflow", branch was NOT pushed directly to main; merge happened via PR with squash.
+Branch: `feat/v0.8.2-docs-content-rot-fix` → squash-merged to `main`. Per "Protected Branch Workflow", branch was NOT pushed directly to main; merge happened via PR with squash.
 
-Suggested PR title: `release: v0.8.1 — NieR-Popola web design (theme + i18n + day/night)`.
+Suggested PR title: `release: v0.8.2 — docs UX overhaul (content rot + UX polish)`.
