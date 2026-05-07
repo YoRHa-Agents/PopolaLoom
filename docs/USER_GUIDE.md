@@ -4,7 +4,7 @@ title: User Guide
 description: Comprehensive reference for the popola CLI, MCP integration, HITL flows, and configuration.
 ---
 
-# PopolaLoom — User Guide (v0.7.0)
+# PopolaLoom — User Guide (v0.8.1)
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
 
@@ -21,7 +21,7 @@ description: Comprehensive reference for the popola CLI, MCP integration, HITL f
 - [HITL workflow](#hitl-workflow)
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
-- [Hands-off envelope (v0.7.1+ / v0.7.2+ / v0.7.3+)](#hands-off-envelope)
+- [Hands-off envelope (v0.8.0+)](#hands-off-envelope)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Architecture deep-dive](#architecture-deep-dive)
@@ -333,7 +333,7 @@ The env-channel always wins over caller-provided base_env keys with the same nam
 
 `popolaloom.handoff.FeedbackEnvelope` mirrors the dispatch envelope's design choices for HITL answers (the user's typed reply to a `LangGraph.interrupt()` prompt). Filename pattern: `<task_id>-fb-<8hex>.md` (the `-fb-` infix marks feedback files distinct from dispatch envelopes in the same active dir). Schema fields: `feedback_id`, `task_id`, `hitl_id`, `answer` (body), `reason`, `tags`, `responder`, `channel` (which HITL channel — `cli`/`lark`/`ide`/`mcp`/`web` — submitted the reply).
 
-v0.7.3 ships the writer + schema; the live `popola feedback ...` CLI flow does NOT yet auto-persist (avoiding daemon-side coordination risk). Callers can manually call `write_feedback(env)` from custom scripts. v0.7.4+ will add `popola feedback ... --persist` to wire it into the live HITL flow.
+v0.7.3 ships the writer + schema; the live `popola feedback ...` CLI flow does NOT yet auto-persist (avoiding daemon-side coordination risk). Callers can manually call `write_feedback(env)` from custom scripts. v0.8.x patches will add `popola feedback ... --persist` to wire it into the live HITL flow.
 
 ### Legacy `RelayHandoffEnvelope` bridge (v0.7.3+)
 

@@ -25,9 +25,9 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.7.0
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.1
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.7.0"
+popola version                       # → "popolaloom 0.8.1"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
@@ -125,7 +125,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor (aggregate health, NEW in v0.5.0)
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.7.0 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.8.1 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.
@@ -137,6 +137,7 @@ The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pol
 - **Latest release notes**: [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
 - **Historical archive (every version)**: [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
 - **Want an LLM to install for you?** Open Cursor or Claude Code and say `install popola` — the `install-popola` Skill (v0.7.0+) handles it.
+- **Hands-off envelope（v0.8.0+ NEW）**: Every dispatch persists a Markdown front-matter envelope under `.local/.agent/handoff/<id>.md`; replay any prior dispatch via `popola dispatch --replay <handoff_id>`. See [`USER_GUIDE.md#hands-off-envelope`](USER_GUIDE.html#hands-off-envelope).
 
 ## Common errors + fixes
 

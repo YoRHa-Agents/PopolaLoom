@@ -35,5 +35,6 @@
   "docs.changelog": "CHANGELOG — full v0.0.1 → v0.8.x history",
   "status.heading": "Project status",
   "status.lead": "v0.8.1 — Hands-off envelope stable + NieR-Popola web design. 1597 default-lane tests, 94.42% coverage, popolaloom.handoff module 100% line + branch coverage. License MIT.",
-  "footer.tagline": "A loom that weaves agents."
+  "footer.tagline": "A loom that weaves agents.",
+  "notice.en_only": "This page has no Chinese translation yet — header / footer / landing page only."
 }

@@ -15,6 +15,15 @@
   const SUPPORTED_LANGS = ['en', 'zh'];
   const HTML_LANG_MAP = { en: 'en', zh: 'zh-CN' };
 
+  // EN-only notice (v0.8.2) — surfaced when a user switches to zh on a page
+  // whose entire i18n surface is just the chrome (header + footer). Doc
+  // pages (QUICKSTART / USER_GUIDE / DEMO) carry header(4 nav hooks) +
+  // footer(1 tagline) = 5 [data-i18n] elements; the landing page carries
+  // 30+. Threshold is the max chrome-only count we treat as "no per-page
+  // Chinese yet"; comparison is `<=` so 5-hook docs pages trigger.
+  const EN_ONLY_THRESHOLD = 5;
+  const NOTICE_DISMISSED_KEY = 'popola.notice.dismissed.en_only';
+
   // Derive baseurl from this script's own src so the same code works under
   // /PopolaLoom (GitHub Pages) and at site root (jekyll serve --baseurl '').
   // <html data-baseurl="..."> wins if set (escape hatch for Stage A).
@@ -134,12 +143,73 @@
     applyTranslations(dict, fallback);
   }
 
+  function isNoticeDismissed() {
+    try {
+      return sessionStorage.getItem(NOTICE_DISMISSED_KEY) === 'true';
+    } catch (err) {
+      console.error('[popola.i18n] sessionStorage read failed (private mode?):', err);
+      return false;
+    }
+  }
+
+  function dismissNotice() {
+    try {
+      sessionStorage.setItem(NOTICE_DISMISSED_KEY, 'true');
+    } catch (err) {
+      console.error('[popola.i18n] sessionStorage write failed (quota / privacy?):', err);
+    }
+  }
+
+  function spawnEnOnlyNotice(text) {
+    if (document.querySelector('[data-lang-notice]')) return;
+
+    const notice = document.createElement('div');
+    notice.className = 'lang-notice';
+    notice.setAttribute('role', 'status');
+    notice.setAttribute('aria-live', 'polite');
+    notice.setAttribute('aria-atomic', 'true');
+    notice.setAttribute('data-lang-notice', '');
+
+    // <p data-i18n="notice.en_only"> so future applyTranslations() calls
+    // re-translate the body if the user toggles language again.
+    const p = document.createElement('p');
+    p.setAttribute('data-i18n', 'notice.en_only');
+    p.textContent = text;
+    notice.appendChild(p);
+
+    const close = document.createElement('button');
+    close.type = 'button';
+    close.className = 'lang-notice-close';
+    close.setAttribute('aria-label', 'Dismiss notice');
+    close.textContent = '\u2715';  // ✕
+    close.addEventListener('click', () => {
+      dismissNotice();
+      notice.remove();
+    });
+    notice.appendChild(close);
+
+    document.body.appendChild(notice);
+  }
+
+  function maybeShowEnOnlyNotice(targetLang) {
+    if (targetLang !== 'zh') return;
+    if (isNoticeDismissed()) return;
+    const hookCount = document.querySelectorAll('[data-i18n]').length;
+    if (hookCount > EN_ONLY_THRESHOLD) return;
+    // setLangAndRender('zh') ran first, so _dicts.zh is populated.
+    const dict = _dicts.zh || {};
+    const fb = _enDict || _dicts.en || {};
+    const text = resolve('notice.en_only', dict, fb);
+    spawnEnOnlyNotice(text);
+  }
+
   function initToggle() {
     document.querySelectorAll('[data-lang-toggle]').forEach(btn => {
       btn.addEventListener('click', async () => {
         const cur = getCurrentLang();
         const next = cur === 'en' ? 'zh' : 'en';
         await setLangAndRender(next);
+        maybeShowEnOnlyNotice(next);
       });
     });
   }
