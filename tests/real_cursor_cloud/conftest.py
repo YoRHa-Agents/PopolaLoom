@@ -56,11 +56,18 @@ def ensure_cursor_api_key() -> None:
 
 @pytest.fixture
 def test_repo_url() -> str:
-    """GitHub HTTPS URL Cursor Cloud Agents can target."""
+    """GitHub HTTPS URL Cursor Cloud Agents can target.
+
+    Default points at PopolaLoom itself — a public repo Cursor can clone.
+    The smoke flow is create + immediate cancel, so no actual changes are
+    made to the target repo. Override via ``POPOLA_TEST_CLOUD_REPO_URL``
+    if you want to exercise against a different repo (e.g. a private fork
+    you control).
+    """
 
     raw = os.environ.get(
         "POPOLA_TEST_CLOUD_REPO_URL",
-        "https://github.com/YoRHa-Agents/popola-cloud-smoketest",
+        "https://github.com/YoRHa-Agents/PopolaLoom",
     ).strip()
     if not raw:
         pytest.fail("POPOLA_TEST_CLOUD_REPO_URL, if set, must be non-empty")
