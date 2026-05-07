@@ -568,7 +568,7 @@ def load_config(path: Path) -> AutomergeConfig:
     if not path.is_file():
         raise FileNotFoundError(f"automerge config not found: {path}")
     try:
-        import yaml  # type: ignore[import-untyped]
+        import yaml
     except ImportError as exc:
         raise RuntimeError(
             "PyYAML is required to load .workflow/automerge.yaml; "

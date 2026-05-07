@@ -64,6 +64,7 @@ dev = [
     "syrupy>=4.7",
     "pytest-benchmark>=4.0",
     "pytest-mock>=3.12",
+    "types-PyYAML",
 ]
 
 [project.scripts]

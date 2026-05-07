@@ -31,7 +31,7 @@ from typing import Any, Final, Literal
 import yaml
 from pydantic import BaseModel, ConfigDict, Field, ValidationError
 
-FEEDBACK_SCHEMA_VERSION: Final[str] = "1"
+FEEDBACK_SCHEMA_VERSION: Final[Literal["1"]] = "1"
 
 DEFAULT_FEEDBACK_FILE_PREFIX: Final[str] = "feedback-"
 """Active feedback envelope filename prefix (e.g. ``feedback-<id>.md``)."""
