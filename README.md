@@ -1,6 +1,6 @@
 # PopolaLoom
 
-> **v0.8.3** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
+> **v0.8.4** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -116,7 +116,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.8.3 — Docs/web remediation patch.** Builds on v0.8.2 by fixing the docs i18n flat-key lookup, shipping localized zh routes for the main docs pages, refreshing demo and status content, and adding fast docs contract tests. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
+**v0.8.4 — Unified install script + `popola skill uninstall`.** Builds on v0.8.3 by shipping a one-line bash bootstrap installer (`install.sh`) that wraps `pip install` + `popola skill install` + `popola popolad start` + `popola doctor` for fresh machines, plus a matching `popola skill uninstall` Typer verb so operators have a complete install / update / uninstall surface across pip + Skills × global / project × cursor / claude / codex / copilot. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
 
 | Capability | Status |
 |---|---|
@@ -143,7 +143,9 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 | **v0.7.3 / v0.8.0**: `popola dispatch --replay <handoff_id>` | OK live |
 | **v0.7.3 / v0.8.0**: `FeedbackEnvelope` (Q7=yes HITL feedback foundation) | OK live (writer only; live `--persist` deferred) |
 | **v0.7.3 / v0.8.0**: `to_handoff_envelope(relay_env)` legacy bridge | OK live |
-| 1597 default-lane tests / 94.42% coverage | OK live |
+| **v0.8.4**: `install.sh` unified installer (install / update / uninstall × global / project × cursor/claude/codex/copilot) | OK live |
+| **v0.8.4**: `popola skill uninstall --target=<...>` Typer verb | OK live |
+| 1632 default-lane tests / 94%+ coverage | OK live |
 
 ## Architecture (TL;DR)
 
@@ -162,6 +164,26 @@ See [`docs/DEMO.md`](docs/DEMO.md) for example outputs and full session walkthro
 
 ## Install
 
+### One-line install (v0.8.4+)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
+# or, with options:
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash -s -- install --scope=global --target=all
+```
+
+The unified `install.sh` (v0.8.4+) wraps `pip install` + `popola skill install` + `popola popolad start` + `popola doctor` in a single shell command. Options: `--scope=global|project`, `--target=cursor|claude|codex|copilot|all`, `--from=pypi|git|<path>`, `--version=X.Y.Z`, `--no-skills`, `--no-daemon`, `--dry-run`. Run `./install.sh --help` for the full matrix; the script is idempotent and safe to re-run for upgrades.
+
+### Update / Uninstall
+
+```bash
+./install.sh update                       # pip upgrade + popola skill upgrade
+./install.sh uninstall --yes              # remove Skills + pip uninstall popolaloom
+./install.sh uninstall --yes --purge      # also delete ~/.popola/ daemon state
+```
+
+### Manual install (alternative)
+
 ```bash
 pip install popolaloom
 # OR from a clone (development):
@@ -171,9 +193,9 @@ pip install -e ".[dev]"
 Verify the install:
 
 ```bash
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.3
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.4
 which popola                                                    # → /usr/local/bin/popola (or similar)
-popola version                                                  # → "popolaloom 0.8.3"
+popola version                                                  # → "popolaloom 0.8.4"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Quick fix:
@@ -183,7 +205,14 @@ export PATH="$HOME/.local/bin:$PATH"
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ```
 
-For step-by-step install with troubleshooting, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md). For an LLM-driven install workflow, ask any host agent (Cursor / Claude / Codex / Copilot) `install popola` — the new `install-popola` Skill (added in v0.7.0; see `src/popolaloom/skills/install-popola/SKILL.md`) walks them through it.
+After pip install, register the Skill into every IDE you use via the existing `popola init` wizard (works alongside `install.sh`):
+
+```bash
+popola init                  # auto-detect Cursor / Claude / Codex / Copilot
+popola init all --global     # explicit: install for every IDE at user-home scope
+```
+
+For step-by-step install with troubleshooting, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md). For an LLM-driven install workflow, ask any host agent (Cursor / Claude / Codex / Copilot) `install popola` — the `install-popola` Skill (v0.7.0+; see `src/popolaloom/skills/install-popola/SKILL.md`) walks them through it.
 
 > **Packaging note**: PopolaLoom vendors the ArkTower subset required for task persistence, so a wheel install does not need a sibling ArkTower checkout. If ArkTower later becomes a normal package dependency, [`VENDORING.md`](VENDORING.md) documents how to retire the vendored copy.
 
@@ -210,6 +239,17 @@ Both ship in the wheel; `popola init` installs the canonical one to per-IDE Skil
 | Copilot | project-only | `<repo>/.github/copilot-instructions.md` (single-file flatten) |
 
 Every install verb is **idempotent**: a second invocation prints `SKIP <path> (already installed)` instead of overwriting operator edits. A `.popola-loom-version` marker is written beside the SKILL.md so `popola doctor` can detect drift (`v0.4.1 (expected v0.7.0)` etc.) when you upgrade the wheel without re-running install.
+
+The `popola skill` verb group (since v0.5.0) ships four sibling commands for fine-grained Skill management:
+
+```bash
+popola skill install   --target=cursor --global   # write SKILL.md + version marker
+popola skill upgrade   --target=all --global      # force re-install (overwrites operator edits)
+popola skill doctor                               # audit every (target, scope) slot
+popola skill uninstall --target=all --global      # remove SKILL.md + marker (v0.8.4+)
+```
+
+`popola skill uninstall` is the inverse of `install`: idempotent on a clean home (prints `ABSENT`), removes the sibling `.popola-loom-version` marker for cursor/claude/codex (copilot has no marker since it ships as a single `copilot-instructions.md` file), and prunes the now-empty `popola-loom/` leaf directory. The unified `install.sh uninstall` verb composes this with `pip uninstall popolaloom` for one-shell-command teardown.
 
 For the upgrade workflow, the `popola doctor` audit explanation, and the full list of `popola init` verbs / modifiers, see [`docs/USER_GUIDE.md#ide-integration`](docs/USER_GUIDE.md#ide-integration).
 

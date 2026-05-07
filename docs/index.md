@@ -94,4 +94,4 @@ popola doctor                        # 4-subsystem health check
 
 <h2 data-i18n="status.heading">Project status</h2>
 
-<p data-i18n="status.lead">v0.8.3 — Docs/web remediation patch: working zh/en route switching, refreshed demo walkthrough, stale-copy cleanup, and docs contract tests. Hands-off envelope remains stable; license MIT.</p>
+<p data-i18n="status.lead">v0.8.4 — Unified install script (install.sh) wraps pip install + popola skill install + popolad + doctor; new popola skill uninstall verb closes the install/update/uninstall loop across cursor/claude/codex/copilot × global/project. Hands-off envelope remains stable; license MIT.</p>

@@ -6,7 +6,7 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.8.3)
+# PopolaLoom — User Guide (v0.8.4)
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
 
@@ -93,6 +93,8 @@ The daemon binds the UDS at `$POPOLA_HOME/popolad.sock` (default `~/.popola/popo
 | `popola skill upgrade --target=<ide>` | **Overwrite** installed SKILL.md from the wheel (after `.popola-loom-bak.<ts>` backup) | `popola skill upgrade --target=cursor` |
 | `popola skill upgrade --target=all` | Cycle every detected install | `popola skill upgrade --target=all` |
 | `popola skill doctor` | Skill-only audit (subset of `popola doctor`) | `popola skill doctor` |
+| `popola skill uninstall --target=<ide>` | Remove SKILL.md + marker (v0.8.4+) | `popola skill uninstall --target=cursor --global` |
+| `popola skill uninstall --target=all` | Remove every Skill across IDEs | `popola skill uninstall --target=all --global` |
 
 Per-IDE install paths:
 
@@ -107,6 +109,103 @@ Per-IDE install paths:
 | local | scaffold | `<repo>/.local/` (workspace surface) |
 
 `popola init` differs from `popola skill upgrade` in two ways: (1) `init` is **idempotent** — second invocation prints `SKIP <path> (already installed)`; `upgrade` **always overwrites** (after writing a `.popola-loom-bak.<ts>` backup). (2) `init` is the first-time-installer entry point; `upgrade` is the post-`pip install --upgrade popolaloom` refresh entry point.
+
+### `install.sh` — bash bootstrap installer (v0.8.4+)
+
+The unified bash installer at the repo root (`install.sh`) wraps the four-step manual workflow (`pip install` → `popola skill install` → `popola popolad start` → `popola doctor`) into a single shell command. The same script also drives the inverse path: `install.sh uninstall` removes the Skills and uninstalls the package; `install.sh update` upgrades the wheel and refreshes the on-disk SKILL.md.
+
+```bash
+# Pull from GitHub and run as a one-liner
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
+
+# Same, with explicit options
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
+  | bash -s -- install --scope=global --target=all
+
+# After a clone — same script, local invocation
+./install.sh install --scope=project --target=cursor
+./install.sh update
+./install.sh uninstall --yes --purge
+```
+
+#### Verbs
+
+| Verb | Purpose |
+|---|---|
+| `install` (default) | `pip install popolaloom` → `popola skill install` → `popola popolad start` (best-effort) → `popola doctor` (best-effort) |
+| `update` | `pip install --upgrade popolaloom` → `popola skill upgrade --target=<...>` → `popola doctor` |
+| `uninstall` | `popola popolad stop` (best-effort) → `popola skill uninstall --target=<...>` → `pip uninstall popolaloom` (gated on confirmation) → optional `rm -rf $POPOLA_HOME` when `--purge` is set |
+| `version` | Print `install.sh v0.8.4` and exit |
+| `help` / `--help` / `-h` | Print usage and exit |
+
+#### Flag matrix
+
+| Flag | Applies to | Purpose |
+|---|---|---|
+| `--scope=<global\|project>` | install / update / uninstall | Skill scope (default: `global`) |
+| `--target=<cursor\|claude\|codex\|copilot\|all>` | install / update / uninstall | Which IDE Skill (default: `all`) |
+| `--from=<pypi\|git\|PATH>` | install / update | Install source (default: `pypi`) |
+| `--version=<X.Y.Z>` | install / update | Pin a PyPI version (requires `--from=pypi`) |
+| `--python=<bin>` | all | Python interpreter (default: search `python3.12 → python3.11 → python3 → python`) |
+| `--no-skills` | all | Skip the Skill install / uninstall step |
+| `--no-daemon` | install | Skip `popola popolad start` after pip install |
+| `--purge` | uninstall | Also `rm -rf ${POPOLA_HOME:-$HOME/.popola}` after pip uninstall (gated on confirmation; **destructive**) |
+| `--yes` / `-y` | uninstall | Skip interactive prompts (required for non-tty / scripted runs) |
+| `--dry-run` | all | Print every command that would be run; no I/O |
+| `--quiet` / `-q` | all | Suppress informational output |
+| `--help` / `-h` | all | Print usage and exit |
+
+#### `--from=` source resolution
+
+| Value | Translates to |
+|---|---|
+| `pypi` (default) | `pip install popolaloom` |
+| `pypi` + `--version=X.Y.Z` | `pip install popolaloom==X.Y.Z` |
+| `git` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
+| any other value (filesystem path) | `pip install <path>` (works for local clones, wheel files, and tarballs) |
+
+For example: `./install.sh install --from=./dist/popolaloom-0.8.4-py3-none-any.whl` installs from a locally-built wheel.
+
+#### Examples
+
+```bash
+# Fresh install for every IDE at user-home scope (the typical first run)
+./install.sh install
+
+# Install only for Cursor at project scope, from the latest main on GitHub
+./install.sh install --target=cursor --scope=project --from=git
+
+# Install pinned to a specific PyPI version
+./install.sh install --version=0.8.4
+
+# Update only the package without touching Skill files
+./install.sh update --no-skills
+
+# Uninstall everything in one shot (interactive prompt before pip uninstall)
+./install.sh uninstall
+
+# Same, scripted (non-tty) — skip the prompt and purge ~/.popola/
+./install.sh uninstall --yes --purge
+
+# See exactly what would happen without touching disk
+./install.sh install --dry-run
+./install.sh uninstall --dry-run --yes
+```
+
+> **Destructive flag warning**: `install.sh uninstall --purge` deletes `${POPOLA_HOME:-$HOME/.popola}` (daemon socket, NDJSON event log, vendored ArkTower SQLite, daemon pidfile). The script gates the deletion behind a `[y/N]` prompt; pass `--yes` only when you have backed up anything you need.
+
+#### Idempotency contract
+
+- Re-running `install` with the same flags is safe (`pip install` is idempotent; `popola skill install` prints `SKIP` for byte-identical SKILL.md content).
+- Re-running `uninstall` after the package is gone returns `popolaloom not installed; nothing to do` and exits 0.
+- Re-running `uninstall --target=cursor` after the Skill is gone produces an `ABSENT` outcome from `popola skill uninstall` (no error).
+
+#### When to use `install.sh` vs `popola init`
+
+The two surfaces are **complementary**, not competing:
+
+- `install.sh` is the **first-time bootstrap** — run it on a fresh machine to get popolaloom installed end-to-end (pip + Skills + daemon + doctor) in one command. Also the recommended path for upgrade and uninstall.
+- `popola init` is the **post-install IDE wizard** — run it after `install.sh` (or `pip install popolaloom`) to add additional IDEs, scaffold the `.local/` workspace surface, or run the interactive setup wizard.
 
 ### Self-evaluation
 

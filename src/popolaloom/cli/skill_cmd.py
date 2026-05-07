@@ -1,15 +1,22 @@
-"""``popola skill`` subcommand group — install / doctor / upgrade (v0.5.0 Stage S4).
+"""``popola skill`` subcommand group — install / doctor / upgrade / uninstall.
 
-Per [v0.5.0-plan.md §4 Stage S4.D](../../../.local/memory/specs/popolaloom/v0.5.0-plan.md):
+Originally landed in v0.5.0 Stage S4 with three verbs (install / doctor /
+upgrade); v0.8.4 closes the long-standing gap noted in
+[feedback_for_v0.8.3.md](../../../.local/feedbacks/feedback_for_v0.8.3.md)
+by adding a fourth verb ``uninstall`` so the unified bash installer
+``install.sh`` can compose pip + skill teardown in a single shell
+command.
 
 This module is the Typer-side counterpart to the library APIs in
 :mod:`popolaloom.evolution.skill_install`,
-:mod:`popolaloom.evolution.skill_doctor`, and
-:mod:`popolaloom.evolution.skill_upgrade`.  Three verbs:
+:mod:`popolaloom.evolution.skill_doctor`,
+:mod:`popolaloom.evolution.skill_upgrade`, and
+:mod:`popolaloom.evolution.skill_uninstall`.  Four verbs:
 
-* ``popola skill install [--target=...] [--global|--project] [--dry-run] [--json]``
-* ``popola skill doctor  [--target=...] [--json]``
-* ``popola skill upgrade [--target=...] [--global|--project] [--dry-run] [--json]``
+* ``popola skill install   [--target=...] [--global|--project] [--dry-run] [--json]``
+* ``popola skill doctor    [--target=...] [--json]``
+* ``popola skill upgrade   [--target=...] [--global|--project] [--dry-run] [--json]``
+* ``popola skill uninstall [--target=...] [--global|--project] [--dry-run] [--json]``
 
 The ``--target=all`` value is a CLI convenience that loops over every
 key of :data:`popolaloom.evolution.skill_inject.SKILL_TARGETS`; the
@@ -43,6 +50,7 @@ from rich.text import Text
 from popolaloom.evolution.skill_doctor import DoctorReport, check_skill_health
 from popolaloom.evolution.skill_inject import SKILL_TARGETS
 from popolaloom.evolution.skill_install import InstallOutcome, install_skill
+from popolaloom.evolution.skill_uninstall import UninstallOutcome, uninstall_skill
 from popolaloom.evolution.skill_upgrade import UpgradeOutcome, upgrade_skill
 
 __all__ = [
@@ -54,11 +62,12 @@ __all__ = [
 app = typer.Typer(
     name="skill",
     help=(
-        "Install / audit / upgrade the PopolaLoom Skill across IDEs.\n\n"
-        "Three verbs:\n"
+        "Install / audit / upgrade / uninstall the PopolaLoom Skill across IDEs.\n\n"
+        "Four verbs:\n"
         "  popola skill install   — copy the wheel-bundled SKILL.md into IDE targets.\n"
         "  popola skill doctor    — read-only audit of every install target's state.\n"
         "  popola skill upgrade   — force re-install (overwrites operator edits).\n"
+        "  popola skill uninstall — remove the SKILL.md (+ marker) from IDE targets.\n"
     ),
     no_args_is_help=True,
     add_completion=False,
@@ -140,6 +149,17 @@ def _doctor_status_text(report: DoctorReport) -> tuple[Text, str]:
             f"v{report.version} (expected v{__version__})",
         )
     return Text("OK", style="green"), f"v{report.version or __version__}"
+
+
+def _uninstall_status_text(outcome: UninstallOutcome) -> Text:
+    """Render the action column for an :class:`UninstallOutcome`."""
+    if outcome.would_remove is not None:
+        return Text("DRY", style="cyan")
+    if outcome.uninstalled:
+        return Text("REMOVED", style="green")
+    if outcome.skipped:
+        return Text("ABSENT", style="yellow")
+    return Text("?", style="red")
 
 
 # ── install verb ─────────────────────────────────────────────────────────
@@ -337,6 +357,83 @@ def cmd_upgrade(
     _console_out.print(table)
 
 
+# ── uninstall verb ───────────────────────────────────────────────────────
+
+
+@app.command("uninstall")
+def cmd_uninstall(
+    target: str = typer.Option(
+        "all",
+        "--target",
+        help="cursor / claude / codex / copilot / all (default).",
+    ),
+    global_: bool = typer.Option(
+        False,
+        "--global",
+        help="Remove the user-home install (default).",
+    ),
+    project: bool = typer.Option(
+        False,
+        "--project",
+        help="Remove the project-local install.",
+    ),
+    dry_run: bool = typer.Option(
+        False,
+        "--dry-run",
+        help="Print every path that would be removed without touching the filesystem.",
+    ),
+    json_out: bool = typer.Option(
+        False,
+        "--json",
+        help="Emit the uninstall outcomes as a JSON array (machine-readable).",
+    ),
+) -> None:
+    """Remove the PopolaLoom SKILL.md from one or more IDE targets.
+
+    Idempotent: re-running ``uninstall`` on a target whose SKILL.md is
+    already absent is a no-op (the outcome reports ``ABSENT`` rather
+    than failing).  The companion ``.popola-loom-version`` marker is
+    removed alongside the SKILL.md for cursor / claude / codex; copilot
+    has no marker (single-file install).
+    """
+    _validate_target_flag(target)
+    scope = _resolve_scope(global_, project, default="global")
+    targets = _expand_target_list(target)
+
+    outcomes = [uninstall_skill(t, scope=scope, dry_run=dry_run) for t in targets]
+
+    if json_out:
+        typer.echo(
+            json.dumps(
+                [_uninstall_to_jsonable(o) for o in outcomes],
+                ensure_ascii=False,
+            )
+        )
+        return
+
+    table = Table(
+        title=f"popola skill uninstall — scope={scope}{' (dry-run)' if dry_run else ''}",
+        show_header=True,
+        header_style="bold",
+    )
+    table.add_column("target", style="bold")
+    table.add_column("scope")
+    table.add_column("path")
+    table.add_column("action")
+    table.add_column("note")
+
+    for outcome in outcomes:
+        note = "marker removed" if outcome.removed_marker else (outcome.reason or "")
+        table.add_row(
+            outcome.target,
+            outcome.scope,
+            str(outcome.target_path),
+            _uninstall_status_text(outcome),
+            note,
+        )
+    _console_out.print(table)
+
+
 # ── helpers ──────────────────────────────────────────────────────────────
 
 
@@ -355,6 +452,12 @@ def _outcome_to_jsonable(outcome: InstallOutcome) -> dict[str, Any]:
 
 def _upgrade_to_jsonable(outcome: UpgradeOutcome) -> dict[str, Any]:
     """Convert :class:`UpgradeOutcome` to a JSON-friendly dict (paths → strings)."""
+    payload = asdict(outcome)
+    return _stringify_paths(payload)
+
+
+def _uninstall_to_jsonable(outcome: UninstallOutcome) -> dict[str, Any]:
+    """Convert :class:`UninstallOutcome` to a JSON-friendly dict (paths → strings)."""
     payload = asdict(outcome)
     return _stringify_paths(payload)
 

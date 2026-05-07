@@ -10,7 +10,44 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.8.4 / v0.9.0.)
+(intentionally empty — accumulating for v0.9.0.)
+
+## [0.8.4] — 2026-05-07
+
+**Theme**: unified bash installer + symmetric Skill teardown. Ships `install.sh` at the repo root — a one-line POSIX-bash bootstrap that wraps `pip install popolaloom` + `popola skill install --target=<...>` + `popola popolad start` + `popola doctor` into a single shell command, with matching `update` and `uninstall` verbs across global vs project scope and the cursor / claude / codex / copilot agent CLIs. The previous installer surface was the `popola init` Typer command (still works) and the LLM-driven `install-popola` Skill (still works); the new bash script is a fresh-machine bootstrap so an operator can reach "installed + Skills registered + daemon optional" without needing an agent CLI in the loop. The companion `popola skill uninstall` Typer verb (NEW) is the inverse of `popola skill install` and lets the bash script's `uninstall` verb surgically remove SKILL.md + the `.popola-loom-version` marker before `pip uninstall popolaloom`.
+
+User-visible feedback driver: `feedback_for_v0.8.3.md` — operator wanted (1) install / update / uninstall script for PopolaLoom + its Skills and (2) global vs project install support across cursor / codex / claude / copilot. v0.8.4 closes both items as a cohesive feature patch.
+
+### Added
+
+- **`install.sh`** (479 lines) at the repo root — POSIX-bash unified installer.
+  - Verbs: `install` (default) / `update` / `uninstall` / `version` / `help`.
+  - Options: `--scope=global|project`, `--target=cursor|claude|codex|copilot|all`, `--from=pypi|git|<path>`, `--version=X.Y.Z`, `--python=<bin>`, `--no-skills`, `--no-daemon`, `--purge`, `--yes`/`-y`, `--dry-run`, `--quiet`/`-q`, `--help`/`-h`.
+  - Idempotent and safe to re-run on an already-installed machine. Wires `pip install` (+ `--upgrade` for the `update` verb), `popola skill install` (or `upgrade` / `uninstall`), `popola popolad start` (best-effort), and `popola doctor` (best-effort) into a single shell command.
+  - Auto-detects Python 3.11+ across `python3.12 → python3.11 → python3 → python`; pass `--python=/path/to/bin` to override.
+  - Per the workspace "No Silent Failures" rule, every external command runs through a `run_cmd()` helper that prints the command and aborts on non-zero exits from critical steps. The single best-effort step is the post-install daemon boot, which logs the skip reason when popolad fails to start so the operator can manually retry.
+- **`popola skill uninstall --target=<...> [--global|--project] [--dry-run] [--json]`** Typer verb — mirrors the existing `install` / `doctor` / `upgrade` trio. Backed by the new library API in `src/popolaloom/evolution/skill_uninstall.py` (256 lines): a frozen `UninstallOutcome` dataclass, `uninstall_skill()` + `uninstall_all_skills()` helpers, copilot scope-fallback (copilot is project-only), parent-directory rmdir-when-empty contract for the `popola-loom/` leaf, and version-marker cleanup for non-copilot targets. Idempotent on a clean home — re-running prints `ABSENT` rather than failing.
+- **23 new default-lane tests** across:
+  - `tests/evolution/test_skill_uninstall.py` (NEW, 10 tests) — library API exercises `uninstall_skill` happy path / dry-run / absent / copilot single-file / `uninstall_all_skills` aggregator + per-target outcome shape.
+  - `tests/cli/test_skill_cmd.py` (+6 uninstall-suite tests, plus the `test_skill_help_lists_three_verbs` → `test_skill_help_lists_four_verbs` rename) — `uninstall --target=cursor --global` removes SKILL.md + marker, `--target=all` is idempotent on a clean home, `--dry-run` does not unlink, `--json` is machine-readable, and `--global` + `--project` simultaneously raises `BadParameter`.
+  - `tests/cli/test_install_script.py` (NEW, 13 subprocess tests) — covers `--help`, `version`, `install --dry-run` happy paths (default verb, with version pin, `--from=git`), `update --dry-run`, `uninstall --dry-run --yes`, invalid verb / scope / target error paths, and the `--version=X.Y.Z` × `--from=git` mutual conflict.
+- **README "One-line install (v0.8.4+)" section** — `curl -fsSL ... | bash` shape; new "Update / Uninstall" subsection (`./install.sh update` / `./install.sh uninstall --yes` / `--purge`); also a v0.8.4 row in the Status table for the unified installer and a row for the new `popola skill uninstall` verb.
+- **`docs/USER_GUIDE.md` `## install.sh — bash bootstrap installer` reference section** — full verb × flag matrix, `--from=` source resolution table, examples, idempotency contract, "when to use `install.sh` vs `popola init`" guidance.
+- **`src/popolaloom/skills/install-popola/SKILL.md` "Step 0 — one-line install (preferred)"** — the curl-pipe-bash recipe wired into the installer Skill, plus a new "Uninstall path (v0.8.4+)" subsection and seven new triggers (`update popola`, `update popolaloom`, `uninstall popola`, `uninstall popolaloom`, `更新 popolaloom` / `更新 popola-loom`, `卸载 popolaloom` / `卸载 popola-loom`, `/update-popola`, `/uninstall-popola`).
+
+### Changed
+
+- **`src/popolaloom/cli/skill_cmd.py`** — adds the `cmd_uninstall` Typer verb (~120 lines), a `_uninstall_status_text` colourizer, and a `_uninstall_to_jsonable` JSON serializer. The `popola skill --help` listing now shows four verbs (`install` / `doctor` / `upgrade` / `uninstall`) instead of three.
+- **`tests/cli/test_skill_cmd.py`** — `test_skill_help_lists_three_verbs` renamed to `test_skill_help_lists_four_verbs` to match the new surface; 6 uninstall tests appended; one version-pin test bumped from `0.8.3` to `0.8.4`.
+- **Removed orphan `.github/.popolaloom-version`** (stale `0.5.0` marker left over from pre-rename Skill copilot install testing — the canonical marker now lives next to each installed SKILL.md, with the post-v0.7.1 `.popola-loom-version` filename, not at the repo root).
+- `pyproject.toml` / `src/popolaloom/__init__.py` / SKILL.md (×2) / `.popola-loom-version` / `docs/_config.yml` / `docs/_includes/footer.html` / `docs/assets/js/{i18n,theme,extras}.js` / `tests/test_smoke.py` (3 places) bumped to `0.8.4`.
+- `README.md` / `docs/QUICKSTART.md` / `docs/USER_GUIDE.md` / `docs/DEMO.md` / `docs/index.md` / `docs/zh/QUICKSTART.md` / `docs/zh/USER_GUIDE.md` / `docs/assets/i18n/{en,zh}.json` — version literals + status leads refreshed to v0.8.4.
+
+### Notes
+
+- **No breaking changes.** `pip install -U popolaloom` continues to work; the existing `popola init` family + `popola skill install` / `doctor` / `upgrade` verbs are untouched. The new `install.sh` is purely additive — operators who do not want the bash bootstrap can skip it and stick to the manual `pip install` + `popola init` workflow that has shipped since v0.5.0.
+- **Default-lane gate**: `pytest tests/ -m "not slow and not real_graph and not e2e and not nightly and not real_cli and not real_lark"` → 1632 passed, 18 skipped, 82 deselected (1609 prior from v0.8.3 + 23 new); `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean (83 source files). Coverage gate `fail_under = 94` unchanged.
+- Per "Protected Branch Workflow", all v0.8.4 work landed via PR (not direct pushes). Branch shipped: `feature/v0.8.4-install-script` → PR → squash-merge into `main`.
 
 ## [0.8.3] — 2026-05-07
 
