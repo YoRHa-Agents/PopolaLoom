@@ -1,17 +1,139 @@
 ---
 layout: default
 title: Demo
-description: Walkthroughs, example outputs, and self-evolution journey from v0.3.5 to v0.7.0.
+description: Walkthroughs, example outputs, and self-evolution journey from v0.3.5 to v0.8.1.
 ---
 
-# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.7.0)
+# PopolaLoom — DEMO walkthrough (v0.3.5 → v0.8.1)
 
 > 5-minute setup, 6-step automation, 8-dim self-evaluation, multi-IDE
 > Skill install + `popola doctor` aggregate health check, an
-> interactive setup wizard (v0.5.5+), and (v0.7.0+) a NEW
-> `install-popola` Skill + a consolidated docs surface.
+> interactive setup wizard (v0.5.5+), an `install-popola` Skill (v0.7.0+),
+> a **hands-off envelope** for file-based dispatch payloads (v0.8.0+),
+> and a **NieR-Popola web design** with bilingual zh/en + day/night
+> theme toggle (v0.8.1+).
 
-## v0.7.0 polish (NEW)
+## v0.8.1 web design (NEW)
+
+The v0.8.1 minor lands the GitHub Pages site overhaul that closes
+`feedback_for_v0.7.0.md` items #1–3 / TRACKER `BL-UI-1`. **No
+source-code changes** — the entire patch only touches `docs/` static
+assets + version metadata.
+
+Visit <https://yorha-agents.github.io/PopolaLoom/> to see:
+
+- **NieR-Popola visual system** — cream + amber + mechanized gold
+  palette in light mode, near-black + warm off-white + brighter
+  gold in dark mode; Cormorant Garamond serif headings, Inter
+  body, JetBrains Mono code; geometric ◆ ornament between sections.
+- **Bilingual zh / en switcher** — top-right `EN ↔ 中文` button,
+  `localStorage["popola.lang"]` persisted, no page reload. 37-key
+  dictionaries on both sides; technical terms (CLI / MCP / HITL /
+  dispatch) kept in English in the zh dict.
+- **Day/night toggle** — top-right `☾ ↔ ☀` button. First visit:
+  resolves from `matchMedia(prefers-color-scheme)`; subsequent
+  visits respect explicit user pick. Anti-FOUC `@media` block in
+  CSS gives instant dark first-paint for OS-dark visitors.
+- **Hero + 6-card feature-grid** landing page on `index.md`.
+- **Pure static** — Google Fonts CDN, vanilla JS, no Gemfile / no
+  npm. Lighthouse-friendly.
+
+Note: `QUICKSTART.md`, `USER_GUIDE.md`, this `DEMO.md` are kept
+single-language (technical reference; deeper bilingual coverage is
+on the BL-UI follow-up). The header / footer / landing page are
+fully bilingual.
+
+## v0.8.0 hands-off envelope (NEW — biggest v0.8.x feature)
+
+The v0.8.0 minor (rolled up from v0.7.1 → v0.7.2 → v0.7.3 patches)
+introduces a **file-based dispatch payload** that is auditable,
+replayable, addressable by content-derived slug-hash, and
+delivered to the spawned sub-CLI via two complementary channels.
+
+### Walkthrough — what every `popola dispatch` now does
+
+```bash
+$ popola dispatch "fix the bug in foo.py — there's a NoneType error around line 42" --cli=cursor
+# → cursor-1f0a2b8d4e5c   (popola task_id)
+
+# behind the scenes: a Markdown front-matter envelope is written
+$ ls .local/.agent/handoff/
+cursor-fix-the-bug-in-foo-py-3a7f9c1d.md
+
+$ cat .local/.agent/handoff/cursor-fix-the-bug-in-foo-py-3a7f9c1d.md
+---
+schema_version: '1'
+handoff_id: cursor-fix-the-bug-in-foo-py-3a7f9c1d
+created_at: '2026-05-07T10:30:00+00:00'
+source_cli: null
+target_cli: cursor
+parent_task_id: null
+cwd: null
+adapter_extra: {}
+constraints: {}
+reason: null
+tags: []
+---
+fix the bug in foo.py — there's a NoneType error around line 42
+```
+
+The spawned `cursor-agent` subprocess sees `POPOLA_HANDOFF_FILE=<abs path>`
+and `POPOLA_HANDOFF_ID=<slug-hash>` in its env. The agent inside cursor
+can `cat $POPOLA_HANDOFF_FILE` to inspect the original dispatch including
+audit-only fields (`reason`, `tags`) that don't fit into a single argv
+prompt.
+
+### Replay a prior dispatch
+
+```bash
+$ popola dispatch --replay cursor-fix-the-bug-in-foo-py-3a7f9c1d
+# → cursor-2a8e3f4c5d6e   (new task_id, but same dispatch payload)
+
+# inline overrides emit a stderr warning (No Silent Failures)
+$ popola dispatch new-prompt --cli=claude --replay cursor-fix-the-bug-in-foo-py-3a7f9c1d
+warning: --replay overrides inline prompt='new-prompt', --cli='claude' with envelope values
+# → cursor-9b1c4e7a2d5f   (still cursor + original prompt; warning told you why)
+```
+
+### Inspect / list / archive envelopes (no daemon required)
+
+```bash
+$ popola handoff list
+# Active handoff envelopes
+# ┃ handoff_id                                  ┃ size  ┃ mtime               ┃
+# │ cursor-fix-the-bug-in-foo-py-3a7f9c1d       │ 412 B │ 2026-05-07 10:30:00 │
+
+$ popola handoff list --json | jq .[0].handoff_id
+"cursor-fix-the-bug-in-foo-py-3a7f9c1d"
+
+$ popola handoff show cursor-fix-the-bug-in-foo-py-3a7f9c1d --json | jq .prompt
+"fix the bug in foo.py — there's a NoneType error around line 42"
+
+# snapshot a finished task's envelope to .local/.agent/archive/<task_id>/
+$ popola handoff archive cursor-fix-the-bug-in-foo-py-3a7f9c1d cursor-1f0a2b8d4e5c
+/repo/.local/.agent/archive/cursor-1f0a2b8d4e5c/cursor-fix-the-bug-in-foo-py-3a7f9c1d.md
+```
+
+### Why this matters
+
+- **Argv limits dodged** — prompts > 16 KB no longer blow `MAX_ARG_STRLEN`.
+- **Audit trail** — `cat`-friendly Markdown receipt for every dispatch.
+- **Deterministic replay** — slug-hash addressing means same content → same id.
+- **Cross-CLI handoff** — the existing `relay()` primitive (cursor → claude → codex chain) gets a stable on-disk audit trail per hop via the v0.7.3 `to_handoff_envelope()` bridge.
+- **HITL feedback companion** — `popolaloom.handoff.FeedbackEnvelope` (Q7=yes, v0.7.3+) mirrors the dispatch envelope schema for HITL answers; foundation slice ships, live `popola feedback ... --persist` wiring scheduled for v0.8.x.
+
+### What v0.8.0 added (rolled up from v0.7.1 → v0.7.3)
+
+| Slice | Theme | Test count delta | Coverage |
+|---|---|---|---|
+| v0.7.1 | 3 v0.7.0 BUG fixes (cancel orphan / rehydrate spawn-aborted / attach `--no-follow` EOF) + handoff foundation (schema/hash/writer/archive) | +114 | 100 % on `popolaloom.handoff.*` |
+| v0.7.2 | `Popolad.dispatch_with_envelope` (E3 internal unification) + `_call_adapter` post-process flag injection (C5 双通道) + `popola handoff list/show/archive` CLI + `popolaloom.handoff.loader` | +30 | 100 % maintained |
+| v0.7.3 | `popola dispatch --replay` + `FeedbackEnvelope` (Q7=yes HITL foundation) + legacy `RelayHandoffEnvelope` bridge + comprehensive docs | +46 | 100 % maintained |
+| v0.8.0 | Documentation-only minor bump — promote v0.7.x foundation to stable surface | 0 | 94.42 % overall |
+
+Total: **76+ new tests since v0.7.0**, default-lane test count 1380 → 1597, `popolaloom.handoff.*` 100 % line + branch coverage.
+
+## v0.7.0 polish
 
 The v0.7.0 minor closes the 4 user-feedback items from v0.6.1 in a
 single docs + skill consolidation release. **No source-code logic
