@@ -1,12 +1,13 @@
-"""Default-lane tests for ``popola skill install / doctor / upgrade`` (Stage S4 of v0.5.0).
+"""Default-lane tests for ``popola skill install / doctor / upgrade / uninstall``.
 
-Per v0.5.0-plan §S4.G the suite exercises:
+Originally landed in v0.5.0 Stage S4 (3 verbs); v0.8.4 adds the
+``uninstall`` verb per the v0.8.3 feedback. The suite exercises:
 
-* one happy-path test per verb × per primary target (3 verbs × 3 targets);
+* one happy-path test per verb × per primary target;
 * the ``--target=all`` aggregator path;
 * the ``--dry-run`` no-write contract;
 * the ``--json`` machine-readable output;
-* the ``--help`` discoverability surface.
+* the ``--help`` discoverability surface (now lists 4 verbs).
 
 All tests use ``tmp_path`` + ``monkeypatch`` so no developer IDE is
 ever touched.  We import ``skill_app`` directly via the cli package
@@ -60,14 +61,15 @@ def _combined(result: object) -> str:
     return stdout + stderr + output
 
 
-def test_skill_help_lists_three_verbs(runner: CliRunner) -> None:
-    """``popola skill --help`` shows install / doctor / upgrade (acceptance #1)."""
+def test_skill_help_lists_four_verbs(runner: CliRunner) -> None:
+    """``popola skill --help`` shows install / doctor / upgrade / uninstall (acceptance #1)."""
     result = runner.invoke(skill_app, ["--help"])
     assert result.exit_code == 0, _combined(result)
     out = _combined(result)
     assert "install" in out
     assert "doctor" in out
     assert "upgrade" in out
+    assert "uninstall" in out
 
 
 def test_skill_install_cursor_global_writes_skill(
@@ -297,3 +299,112 @@ def test_skill_upgrade_up_to_date_when_content_matches(
     assert second.exit_code == 0, _combined(second)
     payload = json.loads(_combined(second).strip().splitlines()[-1])
     assert payload[0]["up_to_date"] is True
+
+
+# ── uninstall verb (v0.8.4 — closes feedback_for_v0.8.3.md) ──────────────
+
+
+def test_skill_uninstall_cursor_global_removes_skill(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``uninstall --target=cursor --global`` removes the SKILL.md + marker (acceptance v0.8.4)."""
+    _cwd, fake_home = isolated_home
+
+    install_result = runner.invoke(skill_app, ["install", "--target=cursor", "--global"])
+    assert install_result.exit_code == 0, _combined(install_result)
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
+    marker = target.parent / ".popola-loom-version"
+    assert target.is_file()
+    assert marker.is_file()
+
+    uninstall_result = runner.invoke(
+        skill_app,
+        ["uninstall", "--target=cursor", "--global"],
+    )
+    assert uninstall_result.exit_code == 0, _combined(uninstall_result)
+    out = _combined(uninstall_result)
+    assert "REMOVED" in out
+
+    assert not target.exists()
+    assert not marker.exists()
+
+
+def test_skill_uninstall_target_all_idempotent(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``uninstall --target=all`` on a clean home is a no-op; every outcome reports ABSENT."""
+    result = runner.invoke(skill_app, ["uninstall", "--target=all", "--global"])
+    assert result.exit_code == 0, _combined(result)
+    out = _combined(result)
+    assert "ABSENT" in out
+    assert "REMOVED" not in out
+
+
+def test_skill_uninstall_dry_run_does_not_remove(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``uninstall ... --dry-run`` reports DRY rows without unlinking (acceptance v0.8.4)."""
+    _cwd, fake_home = isolated_home
+
+    install_result = runner.invoke(skill_app, ["install", "--target=cursor", "--global"])
+    assert install_result.exit_code == 0, _combined(install_result)
+    target = fake_home / ".cursor" / "skills" / "popola-loom" / "SKILL.md"
+    assert target.is_file()
+
+    result = runner.invoke(
+        skill_app,
+        ["uninstall", "--target=cursor", "--global", "--dry-run"],
+    )
+    assert result.exit_code == 0, _combined(result)
+    out = _combined(result)
+    assert "DRY" in out
+
+    assert target.is_file()
+
+
+def test_skill_uninstall_json_output_is_machine_readable(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``uninstall --target=all --json`` returns a parseable list with one row per target."""
+    install_runs = runner.invoke(skill_app, ["install", "--target=all", "--project"])
+    assert install_runs.exit_code == 0, _combined(install_runs)
+
+    result = runner.invoke(
+        skill_app,
+        ["uninstall", "--target=all", "--project", "--json"],
+    )
+    assert result.exit_code == 0, _combined(result)
+    payload = json.loads(_combined(result).strip().splitlines()[-1])
+    assert isinstance(payload, list)
+    assert len(payload) == 4
+    targets = {row["target"] for row in payload}
+    assert targets == {"cursor", "claude", "codex", "copilot"}
+    for row in payload:
+        assert row["uninstalled"] is True
+
+
+def test_skill_uninstall_global_and_project_mutually_exclusive(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``--global`` + ``--project`` simultaneously is a BadParameter (S-5)."""
+    result = runner.invoke(
+        skill_app,
+        ["uninstall", "--target=cursor", "--global", "--project"],
+    )
+    assert result.exit_code != 0
+    assert "mutually exclusive" in _combined(result)
+
+
+def test_skill_uninstall_invalid_target_errors(
+    isolated_home: tuple[Path, Path],
+    runner: CliRunner,
+) -> None:
+    """``uninstall --target=bogus`` fails with a BadParameter (S-5)."""
+    result = runner.invoke(skill_app, ["uninstall", "--target=bogus"])
+    assert result.exit_code != 0
+    assert "must be one of" in _combined(result)

@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.8.3
+version: 0.8.4
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -25,6 +25,16 @@ triggers:
   - "/install-popola"
   - "register popola skill"
   - "register popola-loom skill"
+  - "update popola"
+  - "update popolaloom"
+  - "uninstall popola"
+  - "uninstall popolaloom"
+  - "更新 popolaloom"
+  - "更新 popola-loom"
+  - "卸载 popolaloom"
+  - "卸载 popola-loom"
+  - "/update-popola"
+  - "/uninstall-popola"
 ---
 
 # install-popola Skill
@@ -59,6 +69,32 @@ test -d ~/.claude && echo "claude present" || echo "claude absent"
 If `which popola` returns a path, popolaloom is already installed — skip Steps 1 + 2 below and go straight to **Upgrade path** (or just to **Verification checklist** for a sanity smoke).
 
 ## Install (full path — fresh machine)
+
+### Step 0 — one-line install (preferred, v0.8.4+)
+
+```bash
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
+```
+
+The unified `install.sh` (v0.8.4+) wraps Steps 1–4 below into a single shell command: `pip install popolaloom` → `popola skill install --target=all --global` → `popola popolad start` → `popola doctor`. It is **idempotent** — safe to re-run on an already-installed machine. Useful options:
+
+```bash
+# install only for Cursor at project scope
+curl -fsSL .../install.sh | bash -s -- install --scope=project --target=cursor
+
+# install latest main from GitHub (when PyPI is gated by a corporate proxy)
+curl -fsSL .../install.sh | bash -s -- install --from=git
+
+# pin a specific version
+curl -fsSL .../install.sh | bash -s -- install --version=0.8.4
+
+# preview every command without touching disk
+curl -fsSL .../install.sh | bash -s -- install --dry-run
+```
+
+The script auto-detects Python 3.11+ (searching `python3.12` → `python3.11` → `python3` → `python`); pass `--python=/path/to/bin` to override. Errors are surfaced explicitly per the workspace "No Silent Failures" rule.
+
+If the one-line bootstrap fails (e.g. corporate firewall blocks `raw.githubusercontent.com`), fall back to the **manual Steps 1–4** below.
 
 ### Step 1 — pip install (one of these)
 
@@ -110,12 +146,31 @@ popola list-cli               # registered adapters (cursor / claude / codex / c
 ## Upgrade path (popola already installed)
 
 ```bash
+# Preferred (v0.8.4+) — single-command upgrade
+./install.sh update
+
+# Or manually (matches the v0.5.0–v0.8.3 workflow):
 pip install --upgrade popolaloom
 popola skill upgrade --target=all   # overwrite installed SKILL.md with the wheel-shipped baseline
 popola doctor                       # confirm no DRIFT
 ```
 
 `popola skill upgrade` (Stage S4 of v0.5.0+) compares SHA-256 between the wheel-shipped SKILL.md and the on-disk installed copy, takes a `.popola-loom-bak.<ts>` backup, then writes the new content. Running `popola init` instead is also safe — it's idempotent — but it WON'T overwrite an existing SKILL.md (it only writes when the file is missing).
+
+## Uninstall path (v0.8.4+)
+
+```bash
+# Preferred (v0.8.4+) — single-command teardown (interactive prompt before pip uninstall)
+./install.sh uninstall
+
+# Scripted (CI / non-tty) — skip the prompt and also delete daemon state under ~/.popola/
+./install.sh uninstall --yes --purge
+
+# Or surgically remove the Skill from one IDE without touching the package:
+popola skill uninstall --target=cursor --global
+```
+
+`popola skill uninstall` (NEW in v0.8.4) is the inverse of `popola skill install`: it removes the SKILL.md (and the sibling `.popola-loom-version` marker for cursor/claude/codex; copilot has no marker since it ships as a single `copilot-instructions.md` file) and prunes the now-empty `popola-loom/` leaf directory. It is **idempotent** — re-running on a clean home prints `ABSENT` rather than failing. The unified `install.sh uninstall` verb composes this with `popola popolad stop` + `pip uninstall popolaloom` (+ optional `rm -rf $POPOLA_HOME` when `--purge` is set) for full teardown in one command.
 
 ## Interactive wizard (alternative, v0.5.5+)
 

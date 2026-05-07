@@ -28,9 +28,9 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # 验证
-python -c "import popolaloom; print(popolaloom.__version__)"   # -> 0.8.3
+python -c "import popolaloom; print(popolaloom.__version__)"   # -> 0.8.4
 which popola
-popola version                                                 # -> "popolaloom 0.8.3"
+popola version                                                 # -> "popolaloom 0.8.4"
 ```
 
 如果安装后提示 `popola: command not found`，通常是 shell 没有包含 `~/.local/bin`：
@@ -110,7 +110,7 @@ popola doctor --json
 
 ```bash
 bash examples/quickstart.sh
-# [quickstart] all 6 steps PASS — popolaloom v0.8.3 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.8.4 ready
 ```
 
 脚本默认使用临时 `$POPOLA_HOME`，不会污染真实的 `~/.popola`。

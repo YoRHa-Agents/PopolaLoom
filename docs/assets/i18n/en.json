@@ -42,7 +42,7 @@
   "docs.release_notes": "Release Notes (v0.8.0+ floats here)",
   "docs.changelog": "CHANGELOG — full v0.0.1 → v0.8.x history",
   "status.heading": "Project status",
-  "status.lead": "v0.8.3 — Docs/web remediation patch: working zh/en route switching, refreshed demo walkthrough, stale-copy cleanup, and docs contract tests. Hands-off envelope remains stable; license MIT.",
+  "status.lead": "v0.8.4 — Unified install script (install.sh) wraps pip install + popola skill install + popolad + doctor; new popola skill uninstall verb closes the install/update/uninstall loop across cursor/claude/codex/copilot × global/project. Hands-off envelope remains stable; license MIT.",
   "footer.tagline": "A loom that weaves agents.",
   "notice.en_only": "This page has no Chinese translation yet — header / footer / landing page only."
 }

@@ -27,9 +27,9 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.3
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.4
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.8.3"
+popola version                       # → "popolaloom 0.8.4"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
@@ -127,7 +127,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor (aggregate health, NEW in v0.5.0)
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.8.3 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.8.4 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.

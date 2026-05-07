@@ -42,7 +42,7 @@
   "docs.release_notes": "Release Notes（v0.8.0+ 单文件持续更新）",
   "docs.changelog": "CHANGELOG —— v0.0.1 → v0.8.x 完整历史",
   "status.heading": "项目状态",
-  "status.lead": "v0.8.3 —— 文档与 Web 修复补丁：zh/en 路由切换可用、演示页重写、占位/陈旧内容清理，并补上 docs contract 测试。Hands-off envelope 保持稳定；MIT 许可。",
+  "status.lead": "v0.8.4 —— 统一安装脚本：install.sh 一行起动 pip install + popola skill install + popolad + doctor；新增 popola skill uninstall 子命令，把 install / update / uninstall 在 cursor / claude / codex / copilot × global / project 维度闭环。Hands-off envelope 保持稳定；MIT 许可。",
   "footer.tagline": "织 agent 之机。",
   "notice.en_only": "本页面暂仅有英文版 —— 仅 header / footer / 着陆页支持中文。"
 }

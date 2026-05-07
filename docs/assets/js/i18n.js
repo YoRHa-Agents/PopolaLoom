@@ -1,4 +1,4 @@
-/* PopolaLoom v0.8.3 — client-side i18n switcher (vanilla, no deps).
+/* PopolaLoom v0.8.4 — client-side i18n switcher (vanilla, no deps).
  *
  * Strategy: localStorage-persisted lang state + per-page fetch of JSON dict
  * + DOM textContent rewrite over [data-i18n="key"] attributes. No router
