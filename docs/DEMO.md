@@ -1,7 +1,7 @@
 ---
 layout: default
 title: Demo
-description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.8.2.
+description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.8.3.
 lang: en
 translation_url: /zh/DEMO.html
 ---

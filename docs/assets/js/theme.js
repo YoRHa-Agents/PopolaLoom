@@ -1,4 +1,4 @@
-/* PopolaLoom v0.8.2 — client-side day/night theme toggle (vanilla, no deps).
+/* PopolaLoom v0.8.3 — client-side day/night theme toggle (vanilla, no deps).
  *
  * State machine: two themes (light ↔ dark), persisted in localStorage.
  *

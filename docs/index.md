@@ -94,4 +94,4 @@ popola doctor                        # 4-subsystem health check
 
 <h2 data-i18n="status.heading">Project status</h2>
 
-<p data-i18n="status.lead">v0.8.2 — Docs/web remediation: functional zh/en switching, refreshed demo walkthrough, stale-copy cleanup, and targeted docs contract tests. Hands-off envelope remains stable; license MIT.</p>
+<p data-i18n="status.lead">v0.8.3 — Docs/web remediation patch: working zh/en route switching, refreshed demo walkthrough, stale-copy cleanup, and docs contract tests. Hands-off envelope remains stable; license MIT.</p>

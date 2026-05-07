@@ -1,6 +1,6 @@
 # PopolaLoom
 
-> **v0.8.2** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
+> **v0.8.3** — Meta-orchestrator over local agent CLIs (Cursor / Claude Code / Codex / Kimi / GitHub Copilot). Per-task isolation, persistent process bus, HITL via Lark + IDE + CLI + MCP + Web, all on top of a single `popolad` UDS daemon. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment, and makes replay deterministic via `popola dispatch --replay <id>`.
 
 [![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
@@ -116,7 +116,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.8.2 — Docs/web remediation.** The public site now has working zh/en switching for the main docs pages, a clearer demo walkthrough, and docs contract tests. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
+**v0.8.3 — Docs/web remediation patch.** Builds on v0.8.2 by fixing the docs i18n flat-key lookup, shipping localized zh routes for the main docs pages, refreshing demo and status content, and adding fast docs contract tests. See [`RELEASE_NOTES.md`](RELEASE_NOTES.md) for the current release ledger; [`CHANGELOG.md`](CHANGELOG.md) for the full version history.
 
 | Capability | Status |
 |---|---|
@@ -171,9 +171,9 @@ pip install -e ".[dev]"
 Verify the install:
 
 ```bash
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.2
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.3
 which popola                                                    # → /usr/local/bin/popola (or similar)
-popola version                                                  # → "popolaloom 0.8.2"
+popola version                                                  # → "popolaloom 0.8.3"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Quick fix:

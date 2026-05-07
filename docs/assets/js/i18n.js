@@ -1,4 +1,4 @@
-/* PopolaLoom v0.8.2 — client-side i18n switcher (vanilla, no deps).
+/* PopolaLoom v0.8.3 — client-side i18n switcher (vanilla, no deps).
  *
  * Strategy: localStorage-persisted lang state + per-page fetch of JSON dict
  * + DOM textContent rewrite over [data-i18n="key"] attributes. No router
@@ -15,7 +15,7 @@
   const SUPPORTED_LANGS = ['en', 'zh'];
   const HTML_LANG_MAP = { en: 'en', zh: 'zh-CN' };
 
-  // EN-only notice (v0.8.2) — surfaced when a user switches to zh on a page
+  // EN-only notice (v0.8.2+) — surfaced when a user switches to zh on a page
   // whose entire i18n surface is just the chrome (header + footer). Doc
   // pages (QUICKSTART / USER_GUIDE / DEMO) carry header(4 nav hooks) +
   // footer(1 tagline) = 5 [data-i18n] elements; the landing page carries

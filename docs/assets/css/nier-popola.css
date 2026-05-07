@@ -422,7 +422,7 @@ main.page-content {
 .feature-card p:last-child { margin-bottom: 0; }
 
 /* ──────────────────────────────────────────────────────────────────────
-   8. prefers-color-scheme fallback (v0.8.2)
+   8. prefers-color-scheme fallback (v0.8.2+)
    First-paint dark mode for OS-dark visitors before theme.js runs (defer).
    The :not([data-theme="light"]) guard lets a JS-set 'light' override the
    OS preference, so users who explicitly pick light always get light.
@@ -449,7 +449,7 @@ main.page-content {
 }
 
 /* ──────────────────────────────────────────────────────────────────────
-   9. UX polish (v0.8.2 Stage B)
+   9. UX polish (v0.8.2+)
    - 9a: Code-block copy button (extras.js injects .copy-btn into every <pre>)
    - 9b: Heading anchor link  (extras.js injects .anchor-link into h2/h3[id])
    - 9c: EN-only language notice (i18n.js spawns .lang-notice on zh-switch)
