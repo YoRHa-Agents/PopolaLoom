@@ -319,25 +319,39 @@ def test_cloud_runs_help_text_matches_spec(runner: CliRunner) -> None:
     """``popola cloud runs --help`` matches spec §2.5 verbatim (key lines)."""
     from popolaloom.cli.main import app as root_app
 
-    # Force a wide terminal so Typer/Click + Rich don't truncate option
-    # names like ``--include-events``. CI runners default to 80 columns
-    # which is too narrow for the 6-column option block; pin to 200
-    # via env var so the substring assertions below are stable across
-    # local/CI/Linux/macOS.
-    result = runner.invoke(
-        root_app, ["cloud", "runs", "--help"], env={"COLUMNS": "200"}
-    )
+    # 1) Verify --help runs cleanly (entry point reachable + no template
+    #    parse errors). Output text-vs-Rich rendering is non-portable in
+    #    non-TTY CliRunner mode (Rich forces width=80 regardless of the
+    #    COLUMNS env var, which truncates wide option names like
+    #    ``--include-events`` on CI but not locally), so we only assert
+    #    the help command exits cleanly here and rely on Click's own
+    #    parameter introspection for the option-set check below.
+    result = runner.invoke(root_app, ["cloud", "runs", "--help"])
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
-    # Spec §2.5 — we check the four flag fragments + the daemon/cloud
-    # invariants. We do NOT pin the entire help block verbatim because
-    # Typer auto-formats option columns based on terminal width.
     assert "Usage" in out
     assert "TASK_ID" in out
-    assert "--limit" in out
-    assert "--cursor" in out
-    assert "--json" in out
-    assert "--include-events" in out
+
+    # 2) Click introspection — bypasses the Rich rendering path entirely.
+    # Walk the Typer/Click command tree to confirm the four spec §2.5
+    # options (--limit, --cursor, --json, --include-events) are
+    # registered on the runs command. This is the canonical contract
+    # check; the Rich help text is only the user-facing surface.
+    from typer.main import get_command
+
+    cli = get_command(root_app)
+    cloud_cmd_obj = cli.commands["cloud"]
+    runs_cmd_obj = cloud_cmd_obj.commands["runs"]
+    option_names = {opt for p in runs_cmd_obj.params for opt in p.opts}
+    expected_options = {"--limit", "--cursor", "--json", "--include-events"}
+    missing = expected_options - option_names
+    assert not missing, (
+        f"missing options in `popola cloud runs`: {sorted(missing)}; "
+        f"registered: {sorted(option_names)}"
+    )
+
+    # 3) Help-doc body sanity (the substring is always present even at
+    # 80 cols since the description line is not in the option block).
     assert "Cloud Agents" in out or "cloud-agent" in out
 
 
