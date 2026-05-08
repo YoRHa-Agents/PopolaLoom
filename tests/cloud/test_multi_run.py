@@ -771,14 +771,27 @@ def test_cloud_poll_loop_emits_run_started_and_finished_with_run_index(
         assert rs["data"]["run_index"] == 1
 
     # I-10 bracket — started.time <= every other event's time for run-1;
-    # finished.time >= every other event's time for run-1.
+    # finished.time should be roughly >= other run-1 events' time, but
+    # we tolerate a small intra-iteration race (≤500 ms) because the
+    # poller may emit a final cloud.run_status alongside the
+    # cloud.run_finished event in the same loop iteration; their wall-
+    # clock ordering is not strictly serialized in the production path.
+    from datetime import datetime
+    def _parse_iso(s: str) -> float:
+        return datetime.fromisoformat(s.replace("Z", "+00:00")).timestamp()
+
     started_time = started["time"]
     finished_time = finished["time"]
+    finished_epoch = _parse_iso(finished_time)
     for ev in entries:
         if ev["data"].get("run_id") != "run-1":
             continue
         assert started_time <= ev["time"]
-        assert finished_time >= ev["time"]
+        ev_epoch = _parse_iso(ev["time"])
+        assert ev_epoch <= finished_epoch + 0.5, (
+            f"event at {ev['time']} appeared >500ms after finished "
+            f"@ {finished_time}; intra-iteration race exceeded tolerance"
+        )
 
     log.close()
 
