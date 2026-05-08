@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://popolaloom.local/schemas/cloud_runs_v1.json",
+  "title": "popola cloud runs --json (v0.8.8 T2.4.1)",
+  "description": "Schema for the JSON output of `popola cloud runs <task_id> --json`. Mirrors `runs-subcommand-spec.md` §4.1 verbatim.",
+  "type": "object",
+  "required": ["task_id", "agent_id", "runs", "next_cursor", "has_more"],
+  "additionalProperties": false,
+  "properties": {
+    "task_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Echo of the CLI argument (popola-internal task id)."
+    },
+    "agent_id": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Cursor durable agent id (`bc-...`) resolved from TaskHandle."
+    },
+    "runs": {
+      "type": "array",
+      "description": "Mirrors Cursor `items[]` (mapped to popola schema). Newest run first.",
+      "items": {
+        "type": "object",
+        "required": [
+          "run_id",
+          "run_index",
+          "state",
+          "created_at",
+          "updated_at",
+          "wall_clock_s",
+          "model",
+          "events_summary"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "run_id": {
+            "type": "string",
+            "minLength": 1,
+            "description": "Full Cursor `id` — NOT truncated (table truncation is render-only)."
+          },
+          "run_index": {
+            "type": "integer",
+            "minimum": 0,
+            "description": "Derived per spec §3.1; newest = highest."
+          },
+          "state": {
+            "type": "string",
+            "description": "Lowercased Cursor `status` (creating / running / finished / cancelled / expired / error)."
+          },
+          "created_at": {
+            "type": "string",
+            "description": "Verbatim Cursor `createdAt` (ISO-8601)."
+          },
+          "updated_at": {
+            "type": "string",
+            "description": "Verbatim Cursor `updatedAt` (ISO-8601)."
+          },
+          "wall_clock_s": {
+            "type": "number",
+            "minimum": 0,
+            "description": "(updatedAt - createdAt).total_seconds() for terminal runs; (now - createdAt) for live."
+          },
+          "model": {
+            "type": ["string", "null"],
+            "description": "Agent-level model id; null when the parent agent lookup failed or returned no `model`."
+          },
+          "events_summary": {
+            "anyOf": [
+              {
+                "type": "object",
+                "required": [
+                  "tool_call_count",
+                  "assistant_message_count",
+                  "had_error",
+                  "first_event_at",
+                  "last_event_at"
+                ],
+                "additionalProperties": false,
+                "properties": {
+                  "tool_call_count": { "type": "integer", "minimum": 0 },
+                  "assistant_message_count": { "type": "integer", "minimum": 0 },
+                  "had_error": { "type": "boolean" },
+                  "first_event_at": { "type": ["string", "null"] },
+                  "last_event_at": { "type": ["string", "null"] }
+                }
+              },
+              { "type": "null" }
+            ],
+            "description": "Populated only when --include-events was passed; else null."
+          }
+        }
+      }
+    },
+    "next_cursor": {
+      "type": ["string", "null"],
+      "description": "Cursor `nextCursor` (verbatim)."
+    },
+    "has_more": {
+      "type": "boolean",
+      "description": "Derived: `next_cursor is not None`."
+    }
+  }
+}

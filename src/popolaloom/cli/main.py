@@ -87,12 +87,18 @@ def _register_subcommand_groups() -> None:
     group (``install`` / ``doctor`` / ``upgrade``) and the standalone
     ``popola doctor`` aggregate-health verb (single command, not a
     subcommand group, per plan §S4.E).
+
+    v0.8.8 T2.4.1 (Q-C-1 偏离默认): registers the new ``popola cloud``
+    subcommand group whose first verb is ``runs`` — list cloud-agent
+    run history per ``runs-subcommand-spec.md`` §2.2.
     """
+    from popolaloom.cli.cloud_cmd import app as cloud_app
     from popolaloom.cli.doctor_cmd import doctor_command
     from popolaloom.cli.eval import app as eval_app
     from popolaloom.cli.handoff_cmd import app as handoff_app
     from popolaloom.cli.init_cmd import app as init_app
     from popolaloom.cli.popolad import app as popolad_app
+    from popolaloom.cli.relay_cmd import relay_command
     from popolaloom.cli.skill_cmd import app as skill_app
 
     app.add_typer(popolad_app, name="popolad", help="Manage popolad daemon process")
@@ -112,6 +118,12 @@ def _register_subcommand_groups() -> None:
         name="handoff",
         help="Inspect / archive on-disk handoff envelopes (v0.7.2+)",
     )
+    app.add_typer(
+        cloud_app,
+        name="cloud",
+        help="Cloud-agent (cursor-cloud runtime) introspection verbs.",
+    )
+    app.command(name="relay")(relay_command)
     app.command(name="doctor")(doctor_command)
 
 
@@ -355,11 +367,39 @@ def dispatch(
 def status(
     task_id: str = typer.Argument(..., help="Task identifier returned by `popola dispatch`."),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
+    verbose: bool = typer.Option(
+        False,
+        "--verbose",
+        help=(
+            "v0.8.8 (Q-C-2): show the cost / model / wall-clock surface "
+            "per cost-fields.md §3.1. Default off — the surface is opt-in "
+            "to avoid promoting fabricated cost numbers (cost is always "
+            "rendered as 'cost: n/a' since Cursor's public REST/SSE API "
+            "does not expose per-run cost in v0.8.8). With --json, adds "
+            "a 'verbose' block per spec §3.2 (10 keys)."
+        ),
+    ),
 ) -> None:
-    """Query a task's runtime status (state / pid / exit_code / timestamps)."""
+    """Query a task's runtime status (state / pid / exit_code / timestamps).
+
+    v0.8.8 T2.1.2 (Q-C-2 ``cost-fields.md``):
+
+    - Without ``--verbose`` the response shape is unchanged from v0.8.7
+      — no cost block in the table, no ``verbose`` key in the JSON.
+    - With ``--verbose`` the table appends a one-liner
+      ``cost: n/a  model: <id|->  [mode: max]  wall: NN.Ns  link: <url>``
+      and the JSON gains a ``verbose`` object per spec §3.2.
+
+    The ``cost: n/a`` literal is locked: PopolaLoom does NOT fabricate
+    per-run cost numbers (no authoritative source in the public Cloud
+    Agents v1 API). Future Admin-API correlation is opt-in and will
+    surface as ``cost: ~$X.XX (admin-est)`` behind a separate config
+    knob.
+    """
     try:
         with make_sync_client() as client:
-            r = client.get(f"/status/{task_id}")
+            params: dict[str, Any] = {"verbose": "true"} if verbose else {}
+            r = client.get(f"/status/{task_id}", params=params)
     except httpx.ConnectError as exc:
         _render_connect_error(exc)
         return
@@ -373,8 +413,16 @@ def status(
 
     info = r.json()
 
+    busy_line = _build_status_busy_line(task_id)
+
     if json_out:
         typer.echo(json.dumps(info, ensure_ascii=False))
+        if busy_line is not None:
+            # Q-C-7 default-visibility: surface the WAITING marker even
+            # in --json mode so machine consumers (status pollers) see
+            # the same signal humans do; written to stderr so JSON
+            # parsers reading stdout are unaffected.
+            typer.echo(busy_line, err=True)
         return
 
     table = Table(title=f"Task {task_id}", show_header=False)
@@ -396,6 +444,245 @@ def status(
         value = info.get(key)
         table.add_row(key, "" if value is None else str(value))
     _console_out.print(table)
+
+    # v0.8.8 T2.2.2 (Q-C-7): default-visible WAITING line surfaced
+    # below the table whenever the latest unmatched ``cloud.queued_quota_exceeded``
+    # / ``cloud.busy_queued`` event indicates the daemon is parked on a
+    # 429 backoff or 409 agent_busy queue. This is disjoint from
+    # T2.1.2's --verbose path (the cost line); both can render in the
+    # same invocation.
+    if busy_line is not None:
+        typer.echo(busy_line)
+
+    if verbose:
+        cost_line = _format_verbose_cost_line(info.get("verbose"))
+        typer.echo(cost_line)
+
+
+def _build_status_busy_line(task_id: str) -> str | None:
+    """Compose the ``WAITING:`` line for ``popola status`` (Q-C-7).
+
+    Per ``quota-config.md`` §5.2, ``popola status`` at default verbosity
+    must surface a single line summarising the latest
+    ``cloud.queued_quota_exceeded`` (or ``cloud.busy_queued``) event
+    until a matching exit event arrives. Returns ``None`` when the task
+    is not in any waiting state — the caller suppresses the line entirely
+    in that case so non-throttled tasks render as before.
+
+    The events log lives at ``$POPOLA_HOME/events/<task_id>.jsonl``;
+    we read it directly rather than adding a new RPC method (the daemon
+    already owns the file's authoritative writes; the CLI is purely a
+    reader here, so concurrent writes are safe via ``EventLog``'s
+    ``O_APPEND`` semantics).
+    """
+    events = _read_events_for_task(task_id)
+    if not events:
+        return None
+    return _busy_line_from_events(events)
+
+
+def _events_path_for_task(task_id: str) -> Path:
+    """Resolve ``$POPOLA_HOME/events/<task_id>.jsonl`` (mirrors daemon).
+
+    Centralised here so the WAITING surface and any future per-task
+    event peek share one path resolver — keeps the CLI's view of
+    ``$POPOLA_HOME`` consistent with :func:`_socket_path`.
+    """
+    home = os.environ.get("POPOLA_HOME")
+    base = Path(home).expanduser().resolve() if home else Path.home() / ".popola"
+    return base / "events" / f"{task_id}.jsonl"
+
+
+def _read_events_for_task(task_id: str) -> list[dict[str, Any]]:
+    """Tolerantly read every NDJSON event for ``task_id``.
+
+    Non-existent file → ``[]`` (the task may be local, or events may not
+    have been written yet). Per workspace rule "No Silent Failures" we
+    log decode errors at DEBUG so operators grepping the daemon log can
+    still see them — but the CLI's status surface is non-fatal, so a
+    bad line skips rather than aborts.
+    """
+    path = _events_path_for_task(task_id)
+    try:
+        text = path.read_text(encoding="utf-8")
+    except (OSError, UnicodeDecodeError) as exc:
+        logger.debug("status busy-line: cannot read %s: %s", path, exc)
+        return []
+
+    events: list[dict[str, Any]] = []
+    for line_no, raw_line in enumerate(text.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line:
+            continue
+        try:
+            events.append(json.loads(line))
+        except json.JSONDecodeError as exc:
+            logger.debug(
+                "status busy-line: skipping corrupt line %d in %s: %s",
+                line_no,
+                path,
+                exc,
+            )
+    return events
+
+
+def _busy_line_from_events(events: list[dict[str, Any]]) -> str | None:
+    """Pick a WAITING summary from a per-task event stream (or ``None``).
+
+    Decision tree (per ``quota-config.md`` §5.2 + §4.3):
+
+    1. Walk events in chronological order tracking the most recent
+       ``cloud.queued_quota_exceeded`` (rate-limit backoff) and
+       ``cloud.busy_queued`` (409 agent_busy queue).
+    2. Each is "cleared" by a matching exit event:
+       - ``cloud.queued_quota_exceeded`` cleared by ``cloud.queue_exit``
+         with ``outcome="success"`` (other outcomes leave the line up
+         briefly so the eventual ``task.failed`` rendering takes over).
+       - ``cloud.busy_queued`` cleared by ``cloud.busy_dispatched`` or
+         ``cloud.busy_timeout``.
+    3. The most-recent uncleared event of either kind wins; if both are
+       uncleared we prefer the agent_busy line because it carries the
+       longer wait window (per spec §5.2 priority).
+    4. ``task.completed`` / ``task.failed`` / ``task.canceled`` clears
+       both kinds (the task is over).
+    """
+    pending_quota: dict[str, Any] | None = None
+    pending_busy: dict[str, Any] | None = None
+    quota_ts: str | None = None
+    busy_ts: str | None = None
+
+    for ev in events:
+        ev_type = ev.get("type") if isinstance(ev, dict) else None
+        if not isinstance(ev_type, str):
+            continue
+        data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+        if ev_type == "cloud.queued_quota_exceeded":
+            pending_quota = data
+            quota_ts = ev.get("time") if isinstance(ev.get("time"), str) else None
+        elif ev_type == "cloud.queue_exit":
+            outcome = data.get("outcome") if isinstance(data, dict) else None
+            if outcome == "success" or outcome is None:
+                pending_quota = None
+                quota_ts = None
+        elif ev_type == "cloud.busy_queued":
+            pending_busy = data
+            busy_ts = ev.get("time") if isinstance(ev.get("time"), str) else None
+        elif ev_type in {"cloud.busy_dispatched", "cloud.busy_timeout"}:
+            pending_busy = None
+            busy_ts = None
+        elif ev_type in {"task.completed", "task.failed", "task.canceled"}:
+            pending_quota = None
+            pending_busy = None
+            quota_ts = None
+            busy_ts = None
+
+    if pending_busy is None and pending_quota is None:
+        return None
+
+    # Priority: busy (longer wait window) > quota (short backoff) when
+    # both are uncleared simultaneously — see spec §5.2.
+    if pending_busy is not None:
+        return _format_busy_queue_line(pending_busy)
+    assert pending_quota is not None
+    _ = quota_ts  # ts retained for future enrichment (latency display)
+    _ = busy_ts
+    return _format_quota_waiting_line(pending_quota)
+
+
+def _format_quota_waiting_line(payload: dict[str, Any]) -> str:
+    """Format the rate-limit waiting line (``WAITING: rate_limit ...``).
+
+    Spec example (§5.2): ``WAITING: rate_limit retry 2/5 next=~2.5s``.
+
+    The current ``_retrying_request`` helper emits
+    ``cloud.queued_quota_exceeded`` once per backoff sequence (NOT per
+    attempt), so we have ``max_retries`` and (optionally)
+    ``retry_after_ms`` but not the exact attempt counter. We render
+    ``retry 1/<max>`` to match the spec example shape — operators
+    reading the line know the daemon is parked on the *first* observed
+    backoff in the current sequence; subsequent retries are silent
+    until exit (the once-per-sequence emit policy is the design intent
+    per spec §3.3).
+    """
+    max_retries = payload.get("max_retries")
+    retry_after_ms = payload.get("retry_after_ms")
+    max_str = (
+        str(max_retries)
+        if isinstance(max_retries, int) and max_retries > 0
+        else "?"
+    )
+    if isinstance(retry_after_ms, (int, float)) and retry_after_ms >= 0:
+        next_segment = f" next=~{float(retry_after_ms) / 1000.0:.1f}s"
+    else:
+        next_segment = ""
+    return f"WAITING: rate_limit retry 1/{max_str}{next_segment}"
+
+
+def _format_busy_queue_line(payload: dict[str, Any]) -> str:
+    """Format the 409 agent_busy waiting line (``WAITING: agent_busy ...``).
+
+    Per spec §5.2 the queue path is symmetric with the rate-limit path
+    (both default-visible). We surface the queue position and the
+    deadline so operators can decide whether to ``popola cancel <task>``
+    or wait it out — the deadline is the most actionable bit.
+    """
+    agent_id = payload.get("agent_id")
+    position = payload.get("queue_position")
+    deadline_ts = payload.get("deadline_ts")
+
+    parts: list[str] = ["WAITING: agent_busy"]
+    if isinstance(agent_id, str) and agent_id:
+        parts.append(f"agent={agent_id}")
+    if isinstance(position, int) and position > 0:
+        parts.append(f"position={position}")
+    if isinstance(deadline_ts, str) and deadline_ts:
+        parts.append(f"deadline={deadline_ts}")
+    elif deadline_ts is None:
+        # ``None`` is the "wait forever" sentinel (queue_max_wait_s=0).
+        parts.append("deadline=never")
+    return " ".join(parts)
+
+
+def _format_verbose_cost_line(verbose_block: Any) -> str:
+    """Render the §3.1 one-liner from the daemon's verbose block.
+
+    Format (per ``cost-fields.md`` §3.1):
+
+    ``cost: n/a  model: <id|->  [mode: max]  wall: NN.Ns  link: <url|->``
+
+    Rules:
+
+    - ``cost: n/a`` is always literal (Q-C-2: no fabricated numbers).
+    - ``model: -`` when ``model_id`` is ``None`` (default substituted).
+    - ``mode:`` segment omitted entirely when mode is ``"std"`` (keeps
+      the line short in the common case per §3.1 example).
+    - ``wall:`` shows 1-decimal seconds; ``-`` when missing.
+    - ``link:`` from ``agent_url``; ``-`` when missing (local task).
+    """
+    if not isinstance(verbose_block, dict):
+        return "cost: n/a  model: -  wall: -  link: -"
+
+    model_id = verbose_block.get("model_id")
+    model_str = model_id if isinstance(model_id, str) and model_id else "-"
+
+    model_mode = verbose_block.get("model_mode")
+    mode_segment = ""
+    if isinstance(model_mode, str) and model_mode and model_mode != "std":
+        mode_segment = f"mode: {model_mode}  "
+
+    wall = verbose_block.get("wall_clock_s")
+    wall_str = (
+        f"{float(wall):.1f}s"
+        if isinstance(wall, (int, float)) and wall >= 0
+        else "-"
+    )
+
+    link = verbose_block.get("agent_url")
+    link_str = link if isinstance(link, str) and link else "-"
+
+    return (
+        f"cost: n/a  model: {model_str}  {mode_segment}wall: {wall_str}  link: {link_str}"
+    )
 
 
 # ── attach ────────────────────────────────────────────────────────────────
@@ -1194,6 +1481,58 @@ def _summarize_data(event_type: str, data: Any) -> str:
             f"run_id={data.get('run_id')!r} "
             f"initial_phase={data.get('initial_phase')!r}"
         )
+    # v0.8.8 T2.2.2 (Q-C-7 default-visibility): 429 / 409 queue events
+    # render with a stable, grep-friendly prefix so attach UIs and tests
+    # can match on the literal "WAITING:" / "DISPATCHED:" / "TIMEOUT:"
+    # tokens. None of these events are debug-filtered: they ship inline
+    # alongside the existing cloud.run_status / cloud.sse.* feed.
+    if event_type == "cloud.queued_quota_exceeded":
+        return _format_quota_waiting_line(data)
+    if event_type == "cloud.queue_exit":
+        outcome = data.get("outcome") if isinstance(data, dict) else None
+        attempts = data.get("attempts") if isinstance(data, dict) else None
+        wait_ms = data.get("total_wait_ms") if isinstance(data, dict) else None
+        exit_parts: list[str] = ["QUEUE_EXIT"]
+        if isinstance(outcome, str) and outcome:
+            exit_parts.append(f"outcome={outcome}")
+        if isinstance(attempts, int):
+            exit_parts.append(f"attempts={attempts}")
+        if isinstance(wait_ms, (int, float)) and wait_ms >= 0:
+            exit_parts.append(f"total_wait={float(wait_ms) / 1000.0:.1f}s")
+        return " ".join(exit_parts)
+    if event_type == "cloud.busy_queued":
+        return _format_busy_queue_line(data)
+    if event_type == "cloud.busy_dispatched":
+        agent = data.get("agent_id") if isinstance(data, dict) else None
+        prev_run = data.get("prev_run_id") if isinstance(data, dict) else None
+        new_run = data.get("new_run_id") if isinstance(data, dict) else None
+        waited = data.get("waited_ms") if isinstance(data, dict) else None
+        bits: list[str] = ["DISPATCHED:"]
+        if isinstance(agent, str) and agent:
+            bits.append(f"agent={agent}")
+        if isinstance(prev_run, str) and prev_run:
+            bits.append(f"prev_run={prev_run}")
+        if isinstance(new_run, str) and new_run:
+            bits.append(f"new_run={new_run}")
+        if isinstance(waited, (int, float)) and waited >= 0:
+            bits.append(f"waited={float(waited) / 1000.0:.1f}s")
+        return " ".join(bits)
+    if event_type == "cloud.busy_timeout":
+        agent = data.get("agent_id") if isinstance(data, dict) else None
+        run_id = (
+            data.get("current_run_id_at_timeout")
+            if isinstance(data, dict)
+            else None
+        )
+        waited = data.get("waited_ms") if isinstance(data, dict) else None
+        bits = ["TIMEOUT: agent_busy"]
+        if isinstance(agent, str) and agent:
+            bits.append(f"agent={agent}")
+        if isinstance(run_id, str) and run_id:
+            bits.append(f"current_run={run_id}")
+        if isinstance(waited, (int, float)) and waited >= 0:
+            bits.append(f"waited={float(waited) / 1000.0:.1f}s")
+        return " ".join(bits)
     if event_type == "process.started":
         return f"pid={data.get('pid')} session_id={data.get('session_id')}"
     if event_type == "stream.truncated":

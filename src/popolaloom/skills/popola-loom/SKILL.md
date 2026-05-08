@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.7
+version: 0.8.8
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -322,6 +322,88 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
 **幂等 + 容灾**：同 `(task_id, cursor_agent_id, cursor_run_id, question_text)` 在 1 h 内重复调，后到的请求短路返回原 `hitl_id` + `deduped: true`（不重发卡片，不写新 `popola_hitl` 行）。`popolad` 重启不影响 dedup，因为 SQLite 是唯一真相源（无内存 cache）。
 
 出处：v0.8.7 设计与契约见 `.local/research/v0.8.7_hitl/{deployment-modes,mcp-tool-contract,lark-card-spec,long-tool-call-probe}.md`；安全 gate 见 `.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md`（10 项 lateral-movement + 4 项 secret hygiene + 4 项 idempotency + 4 项 audit + 3 项 approval policy）。
+
+### Workflow 8 — Cross-PR relay (`popola relay`, v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+> **⚠️ Q-C-4 deviation**：v0.8.8 把 `popola relay <task_a>` 默认改成 **auto-dispatch**（偏离默认；详见 [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) 顶部 callout 与 [`docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088)）。配套 5 项强制缓解：repo allowlist（默认 `[]` 阻断一切）+ `0o600` audit log + detect-secrets 预扫（6 种 token shape）+ RELEASE_NOTES callout + CI 隔离测试。
+
+把已完成的 cloud `task_a` 的 PR / branch / summary 接力成新的 cloud `task_b`，3 步：
+
+1. **预演（强烈推荐先 `--dry-run`）**：跑一遍**完整** policy gate（allowlist + secret scan + size cap），写一行 `mode="dry-run"` audit row，**不发任何 cloud API 请求**：
+   ```bash
+   popola relay v088-task-abc --dry-run --json | jq
+   # → {"mode": "dry-run", "outcome": "would_dispatch",
+   #     "source_task": "v088-task-abc", "target_repo": "neolix-ai/popola-loom",
+   #     "model": "composer-2", "prompt_sha256": "9c1f...",
+   #     "audit_path": ".local/.agent/archive/relay/v088-task-abc.jsonl",
+   #     "dispatched_at": null}
+   ```
+2. **确认 audit 路径 + sha256 后真发**（默认就是 auto；同 prompt 同 target 同 idempotency_key 在 1 h 内重复发会短路）：
+   ```bash
+   popola relay v088-task-abc
+   # → DISPATCHED v088-task-def → https://github.com/neolix-ai/popola-loom
+   #   model=composer-2  prUrl=https://github.com/neolix-ai/popola-loom/pull/42
+   #   audit=.local/.agent/archive/relay/v088-task-abc.jsonl
+   ```
+3. **跨 org 接力（罕见、需要显式 override）**：默认 `[cloud.relay] repo_allowlist = []` 会**阻断**任何 target；要想跨 allowlist 必须 `--confirm-allowlist`，且会在 stderr 打 WARN + 在 audit 行记 `gate_decision="override_confirm_allowlist"`：
+   ```bash
+   popola relay v088-task-abc \
+     --target-repo https://github.com/external/fork \
+     --confirm-allowlist
+   # WARNING: dispatching relay outside repo_allowlist via --confirm-allowlist
+   #          (target=external/fork); audit row recorded at <path>
+   # DISPATCHED v088-task-ghi → https://github.com/external/fork  ...
+   ```
+
+**5 项缓解（M1..M5）的快速记忆**（详见 [USER_GUIDE Cross-PR relay](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088)）：(1) **repo_allowlist 默认 `[]` 阻断一切**；(2) `0o600` append-only audit log，crash 也留 `dispatch_inflight` 行；(3) detect-secrets 预扫 6 种 shape（AWS/GitHub PAT/Stripe/JWT/Slack/high-entropy），命中即 exit 1 + `…<last4>` 脱敏；(4) RELEASE_NOTES 顶部 callout（M4 lint 强制）；(5) `tests/cli/test_relay_safety.py` 在默认 CI 走道里跑。要恢复 v0.8.7 「人工确认」默认行为：在 `popolad.toml` 设 `[cloud.relay] mode = "confirm"`。
+
+### Workflow 9 — `popola cloud runs` 列出云端 run 历史（v0.8.8+）
+
+<!-- updated: 2026-05-08 -->
+
+`popola cloud runs <task_id>` 包装 Cursor `GET /v1/agents/{id}/runs`，按 newest-first 列出该 cloud agent 的全部 run（含手工通过 `https://cursor.com/agents` 浏览器追加的）；`popola list` 仍保持 single-row-per-task。完整 dispatch → wait → cloud runs 一条龙：
+
+1. **派发一个 cloud 任务**：
+   ```bash
+   export CURSOR_API_KEY="cr_..."
+   popola dispatch "重构 caching 模块并补齐 unit test" \
+     --cli=cursor-cloud \
+     --cli-flag repo_url=https://github.com/neolix-ai/popola-loom \
+     --cli-flag starting_ref=main \
+     --cli-flag model=composer-2
+   # → cursor-cloud-deadbeef
+   ```
+2. **等任务跑（attach 跟随；多 run 时自动加 `[run-N]` 前缀 + 分隔行）**：
+   ```bash
+   popola attach cursor-cloud-deadbeef --follow
+   # [run-0] STARTING ───► RUNNING
+   # [run-0] tool_call: read_file(path="src/cache.py")
+   # [run-0] FINISHED (exit 0)
+   # ─── follow-up: run-1 (parent=run-0) ───
+   # [run-1] CREATING ───► RUNNING ...
+   ```
+3. **列出全部 run（默认 6 列表格）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef
+   # ┃ run_id              ┃ run_index ┃ state    ┃ created_at                  ┃ wall_clock ┃ model      ┃
+   # │ run-yyyyyyyy-00…    │ 1         │ finished │ 2026-05-08T18:30:00.000Z    │ 00:32:00   │ composer-2 │
+   # │ run-xxxxxxxx-00…    │ 0         │ finished │ 2026-05-08T17:00:00.000Z    │ 00:15:00   │ composer-2 │
+   ```
+4. **要 JSON 写脚本（`--json`，full `run_id` 不截断；分页用 `--cursor`）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef --json --limit 100 | jq '.runs[] | .run_id'
+   ```
+5. **要 events_summary（`--include-events` 慢路径，1 row 多 1 个 `GET /runs/{run_id}` round-trip）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef --include-events --json \
+     | jq '.runs[] | {run_index, state, events_summary}'
+   ```
+
+**和 `popola status --verbose` 的对比**：`status --verbose` 显示**单条最新 run**的 5 字段 cost block（`cost: n/a` + `model` + `wall` + `link` 等；honest disclosure，不编 cost 数字）；`popola cloud runs` 显示**全部 run 的可分页历史**。错误退出码：`task_id` 本地未知 → exit `4`（per Q-C-1 OQ-1，**与 `popola dispatch` 的 100 退出码不同**，CHANGELOG §Changed 显式记录此偏离）；401/403 → exit `77`（per Q-C-1 OQ-2，对齐 `_ERROR_CATALOG`）；429 / 5xx → exit `75`；403 plan_required → exit `78`。
+
+出处：wire 级细节见 `.local/research/v0.8.8_multi_run/runs-subcommand-spec.md`（`.local/` 仅本地存在，已 gitignore）。
 
 ## Configuration
 

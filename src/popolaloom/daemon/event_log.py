@@ -122,6 +122,21 @@ class EventLog:
         self._buffer_bytes = buffer_bytes
         self._fsync_interval_s = fsync_interval_s
         self._fd: IO[str] = self._path.open("a", buffering=buffer_bytes, encoding="utf-8")
+        # v0.8.8 T2.1.2 (cost-fields.md §5.2): EventLog files MUST be 0o600
+        # (owner-only) because they may carry undocumented payload extras
+        # incl. potential token / cost data per Q-C-2 sensitivity bound.
+        # `chmod` is best-effort on platforms that don't support it
+        # (e.g. some Windows mounts); the WARNING is a No-Silent-Failures
+        # disclosure so the operator can audit the deviation.
+        try:
+            os.chmod(self._path, 0o600)
+        except OSError as exc:
+            logger.warning(
+                "EventLog chmod 0o600 failed for %s: %s "
+                "(file may be world-readable; review §5.2)",
+                self._path,
+                exc,
+            )
         self._stop_event = threading.Event()
         self._fsync_thread: threading.Thread | None = None
         if fsync_interval_s > 0:
@@ -316,3 +331,124 @@ class EventLog:
                 self.close()
         except Exception:
             pass
+
+
+# ─── v0.8.8 T2.2.2 — typed wrappers for cloud.busy_* events ────────────────
+#
+# Per ``quota-config.md`` §5.1 + §5.2 the queue path emits three
+# default-visible events: ``cloud.busy_queued`` (on enqueue),
+# ``cloud.busy_dispatched`` (on successful re-issue), and
+# ``cloud.busy_timeout`` (on ``queue_max_wait_s`` expiry). These thin
+# helpers centralise the payload schema so the queue / drainer in
+# ``daemon/cloud_poller.py`` and any future relay path emit identical
+# wire shapes — Q-C-7 default-visibility lives or dies on this surface
+# being grep-able.
+#
+# Each helper accepts the :class:`EventLog` (or any duck-typed appender
+# exposing ``append(event_type, data) -> dict``) so unit tests can pass
+# a :class:`MagicMock`. ``Optional[EventLog]`` is rejected at the call
+# site, not here — a typed ``None`` would be a programming error.
+
+
+def record_busy_queued(
+    event_log: EventLog,
+    *,
+    task_id: str,
+    agent_id: str,
+    current_run_id: str,
+    queue_position: int,
+    deadline_ts: str | None = None,
+) -> dict[str, Any]:
+    """Emit ``cloud.busy_queued`` and return the rendered envelope.
+
+    Called when the daemon's :class:`PendingDispatchQueue` accepts a
+    follow-up dispatch that hit ``409 agent_busy`` while ``mode = "queue"``.
+    The envelope's ``deadline_ts`` is the ISO-8601 UTC string at which
+    :meth:`PendingDispatchDrainer` will give up; ``None`` indicates the
+    operator opted into ``queue_max_wait_s = 0`` (wait forever).
+
+    Args:
+        event_log: Append target.
+        task_id: PopolaLoom-internal task id of the queued dispatch.
+        agent_id: Cursor durable ``bc-...`` agent id whose run is busy.
+        current_run_id: The non-terminal run we are waiting on.
+        queue_position: 1-based position in the per-``agent_id`` FIFO.
+        deadline_ts: ISO-8601 UTC deadline; ``None`` for "wait forever".
+    """
+    data: dict[str, Any] = {
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "current_run_id": current_run_id,
+        "queue_position": queue_position,
+        "deadline_ts": deadline_ts,
+    }
+    return event_log.append("cloud.busy_queued", data)
+
+
+def record_busy_dispatched(
+    event_log: EventLog,
+    *,
+    task_id: str,
+    agent_id: str,
+    prev_run_id: str,
+    new_run_id: str,
+    waited_ms: int,
+) -> dict[str, Any]:
+    """Emit ``cloud.busy_dispatched`` and return the rendered envelope.
+
+    Called when the drainer successfully re-issues the queued payload —
+    the previous run finished and the follow-up is now its own
+    ``CREATING`` run. Attach UIs key off this event to dismiss the
+    ``WAITING:`` banner shown by ``popola status`` and ``popola attach``.
+
+    Args:
+        event_log: Append target.
+        task_id: PopolaLoom-internal task id of the now-dispatched task.
+        agent_id: Cursor agent id (same as the ``cloud.busy_queued`` peer).
+        prev_run_id: The terminal run we waited on (the reason the
+            ``409`` cleared).
+        new_run_id: The newly-issued run id (the ``id`` field of the
+            ``POST /v1/agents/{id}/runs`` response).
+        waited_ms: Total wait time in milliseconds, computed from the
+            queue's monotonic clock.
+    """
+    data: dict[str, Any] = {
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "prev_run_id": prev_run_id,
+        "new_run_id": new_run_id,
+        "waited_ms": waited_ms,
+    }
+    return event_log.append("cloud.busy_dispatched", data)
+
+
+def record_busy_timeout(
+    event_log: EventLog,
+    *,
+    task_id: str,
+    agent_id: str,
+    waited_ms: int,
+    current_run_id_at_timeout: str,
+) -> dict[str, Any]:
+    """Emit ``cloud.busy_timeout`` and return the rendered envelope.
+
+    Called when the drainer drops a queued dispatch after
+    ``queue_max_wait_s`` elapses. The CLI surfaces ``cli_exit=75`` (per
+    spec §6 — overload, NOT 102 because the wait expired, not the agent).
+
+    Args:
+        event_log: Append target.
+        task_id: PopolaLoom-internal task id of the dropped dispatch.
+        agent_id: Cursor agent id we were waiting on.
+        waited_ms: Total wait time in milliseconds.
+        current_run_id_at_timeout: The non-terminal run id we observed
+            at expiry (debug aid — the agent was *still* busy, so the
+            wait expired rather than the queue draining).
+    """
+    data: dict[str, Any] = {
+        "task_id": task_id,
+        "agent_id": agent_id,
+        "waited_ms": waited_ms,
+        "current_run_id_at_timeout": current_run_id_at_timeout,
+    }
+    return event_log.append("cloud.busy_timeout", data)

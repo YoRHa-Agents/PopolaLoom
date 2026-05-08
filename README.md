@@ -243,6 +243,16 @@ For step-by-step install with troubleshooting, see [`docs/QUICKSTART.md`](docs/Q
 
 > **Packaging note**: PopolaLoom vendors the ArkTower subset required for task persistence, so a wheel install does not need a sibling ArkTower checkout. If ArkTower later becomes a normal package dependency, [`VENDORING.md`](VENDORING.md) documents how to retire the vendored copy.
 
+## v0.8.8 highlights
+
+<!-- updated: 2026-05-08 -->
+
+v0.8.8 adds three layered cloud-runtime improvements on top of v0.8.7's Cloud HITL production tier — each is opt-in and documented in [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md):
+
+- **Multi-run support** for `--cli=cursor-cloud` — a single Cursor cloud agent (durable `agent.id`) now hosts N sequential follow-up runs via `POST /v1/agents/{id}/runs`; `popola attach --follow` renders chronologically with `[run-N]` prefixes + run-boundary dividers, and the EventLog NDJSON file is the durable cross-run history (per the Cursor SSE retention contract). New default-visible events `cloud.run_started` / `cloud.run_finished` bracket every run. New Q-C-1 deviation subcommand `popola cloud runs <task>` enumerates run history with paging, `--json`, and `--include-events`. See [`docs/USER_GUIDE.md#multi-run-cloud-agents-v088`](docs/USER_GUIDE.md#multi-run-cloud-agents-v088) and [`docs/USER_GUIDE.md#popola-cloud-runs--list-cloud-agent-run-history-v088`](docs/USER_GUIDE.md#popola-cloud-runs--list-cloud-agent-run-history-v088).
+- **Cost transparency on `popola status --verbose`** — opt-in `--verbose` flag surfaces a curated 5-field cost block (`cost: n/a` honest disclosure + `model` + `mode: max` segment + `wall` + `link`) per the locked Q-C-2 design. The Cursor Cloud Agents v1 API does not document any per-run cost or token usage on the public REST/SSE wire, so `cost: n/a` is the only honest value in v0.8.8 (no fabricated numbers); a `doc_anchor` URL in `--json --verbose` lets readers verify field provenance independent of PopolaLoom version. Default `popola status` output is unchanged. See [`docs/USER_GUIDE.md#cost-transparency--status---verbose-v088`](docs/USER_GUIDE.md#cost-transparency--status---verbose-v088).
+- **Auto-default `popola relay` with 5 mandatory mitigations** (Q-C-4 偏离默认) — new `popola relay <task_a>` subcommand turns the output of one cloud run into the input of a brand-new run, defaulting to **auto-dispatch** (deviates from the safer human-confirm default) on top of repo allowlist (`[]` blocks all relays out-of-the-box) + append-only audit log (`0o600`) + `detect-secrets` pre-flight scan covering 6 token shapes + a top-of-RELEASE_NOTES callout + CI isolation tests in the default lane. New `[cloud.backoff]` / `[cloud.busy_strategy]` config sections close the v0.8.7 quota observability gap with default-visible `cloud.queued_quota_exceeded` / `cloud.busy_*` events. See [`docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088`](docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088) and [`docs/USER_GUIDE.md#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088`](docs/USER_GUIDE.md#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088).
+
 ## Skills (v0.5.0+, two Skills as of v0.7.0)
 
 PopolaLoom ships TWO Skills that auto-load in host agents:
