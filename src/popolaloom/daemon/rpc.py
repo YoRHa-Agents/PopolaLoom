@@ -162,13 +162,37 @@ class CloudHITLRequestBody(BaseModel):
 
 
 class CloudHITLRequestResponse(BaseModel):
-    """Immediate acknowledgement for ``POST /hitl/cloud/request``."""
+    """Immediate acknowledgement for ``POST /hitl/cloud/request``.
+
+    v0.8.7 T2.1.3 additions:
+
+    - ``deduped`` is ``True`` when the daemon short-circuited a replay inside
+      the rolling 1-hour ``cloud_hitl.idempotency_window_s`` window
+      (``mcp-tool-contract.md`` §5). The MCP tool surfaces this back to the
+      cloud agent so retries are observably idempotent.
+    - ``status`` widens to also include ``"answered"`` because dedup hits on
+      already-answered rows return the existing row directly; the MCP tool
+      then resolves the answer via its long-poll loop without ever reaching
+      ``GET /hitl/cloud/wait``.
+
+    v0.8.7 M3 (REVIEW.md): ``lark_dispatched`` is ``True`` when the
+    bridge's Lark fan-out succeeded (or no notifier was wired); ``False``
+    when the bridge recorded a ``lark_unreachable`` failure during
+    :meth:`CloudHITLBridge.submit_request`. The MCP tool's
+    ``_make_timeout_envelope`` reads this flag to flip the user-facing
+    error code from ``timeout`` → ``lark_unreachable`` per contract §7
+    row 4 (Lark-unreachable scenario where the row was created but the
+    card never reached the human surfaces as a poll-then-error).
+    Defaults to ``True`` to preserve v0.8.5 wire compatibility.
+    """
 
     hitl_id: str
-    status: Literal["pending"] = "pending"
+    status: Literal["pending", "answered"] = "pending"
     deadline_at: str
     cursor_agent_id: str | None = None
     cursor_run_id: str | None = None
+    deduped: bool = False
+    lark_dispatched: bool = True
 
 
 class CloudHITLWaitAnswerPayload(BaseModel):
@@ -189,12 +213,37 @@ class CloudHITLWaitResponse(BaseModel):
 
 
 class CloudHITLAnswerBody(BaseModel):
-    """Body of ``POST /hitl/cloud/answer/{hitl_id}``."""
+    """Body of ``POST /hitl/cloud/answer/{hitl_id}``.
+
+    v0.8.7 C1 wiring: the optional ``cursor_agent_id`` / ``cursor_run_id``
+    fields let HTTP / MCP callers thread the mis-route defense kwargs
+    into :meth:`CloudHITLBridge.submit_answer`. When supplied AND
+    mismatched against the row's stored cursor tuple, the daemon
+    rejects the answer with HTTP 400 (per ``mcp-tool-contract.md``
+    §6.3 mis-route table). When omitted (legacy v0.8.5 callers) the
+    bridge keeps the un-validated path so existing integrations keep
+    working — this is a strict superset of the v0.8.5 schema.
+    """
 
     option_id: str = Field(..., min_length=1)
     reason: str | None = None
     responder_id: str = Field(..., min_length=1)
     channel: str = "cloud"
+    cursor_agent_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional cursor agent id; when set, the bridge rejects the "
+            "answer with HTTP 400 if the row's stored cursor_agent_id "
+            "does not match (mis-route defense per SECURITY R5)."
+        ),
+    )
+    cursor_run_id: str | None = Field(
+        default=None,
+        description=(
+            "Optional cursor run id; same mis-route defense as "
+            "cursor_agent_id above."
+        ),
+    )
 
 
 class CloudHITLAnswerResponse(BaseModel):
@@ -713,12 +762,33 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
 
     @app.post("/hitl/cloud/request", response_model=CloudHITLRequestResponse)
     async def hitl_cloud_request(req: CloudHITLRequestBody) -> CloudHITLRequestResponse:
-        """Persist a cloud-agent HITL prompt and fan out to Lark (best-effort)."""
+        """Persist a cloud-agent HITL prompt and fan out to Lark (best-effort).
+
+        v0.8.7 T2.1.3:
+
+        - Validates ``cursor_agent_id`` / ``cursor_run_id`` non-empty
+          (``invalid_context`` error per ``mcp-tool-contract.md`` §3.3 row 6).
+        - Auto-derives the ``idempotency_key`` (or honors a caller-supplied
+          ``metadata.idempotency_key``) and lets
+          :meth:`CloudHITLBridge.submit_request` perform the SQL-only 1-hour
+          dedup lookup; replays inside the window short-circuit to the
+          existing ``hitl_id`` with ``deduped=True``.
+        """
         bridge = bridge_for_daemon(popolad.hitl_store, send_lark=True)
         if bridge is None:
             raise HTTPException(
                 status_code=503,
                 detail="HITL store not wired up; popolad started without F4 wiring",
+            )
+        if not (req.cursor_agent_id and req.cursor_agent_id.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid_context: cursor_agent_id is required (non-empty)",
+            )
+        if not (req.cursor_run_id and req.cursor_run_id.strip()):
+            raise HTTPException(
+                status_code=400,
+                detail="invalid_context: cursor_run_id is required (non-empty)",
             )
         logger.info(
             "hitl.cloud.request entry task_id=%s cursor_agent_id=%s cursor_run_id=%s",
@@ -739,6 +809,9 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                 )
 
         event_log = popolad.event_log(req.task_id)
+        caller_meta = dict(req.metadata or {})
+        idem_key = caller_meta.pop("idempotency_key", None)
+        idem_key_str = idem_key if isinstance(idem_key, str) and idem_key else None
 
         def _submit() -> Any:
             return bridge.submit_request(
@@ -748,8 +821,9 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                 prompt_title=req.prompt_title,
                 prompt_body=req.prompt_body,
                 options=req.options,
-                metadata=req.metadata,
+                metadata=caller_meta,
                 timeout_s=req.timeout_s,
+                idempotency_key=idem_key_str,
                 event_log=event_log,
             )
 
@@ -763,7 +837,7 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
             ) from exc
 
         deadline_iso = cloud_req.deadline_at.isoformat()
-        if event_log is not None:
+        if event_log is not None and not cloud_req.deduped:
             try:
                 event_log.append(
                     "hitl.cloud_requested",
@@ -784,17 +858,26 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                     cloud_req.hitl_id,
                 )
 
+        existing_status = "pending"
+        if cloud_req.deduped:
+            row = bridge.store.get(cloud_req.hitl_id)
+            if row is not None and str(row.get("status", "")) == "answered":
+                existing_status = "answered"
         logger.info(
-            "hitl.cloud.request exit hitl_id=%s task_id=%s deadline_at=%s",
+            "hitl.cloud.request exit hitl_id=%s task_id=%s deadline_at=%s deduped=%s",
             cloud_req.hitl_id,
             req.task_id,
             deadline_iso,
+            cloud_req.deduped,
         )
         return CloudHITLRequestResponse(
             hitl_id=cloud_req.hitl_id,
+            status=existing_status,  # type: ignore[arg-type]
             deadline_at=deadline_iso,
             cursor_agent_id=req.cursor_agent_id,
             cursor_run_id=req.cursor_run_id,
+            deduped=cloud_req.deduped,
+            lark_dispatched=cloud_req.lark_dispatched,
         )
 
     @app.get("/hitl/cloud/wait/{hitl_id}", response_model=None)
@@ -844,11 +927,20 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
         "/hitl/cloud/answer/{hitl_id}",
         responses={
             200: {"model": CloudHITLAnswerResponse},
+            400: {"description": "mis-route — cursor tuple mismatch"},
             409: {"model": CloudHITLAnswerResponse},
         },
     )
     async def hitl_cloud_answer(hitl_id: str, req: CloudHITLAnswerBody) -> JSONResponse:
-        """Record a HITL answer from MCP/CLI/cloud surfaces (non-Lark callers)."""
+        """Record a HITL answer from MCP/CLI/cloud surfaces (non-Lark callers).
+
+        v0.8.7 C1 wiring: when the caller supplies ``cursor_agent_id`` /
+        ``cursor_run_id``, those are threaded into
+        :meth:`CloudHITLBridge.submit_answer` as the ``expected_cursor_*``
+        mis-route defense. A mismatch between the inbound tuple and the
+        row's stored tuple → ``HTTP 400`` with the bridge's
+        ``"mis-route:..."`` descriptor (per SECURITY R5 + invariant I-4).
+        """
         bridge = bridge_for_daemon(popolad.hitl_store, send_lark=False)
         if bridge is None:
             raise HTTPException(status_code=503, detail="HITL store not wired up")
@@ -866,6 +958,9 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
             raise HTTPException(status_code=404, detail=f"HITL id not found: {hitl_id}")
         task_id = str(row_before.get("task_id") or "")
 
+        expected_agent = req.cursor_agent_id
+        expected_run = req.cursor_run_id
+
         def _answer() -> tuple[bool, str | None]:
             return bridge.submit_answer(
                 hitl_id,
@@ -873,13 +968,33 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                 responder_id=req.responder_id,
                 reason=req.reason,
                 channel=channel,
+                expected_cursor_agent_id=expected_agent,
+                expected_cursor_run_id=expected_run,
             )
 
-        ok, already = await asyncio.to_thread(_answer)
+        ok, descriptor = await asyncio.to_thread(_answer)
+
+        # C1: a mis-route descriptor is shaped ``mis-route:expected_agent=...``
+        # and indicates the bridge's _check_mis_route triggered. Translate
+        # to HTTP 400 per acceptance criterion (c). Ordinary "already
+        # answered" rejections still surface as HTTP 409 (the legacy
+        # path) since they reflect a successful first-responder race
+        # rather than an authentication-style failure.
+        if not ok and descriptor and descriptor.startswith("mis-route:"):
+            logger.warning(
+                "hitl.cloud.answer rejected mis-route hitl_id=%s descriptor=%s",
+                hitl_id,
+                descriptor,
+            )
+            raise HTTPException(
+                status_code=400,
+                detail=descriptor,
+            )
+
         payload = CloudHITLAnswerResponse(
             ok=ok,
             channel=channel if ok else None,
-            already_answered_by=None if ok else (already or "unknown"),
+            already_answered_by=None if ok else (descriptor or "unknown"),
         )
 
         event_log = popolad.event_log(task_id) if task_id else None

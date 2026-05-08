@@ -156,22 +156,27 @@ def test_skill_md_version_matches_package(
 
 
 def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
-    """Body length sits in ``[8 000, 20 000]`` chars (~ 2 000–5 000 tokens).
+    """Body length sits in ``[8 000, 28 000]`` chars (~ 2 000–7 000 tokens).
 
-    Original Stage S3 window was ``[8 000, 16 000]`` (target ~ 11 000
-    chars / ~ 2 800 tokens, per plan §S3.7).  v0.8.6 T2.3.2 docs sync
-    added SSE ingest + 422 hint catalog content to the cloud workflow
-    section, legitimately pushing the body to ~ 17 800 chars; the
-    SKILL is the canonical user-facing reference and those additions
-    are intentional, so the ceiling is bumped one-time 16 000 → 20 000
-    (see COVERAGE.md §5).  Any further growth past 20 000 must
-    re-trigger the trim-vs-bump discussion — do NOT bump again silently.
+    Bump history:
+      - Original Stage S3 window: ``[8 000, 16 000]`` (target ~ 11 000
+        chars / ~ 2 800 tokens, per plan §S3.7).
+      - v0.8.6 bump: 16 000 → 20 000 (SSE + 422 hint additions; see
+        v0.8.6 COVERAGE.md §5).
+      - **v0.8.7 bump: 20 000 → 28 000** (cloud HITL Workflow 7 + γ
+        deployment instructions + 22-item quick-reference table; see
+        v0.8.7 REVIEW.md M-skill-md and the v0.8.7-cloud-hitl-prod
+        change folder for context). The SKILL is the canonical
+        user-facing reference for cloud workloads and the additions
+        are intentional.
+    Any further growth past 28 000 must re-trigger the trim-vs-bump
+    discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v0.8.6 bump: 16_000 → 20_000 (SSE + 422 hint additions; see COVERAGE.md §5)
-    assert 8_000 <= body_len <= 20_000, (
+    # v0.8.7 bump: 20_000 → 28_000 (cloud HITL Workflow 7; see v0.8.7 REVIEW.md)
+    assert 8_000 <= body_len <= 28_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 20 000] token-budget window (target ~ 11 000–17 800)."
+        f"[8 000, 28 000] token-budget window (target ~ 11 000–24 000)."
     )
 
 

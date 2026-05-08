@@ -341,7 +341,13 @@ async def test_mcp_call_tool_handler_swallows_exception_returns_iserror(
 async def test_mcp_list_tools_handler_returns_7_tools(
     tmp_path: Path,
 ) -> None:
-    """mcp.server.build_server registers all v0.3.0 verbs (10 = 7 v0.2.x + 3 F2)."""
+    """mcp.server.build_server registers all verbs (v0.8.7+: 11 = 10 base + 1 cloud HITL).
+
+    Bump history:
+      - v0.3.0: 10 = 7 v0.2.x + 3 F2 (the test name reflects this era).
+      - v0.8.7 B1: +1 (``popolaloom_cloud_hitl_request`` via
+        ``cloud_hitl_tool.build_extended_tool_list``).
+    """
     import popolaloom.mcp.server as mcp_server
 
     client = mcp_server.make_async_client(uds=Path("/tmp/no.sock"))
@@ -351,6 +357,6 @@ async def test_mcp_list_tools_handler_returns_7_tools(
         from mcp.types import ListToolsRequest
         req = ListToolsRequest(method="tools/list")
         result = await handlers[ListToolsRequest](req)
-        assert len(result.root.tools) == 10
+        assert len(result.root.tools) == 11
     finally:
         await client.aclose()

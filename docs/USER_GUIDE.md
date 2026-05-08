@@ -24,6 +24,7 @@ translation_url: /zh/USER_GUIDE.html
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
 - [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085)
+- [Cloud HITL (Enterprise / Self-Hosted) (v0.8.7+)](#cloud-hitl-enterprise--self-hosted)
 - [Hands-off envelope (v0.8.0+)](#hands-off-envelope)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -494,6 +495,390 @@ Canonical design references:
 - `.local/research/v0.8.6_sse/state-source-of-truth.md` (writer contract + §4 reconciliation rules — local-only)
 - `.local/research/v0.8.6_sse/422-error-catalog.md` (canonical hint source — local-only)
 - [`docs/known-issues.md` — Cloud task hydration after daemon restart](known-issues.md)
+
+## Cloud HITL (Enterprise / Self-Hosted)
+
+<!-- updated: 2026-05-08 -->
+
+> **Tier**: Enterprise / Self-Hosted. This sub-page documents the **private HITL tier** that v0.8.7 ships behind γ (Worker stdio MCP, first-class) or β (HTTP MCP, backend-proxied). **The broad-audience `popola dispatch ... --cli=cursor-cloud` REST path documented above remains fully usable without any of the prerequisites below** — only the human-approval-over-Lark sub-flow has the γ / β gating per Q-B-2 (split-tier docs). If you have neither a self-hosted worker option nor a public HTTPS gateway, skip to [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](known-issues.md#v087--cloud-hitl-transport-anti-patterns) for the supported alternatives — do **not** attempt residential NAT / port-forward.
+
+### Why this is a separate tier
+
+v0.8.7 wraps the v0.8.5 `cloud_bridge` REST RPC triad (`POST /hitl/cloud/{request,wait,answer}` on `popolad`) in a single MCP tool — `popolaloom_cloud_hitl_request` — that a Cursor Cloud Agent calls to defer to a human via Lark. The MCP tool is shipped to the cloud agent over **two — and only two — supported transports** in v0.8.7 ([`deployment-modes.md` §1](../.local/research/v0.8.7_hitl/deployment-modes.md)):
+
+- **γ — Worker stdio MCP (first-class).** `popolaloom-mcp` runs as a `command/stdio` MCP server on a Cursor Self-Hosted Pool worker (or a personal "My Machines" worker). The worker reaches `popolad` over loopback or VPC; the Cursor cloud reaches the worker over a long-lived **outbound HTTPS** session — no inbound ports, no public IP, no VPN required.
+- **β — HTTP MCP (backend-proxied).** The team registers an HTTPS MCP URL reachable by Cursor's backend; tool calls are proxied through the backend, so MCP credentials never enter the cloud agent VM.
+
+Both modes have non-trivial prerequisites (γ requires a Cursor Enterprise / Self-Hosted Pool worker; β requires a hardened HTTPS gateway with TLS + **HMAC validation at the gateway**, not at the popolad listener) — that gating is the reason this is a dedicated sub-page rather than a paragraph in the broad-audience quickstart. **Note (HMAC scoping):** HMAC enforcement lives in β only; γ delegates inbound-event authentication to the `lark-cli event consume` websocket session (lark-cli holds the bot token), so the popolad-side listener does NOT do HMAC validation in γ.
+
+### Mode γ — Worker stdio MCP (first-class)
+
+#### Prerequisites (γ)
+
+| Requirement | Detail |
+|---|---|
+| Cursor plan | **Enterprise** for Self-Hosted Pool (org fleet); **any plan** for personal "My Machines" worker |
+| Admin toggle | "Allow Self-Hosted Agents" enabled in [Cloud Agents dashboard](https://cursor.com/dashboard/cloud-agents#self-hosted-agents) |
+| Worker auth | **Service account API key** for pool workers; user / personal API keys for `My Machines` only |
+| Worker host | A machine / container that can run `agent worker start` and reach `popolad` on **loopback or private VPC** |
+| `popolad` | Already installed on the same host or in the same private network; HTTP RPC bound to `127.0.0.1:<port>` (or RFC1918) — **never on a public interface** |
+| `popolaloom-mcp` | v0.8.7 stdio MCP binary; installed on the worker |
+| Outbound HTTPS | Worker can reach the hosts in the [Egress allowlist](#egress-allowlist) below |
+
+#### Topology (γ)
+
+```mermaid
+flowchart LR
+  subgraph cursor["Cursor cloud"]
+    A[Cloud Agent VM<br/>model + planner]
+  end
+  subgraph corpnet["Customer infrastructure (no inbound)"]
+    W[Self-hosted Worker<br/>agent worker start --pool]
+    M[popolaloom-mcp<br/>stdio child process]
+    D[popolad<br/>127.0.0.1 / VPC only]
+    L[Lark webhook<br/>HITL card delivery]
+    S[(state_store: popola_hitl<br/>SQLite)]
+  end
+
+  A == "outbound HTTPS<br/>api2.cursor.sh" ==> W
+  W -- "spawns / pipes stdio" --> M
+  M == "HTTP RPC<br/>loopback or VPC" ==> D
+  D --- S
+  D == "outbound HTTPS<br/>open.larksuite.com" ==> L
+```
+
+The arrow from Cursor cloud to the worker is **outbound from the worker's perspective**: the worker initiates and holds open a long-lived HTTPS session to `api2.cursor.sh`. `popolaloom-mcp` is started **as a child of the worker** via the `command` (stdio) transport, so the MCP process inherits the worker's network namespace — and only the worker's. It therefore reaches `popolad` over private addresses without any tunnel.
+
+#### Install steps (γ)
+
+1. **Provision the worker** (one-time, per host):
+
+   ```bash
+   curl https://cursor.com/install -fsS | bash
+   agent --version
+   ```
+
+   ([self-hosted-pool.md → Install the CLI](https://cursor.com/docs/cloud-agent/self-hosted-pool.md#install-the-cli))
+
+2. **Authenticate** with a service account API key (pool) or a user-scoped token (My Machines):
+
+   ```bash
+   export CURSOR_API_KEY="<service-account-key>"
+   ```
+
+3. **Install `popolad` + `popolaloom-mcp`** on the same host (or a host that can reach `popolad` over RFC1918):
+
+   ```bash
+   pipx install popolaloom         # ships popolad + popolaloom-mcp
+   popolad up                      # binds 127.0.0.1:<popolad_port>
+   popola doctor                   # confirms popolad RPC + Lark creds + SQLite
+   ```
+
+   > **`popola doctor --cloud` deferred to v0.8.7.1.** The `--cloud`
+   > sub-flag (which would smoke-check popolad RPC + Lark creds +
+   > SQLite + JSON1 + the `state_store.last_lark_secret_rotated_at` >
+   > 100-day warning in one shot) is tracked as `BL-v0.8.7-1` in the
+   > [feedback tracker](../.local/feedbacks/TRACKER.md#backlog) for the
+   > v0.8.7.1 patch — until then, the L3 quarterly rotation cadence is
+   > enforced by [Webhook secret rotation](#webhook-secret-rotation)
+   > calendar reminders and the existing `popola doctor` (no `--cloud`
+   > sub-flag) covers the popolad RPC + Lark creds + SQLite checks.
+
+4. **Register the MCP server** in the [Cloud Agents dashboard](https://cursor.com/agents) → MCP dropdown → Add → **Custom MCP** → transport **Command (stdio)**:
+
+   ```jsonc
+   {
+     "command": "popolaloom-mcp",
+     "args": [],
+     "env": {
+       "POPOLAD_BASE_URL": "http://127.0.0.1:<popolad_port>",
+       "POPOLAD_API_KEY":  "<popolad-uid-scoped-token>"
+     }
+   }
+   ```
+
+   Per [self-hosted-pool.md → MCP servers](https://cursor.com/docs/cloud-agent/self-hosted-pool.md#mcp-servers), Command (stdio) entries **run on the worker** and "can reach private networks, internal APIs, and services behind your firewall."
+
+   > **Env scrub note (SECURITY L2).** `popolaloom-mcp` reads only the
+   > two env vars listed above; the **operator-managed** systemd / launchd
+   > unit that supervises the worker is responsible for the env-allowlist
+   > scrub (e.g. `Environment=POPOLAD_BASE_URL=… POPOLAD_API_KEY=…` plus
+   > `EnvironmentFile=` from a sealed secret store). The `popolaloom-mcp`
+   > binary itself does not currently fork-and-scrub at process boundary;
+   > tracking as `BL-v0.8.7-3` for v0.8.7.1 patch.
+
+   > **Auth model — γ vs β.** In γ mode, inbound Lark callbacks reach
+   > popolad via a **`lark-cli event consume` websocket subscription** on
+   > the worker; the bot session is authenticated server-side by Lark
+   > before any NDJSON line reaches the Python listener, so **the
+   > listener boundary itself does NOT do HMAC validation** (the secret
+   > lives inside lark-cli's bot token, not exposed to popolad). HMAC
+   > validation is only enforced in β mode where the public HTTPS
+   > gateway terminates Cursor's MCP traffic — see [Mode β install
+   > step 1](#install-steps-β) for the gateway-side `hmac.compare_digest`
+   > requirement.
+
+5. **Start the worker** (pool):
+
+   ```bash
+   cd /path/to/repo
+   agent worker start --pool --pool-name popolaloom \
+     --label hitl=enabled --management-addr ":8080"
+   ```
+
+6. **Verify** end-to-end:
+
+   ```bash
+   popola doctor                                    # popolad RPC + Lark creds + SQLite (general health)
+   curl -s localhost:8080/healthz
+   curl -s localhost:8080/metrics | grep cursor_self_hosted_worker_connected
+   ```
+
+   Then dispatch a smoke task from the dashboard or `popola dispatch --cli=cursor-cloud --label pool=popolaloom`.
+
+   > **Cloud-specific verification.** A combined cloud-aware
+   > `popola doctor --cloud` (worker connected + MCP registered +
+   > popolad reachable + Lark configured + JSON1 smoke) is tracked as
+   > `BL-v0.8.7-1` in the [feedback tracker](../.local/feedbacks/TRACKER.md#backlog)
+   > for the v0.8.7.1 patch — for v0.8.7 the verification splits into
+   > the four commands above (`popola doctor` covers popolad +
+   > SQLite + Lark; `curl healthz/metrics` covers the worker;
+   > `popola dispatch --cli=cursor-cloud` is the integration smoke).
+
+### Mode β — HTTP MCP (backend-proxied, fallback)
+
+#### Prerequisites (β)
+
+| Requirement | Detail |
+|---|---|
+| Cursor plan | **Any plan** that allows custom MCP servers (Enterprise *not* required) |
+| HTTPS endpoint | A stable, internet-reachable HTTPS URL that Cursor's backend can connect to. Ephemeral residential NAT URLs / `localhost` are **not** supported. |
+| TLS | Valid certificate (publicly trusted CA). Self-signed will be rejected by Cursor's backend proxy. |
+| `popolad` | Reachable from the HTTPS endpoint (typically the endpoint *is* a thin reverse-proxy in front of `popolad`, terminating in the same VPC). |
+| Auth | Header-based bearer token; **HMAC-SHA256 of the request body** with a rotating webhook secret (recommended, see [Webhook secret rotation](#webhook-secret-rotation)). |
+
+#### Topology (β)
+
+```mermaid
+flowchart LR
+  subgraph cursor["Cursor cloud"]
+    A[Cloud Agent VM]
+    BE[Cursor backend<br/>HTTP MCP proxy]
+  end
+  subgraph corpnet["Customer infrastructure"]
+    GW[HTTPS gateway<br/>e.g. https://hitl.example.com/mcp]
+    D[popolad RPC]
+    L[Lark webhook]
+    S[(popola_hitl)]
+  end
+
+  A -- "tool_call frame" --> BE
+  BE == "outbound HTTPS<br/>+ proxied auth headers" ==> GW
+  GW == "loopback or VPC" ==> D
+  D --- S
+  D == "outbound HTTPS" ==> L
+```
+
+"Tool calls are proxied through the backend"; the cloud agent VM **never holds** the MCP `headers`, refresh tokens, or other credentials. Only the gateway is exposed to the public internet; `popolad` itself stays private behind the gateway.
+
+#### Install steps (β)
+
+1. **Stand up the HTTPS gateway** (typically a thin FastAPI / nginx reverse-proxy in the same VPC as `popolad`). The gateway must:
+   - Speak [Streamable HTTP MCP](https://cursor.com/docs/mcp.md) (not SSE — Cloud Agents support **HTTP and stdio only**).
+   - Validate the HMAC header on every request.
+   - Forward the validated MCP tool call to `popolad` (`POST /hitl/cloud/request|wait|answer`).
+2. **Issue and store** the rotating webhook secret in your secret manager. Plan a **quarterly rotation** (see [Webhook secret rotation](#webhook-secret-rotation) below).
+3. **Register the MCP server** in the [Cloud Agents dashboard](https://cursor.com/agents) → MCP dropdown → Add → **Custom MCP** → transport **HTTP**:
+
+   ```jsonc
+   {
+     "url": "https://hitl.example.com/mcp",
+     "headers": {
+       "Authorization": "Bearer <bootstrap-token>",
+       "X-PopolaLoom-Tenant": "<tenant-id>"
+     }
+   }
+   ```
+
+   `headers` is encrypted at rest and **redacted on read** by Cursor. β real-traffic verification (`popola doctor --cloud --mode beta`) is referenced in `deployment-modes.md` §3.3 but not yet implemented in v0.8.7 — γ ships first-class; β adopters verify out-of-band for v0.8.7 and the doctor command is tracked as `BL-v0.8.7-1` for v0.8.7.1 (see [feedback tracker](../.local/feedbacks/TRACKER.md#backlog)).
+
+### Decision matrix — γ vs β vs neither
+
+| Your situation | Recommended mode | Why |
+|---|---|---|
+| **A.** Cursor Enterprise plan with self-hosted pool enabled | **γ** | First-class per Q-B-1; private `popolad` reach without any new internet-facing surface |
+| **B.** Any Cursor plan + a personal devbox / VM you can run `agent worker start` on (My Machines) | **γ** (My Machines variant) | Same security envelope as Enterprise pool; `popolad` stays on loopback |
+| **C.** No self-hosted pool, but a mature public HTTPS gateway and an SRE team to harden it | **β** | Backend-proxied HTTP MCP keeps credentials out of the cloud VM; avoids the Enterprise gating |
+| **D.** Neither a self-hosted worker option nor a public HTTPS gateway | **❌ Not supported in v0.8.7** | Defer to a future SaaS HITL gateway (Stage 3 / v0.9+). Do **not** attempt residential NAT / port-forward — see [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](known-issues.md#v087--cloud-hitl-transport-anti-patterns) for the explicit "do NOT do this" list |
+| **E.** OK with cloud-dispatch only (no HITL) | Either / neither | The broad-audience [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085) flow above does not require γ or β; install neither MCP transport |
+
+### Egress allowlist
+
+A v0.8.7 γ worker requires outbound HTTPS to the following hosts. **No inbound ports, no public IPs, no VPN tunnels** ([`deployment-modes.md` §6](../.local/research/v0.8.7_hitl/deployment-modes.md), citing [self-hosted-pool.md → Networking](https://cursor.com/docs/cloud-agent/self-hosted-pool.md#networking)).
+
+| Host | Purpose | Required? |
+|---|---|---|
+| `api2.cursor.sh` | Long-lived agent session (control plane) | **Yes** — blocking it stops the worker from connecting |
+| `api2direct.cursor.sh` | Same agent session (direct-access path) | **Yes** |
+| `cloud-agent-artifacts.s3.us-east-1.amazonaws.com` | Artifact uploads (screenshots, logs) | Recommended (HITL works without it; PR embeds break) |
+| `open.larksuite.com` *or* `open.feishu.cn` | Lark / Feishu HITL card delivery | **Yes** for HITL |
+| Git host (`github.com`, internal GitLab, etc.) | Repo clone / push during cloud agent runs | Yes for cloud agent |
+| Package registries (`pypi.org`, `registry.npmjs.org`, …) | Build / install steps inside agent runs | As needed |
+
+> **Egress firewall sanity rule.** If the worker can reach `api2.cursor.sh`, `api2direct.cursor.sh`, **and** the configured Lark host, then γ HITL works. Any other failure is a `popolad` / `popolaloom-mcp` issue, not a network issue.
+
+For β, the gateway must additionally accept inbound HTTPS from Cursor's egress IP ranges; those ranges are published at [`https://cursor.com/docs/ips.json`](https://cursor.com/docs/ips.json) and rotated periodically. Cursor itself recommends *not* using IP allowlists as the **primary** security mechanism — use HMAC as the primary control and treat IP allowlist as defense-in-depth.
+
+### Webhook secret rotation (L3 — quarterly cadence)
+
+Per the v0.8.7 lateral-movement gate (SECURITY §3 L3), rotate the Lark webhook secret on a **quarterly cadence**. Both γ and β share the same secret + rotation procedure.
+
+| Quarter | Rotation date |
+|---|---|
+| **Q1** | January 15 |
+| **Q2** | April 15 |
+| **Q3** | July 15 |
+| **Q4** | October 15 |
+
+Rotation runbook (idempotent, ≤ 5 min wall-clock per cycle):
+
+1. Mint the new secret in your secret manager (e.g., `openssl rand -hex 32`); store under `lark/webhook-secret/<YYYY>Q<n>`.
+2. Update the popolad-side reader so **both** the current and the previous secret are accepted for a 24-hour grace window. This is zero-downtime: every Lark callback is verified against the union of the two secrets via timing-safe `hmac.compare_digest`.
+3. Cycle the new secret into your Lark App / webhook configuration.
+4. After 24 hours, drop the previous secret from the reader's union list.
+5. Confirm rotation success via `popola doctor` (popolad RPC + Lark creds + SQLite checks land in the existing health probe). The `popola doctor --cloud` subcommand — which would emit a >100-day-old-secret warning automatically — is tracked as `BL-v0.8.7-1` in the [feedback tracker](../.local/feedbacks/TRACKER.md#backlog) for the v0.8.7.1 patch; until then, the quarterly cadence is enforced by calendar reminders alone.
+
+Both γ (worker-side env var) and β (gateway-side validator) use the same secret material; you rotate once and propagate to both surfaces in step 3.
+
+### L6 — Team follow-ups (lateral exposure callout)
+
+> **⚠️ Team follow-ups + HITL: disable, or use service accounts.**
+>
+> Per [Cursor's settings docs → Lateral movement and secret exposure](https://cursor.com/docs/cloud-agent/settings.md#lateral-movement-and-secret-exposure), enabling **team follow-ups** lets a teammate steer an agent that holds **another user's secrets**. For PopolaLoom orgs that put **PII in HITL prompts** (customer data, internal financials, source code with secrets), team follow-ups are a lateral-movement vector: a follow-up from teammate B can drive an agent owned by user A to call `popolaloom_cloud_hitl_request` with user A's `POPOLAD_API_KEY` scope.
+>
+> **Recommended posture for HITL-handling orgs:** either set team follow-ups to **"Disabled"**, or restrict cloud agents that handle HITL to **service accounts only** (no per-user API keys mounted into the worker). The PopolaLoom audit log records `actor_open_id_if_any` in every `cloud_hitl.transition` event so post-incident attribution is possible, but the in-flight credential reuse is the upstream concern.
+
+### L8 — Operational hygiene (do not commit MCP blob)
+
+> **⚠️ Treat the MCP config blob as a secret.**
+>
+> Cursor encrypts `env` / `headers` at rest and redacts them on read in the dashboard, but operators must **not** commit MCP JSON blobs to git or paste them into chat. The `POPOLAD_API_KEY` (γ) or `Authorization: Bearer …` (β) header inside the blob bypasses the dashboard redaction once the JSON leaves Cursor's storage.
+
+Sample pre-commit hook (drop into `examples/pre-commit-mcp-secret.sh`, point your `.git/hooks/pre-commit` at it, or wire into [`pre-commit`](https://pre-commit.com)):
+
+```bash
+#!/usr/bin/env bash
+# Reject staged content that smells like a leaked Cloud Agents MCP blob.
+set -e
+if git diff --cached -G 'POPOLAD_API_KEY|cursor-stdio-mcp.*env' --quiet; then
+  exit 0
+fi
+echo "ERROR: staged change appears to include a MCP config secret (POPOLAD_API_KEY / cursor-stdio-mcp env block)." >&2
+echo "If this is a doc / test fixture, prefix the line with '# secret-hygiene: doc-only'." >&2
+exit 1
+```
+
+### Worker hardening (L9)
+
+On a Self-Hosted Pool worker, the MCP child runs as a non-root user with no SUID binaries on its `PATH`. For Kubernetes deployments using the Cursor Helm chart, set:
+
+```yaml
+securityContext:
+  runAsNonRoot: true
+  runAsUser: 1001
+  fsGroup: 1001
+```
+
+For direct-host installs, smoke-check with `id` inside the worker process: it should return a non-root uid (e.g., `uid=1001(popolaloom) gid=1001(popolaloom)`).
+
+### L10 — Cursor Cloud network access policy
+
+Per [Cursor's network-access docs](https://cursor.com/docs/cloud-agent/security-network.md#network-access), prefer one of the restricted modes for any cloud agent that handles HITL prompts. The PopolaLoom Enterprise recommendation is:
+
+> **Set the Cursor Cloud Agent network access policy to "Allowlist only"** for any agent that calls `popolaloom_cloud_hitl_request`. Allow-list the egress hosts from [Egress allowlist](#egress-allowlist) above and nothing else. **"Allow all"** is acceptable only for non-HITL dispatch (the broad-audience [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085) path).
+
+Combined with the per-tenant `POPOLAD_API_KEY` scope (L1) and the env-allowlist on the MCP launcher (L2), this gives a defense-in-depth posture where a compromised agent cannot exfiltrate `popola_hitl` rows or pivot to internal services beyond the explicit allow-list.
+
+### Approver ACL (P1)
+
+Default = anyone in the Lark group the card is sent to. The webhook handler validates `event.operator.open_id` against the configured group membership (via Lark contact API or a static `LARK_HITL_ALLOWED_OPEN_IDS` env var); clicks from non-members return HTTP 403 + a private toast "你不在审批名单中". When `card_metadata.allowed_responder_open_ids` is set on a per-card basis (v1.x additive field), the per-card list overrides the group default for that card.
+
+Two-approver workflow (`responder_policy = "serial_two"`, S2 in `lark-card-spec.md` §3.2): the second approver MUST be a different user from the first. A click from the first approver after their initial click is rejected with HTTP 409 + a private toast "你已审批一次，请等待二审".
+
+### Replay safety (R1 / R2)
+
+The MCP tool's `idempotency_key` (auto-derived as `sha256(task_id|cursor_agent_id|cursor_run_id|prompt_body)[:32]` when caller omits it; caller-supplied keys clamp to ≤ 128 chars) is **opaque** — the inputs are not recoverable from the key. Replays inside the 1-hour dedup window short-circuit and return the existing `hitl_id` + `deduped: true`; replays after the window create a new row.
+
+A stolen `idempotency_key` gives the attacker only the existing answer (bounded staleness), not new state — the daemon SQLite table is the single source of dedup truth (no in-memory cache that survives across `popolad` restarts), so a captured key cannot be used to observe a future answer that has not been recorded yet.
+
+### Configuration — `[hitl.cloud]` section in `popolad.toml`
+
+v0.8.7 adds a strict-superset `[hitl.cloud]` section to `popolad.toml`; the existing `[hitl]` section continues to work unchanged.
+
+```toml
+[hitl.cloud]
+timeout_seconds      = 1800   # default 30 min; clamped to [60, 86400]; out-of-range rejected with clear error
+idempotency_window_s = 3600   # 1 h; replays inside the window short-circuit
+max_concurrent_per_run = 1    # bounds parallel HITL prompts per cursor_run_id
+```
+
+Per-call `timeout_s` on the MCP tool overrides `timeout_seconds` for that one call; the config value is the fallback when caller omits.
+
+### Tool-call return shape (cloud agent observes)
+
+Successful answer:
+
+```json
+{
+  "ok": true,
+  "hitl_id": "<uuid_hex>",
+  "answer": "approve",
+  "option_id": "approve",
+  "channel": "lark",
+  "responder_id": "ou_<approver_open_id>",
+  "answered_at": "2026-05-08T10:30:00.000Z",
+  "deduped": false
+}
+```
+
+Timeout (per Q-B-3 frozen contract):
+
+```json
+{
+  "ok": false,
+  "error": {
+    "code": "timeout",
+    "message": "HITL approval timed out after 1800s with no human response",
+    "hitl_id": "<hitl_id>",
+    "expiration_at": "2026-05-08T11:00:00.000Z",
+    "answered_via": null
+  }
+}
+```
+
+Error codes per `mcp-tool-contract.md` §3.3: `timeout`, `cancelled`, `invalid_context`, `lark_unreachable`, `daemon_unreachable`, `internal`. Cloud agents may retry (creating a new `hitl_id`) or fail-loud per their own policy.
+
+### Audit log
+
+Every state transition + failure path emits exactly one NDJSON event under the `cloud_hitl.*` namespace, written to `~/.popola/events/<task_id>.jsonl`:
+
+| Event | Required keys |
+|---|---|
+| `cloud_hitl.requested` | `hitl_id`, `task_id`, `agent_id`, `run_id`, `requester_ip_or_session`, `idempotency_key`, `created_at`, `deadline_at` |
+| `cloud_hitl.answered` | `hitl_id`, `answered_by`, `answered_at`, `channel` (`lark`/`api`/`mcp`/`cli`/`web`/`cloud`), `option_id`, `reason_truncated_to_200_chars` |
+| `cloud_hitl.failed` | `hitl_id_if_known`, `error_kind` (one of `timeout`/`cancelled`/`invalid_context`/`lark_unreachable`/`daemon_unreachable`/`internal`), `error_message_truncated_to_500_chars`, `failed_at`, `retry_after_s_if_set` |
+| `cloud_hitl.transition` | `hitl_id`, `from_state`, `to_state`, `transitioned_at`, `actor_open_id_if_any` |
+
+The `failed` event is emitted **before** the MCP tool returns the error envelope (per invariant I-6: No Silent Failures across the audit chain).
+
+### Canonical design references (v0.8.7)
+
+- [`deployment-modes.md`](../.local/research/v0.8.7_hitl/deployment-modes.md) — γ + β topology, prerequisites, install steps, lateral-movement checklist, minimal-connectivity host list (local-only research note)
+- [`mcp-tool-contract.md`](../.local/research/v0.8.7_hitl/mcp-tool-contract.md) — `popolaloom_cloud_hitl_request` schema, wire mapping, failure modes, idempotency design (local-only)
+- [`lark-card-spec.md`](../.local/research/v0.8.7_hitl/lark-card-spec.md) — `cloud_hitl_request_card_v1` template structure, P0 scenarios, versioning policy, security checks (local-only)
+- [`long-tool-call-probe.md`](../.local/research/v0.8.7_hitl/long-tool-call-probe.md) — long-tool-call probe protocol; T1.1.1 OQ-1 status (local-only)
+- [`SECURITY_CHECKLIST.md`](../.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md) — 10-item lateral-movement checklist + 4 secret-hygiene items + 4 idempotency items + 4 audit items + 3 approval-policy items + sign-off matrix (local-only)
+- [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](known-issues.md#v087--cloud-hitl-transport-anti-patterns) — the explicit "do NOT do this" callout
 
 ## Hands-off envelope (v0.8.0+)
 
