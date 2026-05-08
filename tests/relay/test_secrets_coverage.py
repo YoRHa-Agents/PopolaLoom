@@ -17,6 +17,7 @@ Each test is short (≤ 20 lines) and self-contained.
 
 from __future__ import annotations
 
+import importlib.util
 import logging
 from typing import Any
 
@@ -36,6 +37,10 @@ from popolaloom.relay.secrets import (
     _shannon_entropy,
     _walk_envelope,
     scan_envelope,
+)
+
+_DETECT_SECRETS_AVAILABLE: bool = (
+    importlib.util.find_spec("detect_secrets") is not None
 )
 
 # ---------------------------------------------------------------------------
@@ -150,6 +155,11 @@ def test_finding_is_immutable_frozen_dataclass() -> None:
 # ---------------------------------------------------------------------------
 
 
+@pytest.mark.skipif(
+    not _DETECT_SECRETS_AVAILABLE,
+    reason="detect-secrets is an optional dep; CI runners without it correctly "
+    "exercise the fallback regex path which is covered by other tests",
+)
 def test_scan_envelope_uses_detect_secrets_when_available(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -167,6 +177,11 @@ def test_scan_envelope_uses_detect_secrets_when_available(
     assert not fallback_warnings
 
 
+@pytest.mark.skipif(
+    not _DETECT_SECRETS_AVAILABLE,
+    reason="detect-secrets is an optional dep; CI runners without it correctly "
+    "exercise the fallback regex path which is covered by other tests",
+)
 def test_scan_envelope_with_detect_secrets_dedupes_with_fallback() -> None:
     """Both engines surface the same shape — dedup yields one finding per location."""
     aws = "AKIAIOSFODNN7EXAMPLE"

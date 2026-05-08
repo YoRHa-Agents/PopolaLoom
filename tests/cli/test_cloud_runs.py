@@ -319,7 +319,14 @@ def test_cloud_runs_help_text_matches_spec(runner: CliRunner) -> None:
     """``popola cloud runs --help`` matches spec §2.5 verbatim (key lines)."""
     from popolaloom.cli.main import app as root_app
 
-    result = runner.invoke(root_app, ["cloud", "runs", "--help"])
+    # Force a wide terminal so Typer/Click + Rich don't truncate option
+    # names like ``--include-events``. CI runners default to 80 columns
+    # which is too narrow for the 6-column option block; pin to 200
+    # via env var so the substring assertions below are stable across
+    # local/CI/Linux/macOS.
+    result = runner.invoke(
+        root_app, ["cloud", "runs", "--help"], env={"COLUMNS": "200"}
+    )
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
     # Spec §2.5 — we check the four flag fragments + the daemon/cloud

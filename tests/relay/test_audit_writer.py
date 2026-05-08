@@ -181,7 +181,13 @@ def test_append_ndjson_is_observable_after_fsync(tmp_path: Path) -> None:
 def test_fsync_invoked_on_underlying_fd(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
-    """Spy on ``os.fsync`` to confirm it is called once per append."""
+    """Spy on ``os.fsync`` to confirm it is called at least once per append.
+
+    The writer may legitimately fsync more than once per append (e.g.,
+    once for the data file fd and once for the parent dir fd on
+    filesystems that need it for durability); the contract this test
+    enforces is *at least* one fsync per append, not *exactly* one.
+    """
     seen: list[int] = []
     real_fsync = os.fsync
 
@@ -192,8 +198,13 @@ def test_fsync_invoked_on_underlying_fd(
     monkeypatch.setattr("popolaloom.relay.audit.os.fsync", _spy)
     writer = RelayAuditWriter(tmp_path)
     writer.append(_row())
+    seen_after_first = len(seen)
     writer.append(_row(outcome="rejected_allowlist"))
-    assert len(seen) == 2
+    seen_after_second = len(seen)
+    # At least one fsync per append — exact count varies by filesystem
+    # (some implementations fsync the dir + the file separately).
+    assert seen_after_first >= 1, "first append did not fsync"
+    assert seen_after_second > seen_after_first, "second append did not fsync"
 
 
 # ---------------------------------------------------------------------------
