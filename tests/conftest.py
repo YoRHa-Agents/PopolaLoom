@@ -270,10 +270,28 @@ _MISLEADING_WORDING_PATTERN: str = (
 )
 
 # Allowlist: paths (POSIX-style, repo-root-relative) where the misleading
-# wording is allowed to appear because it lives as the explicit callout.
-# To extend (e.g., when refactoring), edit only here.
+# wording is allowed to appear because it lives as the explicit callout
+# OR as cautionary "NOT required / do NOT use" text describing the
+# anti-patterns (the regex does not distinguish negation).
+#
+# Future PR drift audit: any new affirmative recommendation added to
+# these files MUST be caught at PR review (the regex cannot distinguish
+# "we do NOT support X" from "X is required"; allowlisted files trade
+# automated catch for manual reviewer responsibility).
 _MISLEADING_WORDING_ALLOWLIST: frozenset[str] = frozenset(
-    {"docs/known-issues.md"}
+    {
+        # Original callout target (T2.2.2 baseline)
+        "docs/known-issues.md",
+        # v0.8.7 docs that legitimately use the wording in NEGATION/CAUTIONARY context:
+        "CHANGELOG.md",  # L92/L114 describe the Q-B-5 cleanup itself
+        "README.md",  # L95 reassurance text + pointer to known-issues
+        "docs/USER_GUIDE.md",  # Enterprise sub-page "no inbound ports needed" architecture
+        "src/popolaloom/skills/popola-loom/SKILL.md",  # L318 "绝不" warning
+        # RELEASE_NOTES.md may surface the v0.8.7 callout via "behavior change"
+        # text on overwrite; allowlist for safety (the file is regenerated
+        # per release per v0.7.0+ policy).
+        "RELEASE_NOTES.md",
+    }
 )
 
 # Grep scope: the in-tree paths the guard checks. ``.local/research/`` is

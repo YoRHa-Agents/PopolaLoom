@@ -273,6 +273,43 @@ class RelayResponse(BaseModel):
     handoff_envelope: RelayHandoffEnvelope
 
 
+class RelayDispatchRequest(BaseModel):
+    """Body of ``POST /relay/dispatch`` (v0.8.8 T2.2.1).
+
+    Read-only RPC that returns the source task's envelope info
+    (``cursor_agent_id`` / ``cursor_run_id`` / ``repo_url`` /
+    ``summary`` / ``model``) so the CLI can build the relay payload.
+    Per ``relay-primitive.md`` §4 the CLI does the secret scan +
+    allowlist gate + audit row write + cloud POST locally; this RPC
+    only verifies the source task is terminal and surfaces what the
+    CLI needs to construct the envelope.
+    """
+
+    source_task_id: str = Field(..., min_length=1)
+
+
+class RelayDispatchResponse(BaseModel):
+    """Response body of ``POST /relay/dispatch`` (v0.8.8 T2.2.1).
+
+    Returns enough source-task metadata for the CLI to construct a
+    relay envelope. ``state`` is one of the popola coarse states
+    (terminal: ``completed`` / ``failed`` / ``canceled``); the daemon
+    rejects non-terminal tasks at this endpoint with HTTP 400 so the
+    CLI can map to its own exit-2 ``InvalidArgs`` per ``§2.4`` step 2.
+    """
+
+    source_task_id: str
+    cursor_agent_id: str | None = None
+    cursor_run_id: str | None = None
+    repo_url: str | None = None
+    pr_url: str | None = None
+    summary: str = ""
+    model: str = ""
+    state: str
+    cloud_phase: str | None = None
+    runtime: str = "local"
+
+
 class SuperviseRequest(BaseModel):
     """Body of ``POST /supervise`` (v0.3.0 F2.5)."""
 
@@ -557,6 +594,37 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
         except (RuntimeError, ValueError) as exc:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
+        # v0.8.8 T2.1.2 (cost-fields.md §4 caveat 3 + DECISIONS.md EOQ-B2):
+        # When the user did NOT pass ``model`` for a cloud-cursor dispatch,
+        # popolad substitutes a hard default (currently ``composer-2``).
+        # Emit ``cloud.model_default_used`` so the verbose status surface
+        # can render ``model: -`` (truthful) instead of the substituted
+        # value, and so SREs can audit drift if Cursor changes its system
+        # default. Best-effort: a missing event_log (e.g. test fixtures
+        # that bypass popolad's normal lifecycle) does not abort dispatch
+        # — the user-facing behavior is correct without the audit row,
+        # we just lose telemetry on this run.
+        if req.cli == "cursor-cloud":
+            user_extra: dict[str, Any] = req.extra or {}
+            if "model" not in user_extra:
+                event_log = popolad.event_log(task_id)
+                if event_log is not None:
+                    try:
+                        event_log.append(
+                            "cloud.model_default_used",
+                            {
+                                "task_id": task_id,
+                                "default_model": "composer-2",
+                            },
+                        )
+                    except Exception:
+                        logger.warning(
+                            "cloud.model_default_used emit failed for task=%s; "
+                            "verbose status will fall back to recorded model",
+                            task_id,
+                            exc_info=True,
+                        )
+
         events_log = popolad.events_dir / f"{task_id}.jsonl"
         return DispatchResponse(
             task_id=task_id,
@@ -565,11 +633,34 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
         )
 
     @app.get("/status/{task_id}")
-    async def status(task_id: str) -> dict[str, Any]:
+    async def status(task_id: str, verbose: bool = False) -> dict[str, Any]:
+        """Return runtime status; ``?verbose=true`` adds a ``verbose`` block.
+
+        v0.8.8 T2.1.2 (`cost-fields.md` §3.2 schema, Q-C-2 locked):
+
+        - Default response (``verbose=false``) preserves the v0.8.5 shape
+          verbatim — no ``verbose`` key at all (NOT ``null``) so legacy
+          consumers calling ``response["verbose"]`` get a
+          :class:`KeyError` rather than a silent ``None``.
+        - When ``verbose=true``, the response gains a ``verbose`` block
+          per spec §3.2 with ten keys: ``cost_estimate_usd`` (always
+          ``null`` in v0.8.8 — no authoritative source per Q-C-2),
+          ``model_id`` / ``model_mode`` / ``tokens_input`` /
+          ``tokens_output`` / ``tokens_total`` / ``wall_clock_s`` /
+          ``agent_status`` / ``agent_url`` / ``doc_anchor``.
+        """
         try:
-            return popolad.get_status(task_id)
+            base = popolad.get_status(task_id)
         except KeyError as exc:
             raise HTTPException(status_code=404, detail=f"task not found: {task_id}") from exc
+
+        if not verbose:
+            return base
+
+        handle = popolad.state_store.get(task_id)
+        verbose_block = _build_verbose_block(handle, base, popolad)
+        base["verbose"] = verbose_block
+        return base
 
     @app.get("/list")
     async def list_tasks(include_terminal: bool = False) -> list[dict[str, Any]]:
@@ -612,6 +703,73 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
             uptime_seconds=uptime,
             active_tasks=active,
             version=__version__,
+        )
+
+    @app.post("/relay/dispatch", response_model=RelayDispatchResponse)
+    async def relay_dispatch_endpoint(
+        req: RelayDispatchRequest,
+    ) -> RelayDispatchResponse:
+        """v0.8.8 T2.2.1: read-side RPC for ``popola relay <task_a>``.
+
+        Returns the envelope info (``cursor_agent_id`` / ``repo_url`` /
+        ``summary`` / ``model``) the CLI needs to build the relay
+        payload. The CLI runs the secret scan + allowlist gate + audit
+        row write + cloud POST locally; this RPC's job is purely to
+        validate the source task is terminal and expose the few
+        ``TaskHandle`` fields the CLI cannot read locally.
+
+        Raises:
+            HTTPException(404): source ``task_id`` not registered.
+            HTTPException(400): source task not in a terminal state
+                (``state ∈ {pending, queued, starting, running}``).
+        """
+        handle = popolad.state_store.get(req.source_task_id)
+        if handle is None:
+            raise HTTPException(
+                status_code=404,
+                detail=f"task not found: {req.source_task_id}",
+            )
+        if not handle.is_terminal():
+            raise HTTPException(
+                status_code=400,
+                detail=(
+                    f"task_a is not in a terminal state "
+                    f"(state={handle.state.value})"
+                ),
+            )
+
+        repo_url: str | None = None
+        pr_url: str | None = None
+        model: str = ""
+        summary: str = ""
+        cloud_runs = handle.cloud_runs or {}
+        if handle.cursor_run_id and handle.cursor_run_id in cloud_runs:
+            run_meta = cloud_runs[handle.cursor_run_id]
+            if isinstance(run_meta, dict):
+                repo_obj = run_meta.get("repo_url")
+                pr_obj = run_meta.get("pr_url")
+                model_obj = run_meta.get("model")
+                summary_obj = run_meta.get("summary")
+                if isinstance(repo_obj, str):
+                    repo_url = repo_obj
+                if isinstance(pr_obj, str):
+                    pr_url = pr_obj
+                if isinstance(model_obj, str):
+                    model = model_obj
+                if isinstance(summary_obj, str):
+                    summary = summary_obj
+
+        return RelayDispatchResponse(
+            source_task_id=req.source_task_id,
+            cursor_agent_id=handle.cursor_agent_id,
+            cursor_run_id=handle.cursor_run_id,
+            repo_url=repo_url,
+            pr_url=pr_url,
+            summary=summary,
+            model=model,
+            state=handle.state.value,
+            cloud_phase=handle.cloud_phase,
+            runtime=handle.runtime,
         )
 
     @app.post("/relay", response_model=RelayResponse)
@@ -1062,6 +1220,237 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                 await asyncio.sleep(_ATTACH_POLL_INTERVAL_S)
 
         return StreamingResponse(producer(), media_type="text/event-stream")
+
+
+_COST_DOC_ANCHOR: str = (
+    "https://cursor.com/docs/cloud-agent/api/endpoints.md#get-a-run"
+)
+"""Public ``cost-fields.md`` §3.2 doc anchor.
+
+Surfaced verbatim in the ``--json --verbose`` ``verbose.doc_anchor`` field
+so machine readers can verify field provenance independent of the
+PopolaLoom version (see EOQ-B1 default-include rationale)."""
+
+
+def _build_verbose_block(
+    handle: Any,
+    base: dict[str, Any],
+    popolad: Popolad,
+) -> dict[str, Any]:
+    """Return the ``verbose`` JSON block per ``cost-fields.md`` §3.2.
+
+    Schema (10 keys):
+
+    - ``cost_estimate_usd`` — always ``None`` in v0.8.8 (Q-C-2 locked:
+      no authoritative source for per-run cost).
+    - ``model_id`` — recorded model id, or ``None`` when popolad's
+      hard-coded default was substituted (detected via
+      ``cloud.model_default_used`` event).
+    - ``model_mode`` — ``"std"`` by default; ``"max"`` /
+      ``"thinking-high"`` when ``extra.model_params`` carried a
+      non-default reasoning value.
+    - ``tokens_input`` / ``tokens_output`` / ``tokens_total`` — always
+      ``None`` in v0.8.8 (F7/F8/F11 not safely available on the public
+      REST/SSE wire — see §2.2).
+    - ``wall_clock_s`` — derived from ``handle.started_at`` and
+      ``handle.completed_at`` (or ``now()`` for live tasks); ``None``
+      when ``started_at`` is missing.
+    - ``agent_status`` — derived from ``handle.cloud_phase`` (or the
+      coarse ``handle.state`` for local tasks); ``None`` when neither
+      is populated.
+    - ``agent_url`` — ``https://cursor.com/agents?id=<agent_id>`` when
+      ``handle.cursor_agent_id`` is set; ``None`` otherwise.
+    - ``doc_anchor`` — :data:`_COST_DOC_ANCHOR` (locked literal).
+
+    Args:
+        handle: :class:`TaskHandle` snapshot (or ``None`` for tasks the
+            state store no longer holds — defensive-only path).
+        base: Base status dict from :meth:`Popolad.get_status` — used
+            for ``state``, ``started_at`` etc. when ``handle`` is
+            ``None``.
+        popolad: Daemon singleton — needed to read the per-task
+            event log for ``cloud.model_default_used`` detection.
+    """
+    cost_estimate_usd: float | None = None
+    tokens_input: int | None = None
+    tokens_output: int | None = None
+    tokens_total: int | None = None
+
+    cmd_extra = _parse_cloud_cmd_extra(handle)
+    model_default_used = _has_model_default_used_event(popolad, base.get("task_id"))
+
+    model_id: str | None = None
+    if cmd_extra is not None:
+        raw_model = cmd_extra.get("model")
+        if isinstance(raw_model, str) and raw_model:
+            model_id = raw_model
+    if model_default_used:
+        model_id = None
+
+    model_mode: str = _resolve_model_mode(cmd_extra)
+
+    wall_clock_s = _resolve_wall_clock_s(handle, base)
+
+    agent_status = _resolve_agent_status(handle, base)
+    agent_url = _resolve_agent_url(handle, base)
+
+    return {
+        "cost_estimate_usd": cost_estimate_usd,
+        "model_id": model_id,
+        "model_mode": model_mode,
+        "tokens_input": tokens_input,
+        "tokens_output": tokens_output,
+        "tokens_total": tokens_total,
+        "wall_clock_s": wall_clock_s,
+        "agent_status": agent_status,
+        "agent_url": agent_url,
+        "doc_anchor": _COST_DOC_ANCHOR,
+    }
+
+
+def _parse_cloud_cmd_extra(handle: Any) -> dict[str, Any] | None:
+    """Return the normalized ``extra`` dict from a cloud task's cmd marker.
+
+    Returns ``None`` for non-cloud tasks, missing handles, or when the
+    marker JSON cannot be parsed (No-Silent-Failures: a WARN-level log
+    fires but the verbose surface degrades to ``model: -``).
+    """
+    if handle is None:
+        return None
+    cmd = getattr(handle, "cmd", None)
+    if not isinstance(cmd, list) or len(cmd) < 3:
+        return None
+    if cmd[:2] != ["__cloud__", "cursor-cloud"]:
+        return None
+    raw = cmd[2]
+    if not isinstance(raw, str):
+        return None
+    try:
+        payload = json.loads(raw)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "verbose status: failed to parse cloud cmd marker JSON: %s", exc
+        )
+        return None
+    if not isinstance(payload, dict):
+        return None
+    extra = payload.get("extra")
+    if not isinstance(extra, dict):
+        return None
+    return extra
+
+
+def _has_model_default_used_event(
+    popolad: Popolad, task_id: str | None
+) -> bool:
+    """Return ``True`` when the task's event log contains a default-used row.
+
+    Scans only the first ~64 events to keep the verbose status path cheap
+    on long-running tasks; ``cloud.model_default_used`` is emitted by
+    rpc's dispatch handler within microseconds of the task being created
+    so it always lives at the head of the file.
+    """
+    if not task_id:
+        return False
+    event_log = popolad.event_log(task_id)
+    if event_log is None:
+        return False
+    try:
+        events = event_log.tail(since_index=0)
+    except (FileNotFoundError, OSError):
+        return False
+    for ev in events[:64]:
+        if isinstance(ev, dict) and ev.get("type") == "cloud.model_default_used":
+            return True
+    return False
+
+
+def _resolve_model_mode(extra: dict[str, Any] | None) -> str:
+    """Map ``extra.model_params`` to a short mode label per spec §3.1.
+
+    The marker's ``extra`` may include an ``model_params`` array of
+    ``{id, value}`` pairs (Cursor's per-model parameter syntax — F6 in
+    the catalog). When present and non-default, surface a short label
+    (``"max"`` / ``"thinking-high"`` etc.) so the user sees the
+    higher-cost dimension at a glance.
+    """
+    if extra is None:
+        return "std"
+    params = extra.get("model_params")
+    if not isinstance(params, list):
+        return "std"
+    for entry in params:
+        if not isinstance(entry, dict):
+            continue
+        pid = entry.get("id")
+        pval = entry.get("value")
+        if pid == "max_mode" and pval is True:
+            return "max"
+        if pid == "thinking" and isinstance(pval, str) and pval not in ("", "off"):
+            return f"thinking-{pval}"
+    return "std"
+
+
+def _resolve_wall_clock_s(handle: Any, base: dict[str, Any]) -> float | None:
+    """Compute wall-clock duration in seconds (1-decimal precision).
+
+    Terminal tasks: ``completed_at - started_at``.
+    Live tasks: ``now() - started_at`` (approximation; spec §4 caveat 2).
+    Missing ``started_at``: ``None`` (No-Silent-Failures).
+    """
+    started_at = getattr(handle, "started_at", None) if handle is not None else None
+    completed_at = (
+        getattr(handle, "completed_at", None) if handle is not None else None
+    )
+    if started_at is None:
+        return None
+    end = completed_at if completed_at is not None else datetime.now(UTC)
+    try:
+        delta = (end - started_at).total_seconds()
+    except (TypeError, ValueError):
+        return None
+    if delta < 0:
+        delta = 0.0
+    return float(round(delta, 1))
+
+
+def _resolve_agent_status(handle: Any, base: dict[str, Any]) -> str | None:
+    """Return a short ``agent_status`` string for the verbose surface.
+
+    Cloud runtime: prefer ``cloud_phase`` (e.g. ``CREATING`` / ``RUNNING``
+    / ``FINISHED``). Local runtime: fall back to the coarse ``state``.
+    Returns ``None`` when neither is populated (legacy snapshot).
+    """
+    if handle is not None:
+        cloud_phase = getattr(handle, "cloud_phase", None)
+        if isinstance(cloud_phase, str) and cloud_phase:
+            return cloud_phase
+        state = getattr(handle, "state", None)
+        if state is not None:
+            return str(state)
+    fallback = base.get("cloud_phase") or base.get("state")
+    if isinstance(fallback, str) and fallback:
+        return fallback
+    return None
+
+
+def _resolve_agent_url(handle: Any, base: dict[str, Any]) -> str | None:
+    """Build ``https://cursor.com/agents?id=<agent_id>`` when available.
+
+    Returns ``None`` for local-runtime tasks (no Cursor dashboard link).
+    """
+    agent_id: str | None = None
+    if handle is not None:
+        candidate = getattr(handle, "cursor_agent_id", None)
+        if isinstance(candidate, str) and candidate:
+            agent_id = candidate
+    if agent_id is None:
+        candidate2 = base.get("cursor_agent_id")
+        if isinstance(candidate2, str) and candidate2:
+            agent_id = candidate2
+    if agent_id is None:
+        return None
+    return f"https://cursor.com/agents?id={agent_id}"
 
 
 def _read_tail(popolad: Popolad, task_id: str, since_index: int) -> list[dict[str, Any]]:

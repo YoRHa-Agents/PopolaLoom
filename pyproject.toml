@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.8.7"
+version = "0.8.8"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -68,6 +68,11 @@ dev = [
     "pytest-mock>=3.12",
     "types-PyYAML",
 ]
+# v0.8.8 T2.3.3 — optional relay secret-scan extra (relay-auto-safety.md §5.1).
+# When installed, popolaloom.relay.secrets prefers detect-secrets over the
+# built-in S1..S6 regex catalogue; without it the scanner emits a WARNING
+# and uses the fallback (per the No-Silent-Failures rule).
+relay-secrets = ["detect-secrets>=1.5.0"]
 
 [project.scripts]
 # Typer CLI 入口 (出处: spec.md §3.1 L0/L1)

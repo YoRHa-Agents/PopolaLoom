@@ -156,27 +156,33 @@ def test_skill_md_version_matches_package(
 
 
 def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
-    """Body length sits in ``[8 000, 28 000]`` chars (~ 2 000–7 000 tokens).
+    """Body length sits in ``[8 000, 32 000]`` chars (~ 2 000–8 000 tokens).
 
     Bump history:
       - Original Stage S3 window: ``[8 000, 16 000]`` (target ~ 11 000
         chars / ~ 2 800 tokens, per plan §S3.7).
       - v0.8.6 bump: 16 000 → 20 000 (SSE + 422 hint additions; see
         v0.8.6 COVERAGE.md §5).
-      - **v0.8.7 bump: 20 000 → 28 000** (cloud HITL Workflow 7 + γ
+      - v0.8.7 bump: 20 000 → 28 000 (cloud HITL Workflow 7 + γ
         deployment instructions + 22-item quick-reference table; see
         v0.8.7 REVIEW.md M-skill-md and the v0.8.7-cloud-hitl-prod
-        change folder for context). The SKILL is the canonical
-        user-facing reference for cloud workloads and the additions
-        are intentional.
-    Any further growth past 28 000 must re-trigger the trim-vs-bump
+        change folder for context).
+      - **v0.8.8 bump: 28 000 → 32 000** (Workflow 8 — Cross-PR relay
+        with Q-C-4 deviation callout + 5 mitigations + Workflow 9 —
+        ``popola cloud runs`` walkthrough w/ multi-run lifecycle; see
+        v0.8.8 plan §4.3 T2.3.1 + §4.4 T2.4.2 for AC and
+        relay-auto-safety.md §6 for the safety callout that anchors
+        the new content. The SKILL is the canonical user-facing
+        reference for cloud workloads and the additions are
+        intentional.
+    Any further growth past 32 000 must re-trigger the trim-vs-bump
     discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v0.8.7 bump: 20_000 → 28_000 (cloud HITL Workflow 7; see v0.8.7 REVIEW.md)
-    assert 8_000 <= body_len <= 28_000, (
+    # v0.8.8 bump: 28_000 → 32_000 (Workflow 8 relay + Workflow 9 cloud runs)
+    assert 8_000 <= body_len <= 32_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 28 000] token-budget window (target ~ 11 000–24 000)."
+        f"[8 000, 32 000] token-budget window (target ~ 11 000–28 000)."
     )
 
 

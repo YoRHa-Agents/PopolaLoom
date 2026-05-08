@@ -26,11 +26,15 @@ import base64
 import json
 import logging
 import os
+import random
 import re
 import threading
 import time
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
+from dataclasses import dataclass
+from datetime import UTC, datetime
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
@@ -877,6 +881,145 @@ def iter_events(
         yield from _emit_sse_frame(event, data_lines, sse_id)
 
 
+# ---------------------------------------------------------------------------
+# v0.8.8 — 429 / quota-class backoff (T2.1.3, blueprint:
+# ``.local/research/v0.8.8_multi_run/quota-config.md`` §2.1 schema, §3
+# algorithm, §3.2 ``Retry-After`` parser).
+#
+# This block is disjoint from T2.1.1's ``create_followup_run`` plumbing so
+# the two PRs can land independently (per PLAN.md §4.1 owned-files note).
+# Lives at module scope above :class:`CloudCursorClient` because both the
+# poller (`daemon/cloud_poller.py`) and the client itself consume it.
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class BackoffConfig:
+    """Validated ``[cloud.backoff]`` section of ``popolad.toml``.
+
+    Defaults match ``quota-config.md`` §2.1 (500 ms base, 30 s cap, 5 retries,
+    ±25 % jitter, ``Retry-After`` honored). The loader in
+    ``daemon/main.py::load_popolad_config`` populates this dataclass after
+    range / type validation per `quota-config.md` §2.3 (No-Silent-Failures).
+    """
+
+    max_retries: int = 5
+    base_backoff_ms: int = 500
+    max_backoff_ms: int = 30_000
+    jitter_pct: int = 25
+    honor_retry_after: bool = True
+
+
+_RETRY_AFTER_HEADER_TRUNC: int = 256
+"""Cap on the offending ``Retry-After`` header in a WARN log (per spec §3.2)."""
+
+
+def _parse_retry_after(raw: str | None) -> int | None:
+    """Parse a ``Retry-After`` header into a non-negative millisecond delay.
+
+    RFC 7231 §7.1.3 allows two forms:
+
+    1. ``delta-seconds`` integer (most common — e.g. ``Retry-After: 60``).
+    2. HTTP-date (rare — e.g. ``Retry-After: Wed, 21 Oct 2026 07:28:00 GMT``).
+
+    Returns ``None`` and emits a WARN log on a garbled header (No-Silent-
+    Failures per ``quota-config.md`` §3.2). Negative deltas (HTTP-dates in
+    the past) are clamped to 0 so callers can still sleep ``min(0, server)``
+    on the next iteration without a sign check.
+    """
+    if raw is None:
+        return None
+    raw_stripped = raw.strip()
+    if not raw_stripped:
+        return None
+
+    if re.fullmatch(r"[0-9]+", raw_stripped):
+        try:
+            return int(raw_stripped) * 1000
+        except ValueError:
+            logger.warning(
+                "cursor-cloud Retry-After int parse failed: %r",
+                raw_stripped[:_RETRY_AFTER_HEADER_TRUNC],
+            )
+            return None
+
+    try:
+        dt = parsedate_to_datetime(raw_stripped)
+    except (TypeError, ValueError) as exc:
+        logger.warning(
+            "cursor-cloud Retry-After date parse failed (%s): %r",
+            type(exc).__name__,
+            raw_stripped[:_RETRY_AFTER_HEADER_TRUNC],
+        )
+        return None
+    if dt is None:
+        logger.warning(
+            "cursor-cloud Retry-After date parse returned None: %r",
+            raw_stripped[:_RETRY_AFTER_HEADER_TRUNC],
+        )
+        return None
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    delta_s = (dt - datetime.now(UTC)).total_seconds()
+    return max(0, int(delta_s * 1000))
+
+
+def _compute_backoff(
+    attempt: int,
+    cfg: BackoffConfig,
+    retry_after_header: str | None,
+    *,
+    rng: random.Random | None = None,
+) -> float:
+    """Compute the per-attempt sleep delay in milliseconds.
+
+    Implements ``quota-config.md`` §3.1 verbatim:
+
+    .. code-block:: text
+
+        if cfg.honor_retry_after and Retry-After present and parses:
+            return min(server_ms, cfg.max_backoff_ms)
+        raw_ms   = cfg.base_backoff_ms * (2 ** attempt)
+        capped   = min(raw_ms, cfg.max_backoff_ms)
+        jitter_f = 1.0 + uniform(-jitter_pct, +jitter_pct) / 100.0
+        return max(0, capped * jitter_f)
+
+    The optional ``rng`` parameter lets tests pin the jitter to a
+    deterministic ``random.Random(seed)`` so the schedule pin test is
+    reproducible across CI runs.
+    """
+    if cfg.honor_retry_after and retry_after_header is not None:
+        server_ms = _parse_retry_after(retry_after_header)
+        if server_ms is not None:
+            return float(min(server_ms, cfg.max_backoff_ms))
+
+    raw_ms = cfg.base_backoff_ms * (2**attempt)
+    capped = min(raw_ms, cfg.max_backoff_ms)
+    if cfg.jitter_pct > 0:
+        rand = rng if rng is not None else random
+        jitter = float(rand.uniform(-cfg.jitter_pct, cfg.jitter_pct)) / 100.0
+        return max(0.0, float(capped) * (1.0 + jitter))
+    return float(capped)
+
+
+def _is_quota_class_409(response: httpx.Response) -> bool:
+    """Predicate for a 409 that should be treated as quota / rate-limit class.
+
+    v0.8.8 reserves this hook for forward-compat with a future Cursor
+    documented ``code = "quota_exceeded"``. As of `endpoints.md` (retrieved
+    2026-05-08), no documented 409 carries quota semantics — the existing
+    ``agent_busy`` / ``agent_archived`` / ``run_not_cancellable`` codes are
+    all preserved by their existing v0.8.6 catalog handling. The default
+    therefore returns ``False`` (i.e. all 409s fall through to
+    :func:`_map_http_error`); a single-line tweak here switches the path
+    when Cursor publishes the new code without bumping the schema.
+    """
+    if response.status_code != 409:
+        return False
+    err_code, _ = _parse_error_body(response)
+    return err_code == "quota_exceeded"
+
+
 class CloudCursorClient:
     """Synchronous ``httpx`` wrapper around ``/v1/agents``.
 
@@ -998,6 +1141,134 @@ class CloudCursorClient:
             timeout_s=timeout_s,
         )
 
+    # -----------------------------------------------------------------
+    # v0.8.8 — `popola cloud runs <task>` history listing (T2.4.1)
+    # runs-subcommand-spec.md §6.3 — Q-C-1 偏离默认.
+    # -----------------------------------------------------------------
+
+    def list_runs(
+        self,
+        agent_id: str,
+        *,
+        limit: int = 20,
+        cursor: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """GET ``/v1/agents/{id}/runs`` — list run history, newest first.
+
+        Per ``runs-subcommand-spec.md`` §1.1 + §6.3 (T2.4.1, Q-C-1
+        偏离默认): wraps Cursor's ``List Runs`` REST endpoint verbatim
+        and returns the parsed body
+        ``{"items": [...], "nextCursor": str | None}``. ``limit`` is
+        clamped to ``[1, 100]`` per the official Cursor docs (default
+        20, max 100). Errors route through :func:`_map_http_error` so
+        the bilingual catalog hints + ``cli_exit`` codes stay aligned
+        with sibling methods (``get_agent`` / ``get_run`` / ...).
+
+        The CLI consumer (:mod:`popolaloom.cli.cloud_cmd`) post-
+        processes the body to derive ``run_index`` and ``wall_clock_s``
+        per spec §3.1 columns 2 + 5; this method does **not** mutate
+        the upstream wire shape.
+
+        Args:
+            agent_id: Cursor durable ``bc-...`` agent id.
+            limit: Page size (default 20, clamped to ``[1, 100]``).
+            cursor: Optional pagination cursor from a previous page's
+                ``nextCursor``; passed to Cursor REST verbatim.
+            timeout_s: Per-call timeout override; ``None`` falls back
+                to the client-level default.
+
+        Returns:
+            Parsed JSON body — ``{"items": [...], "nextCursor": str | None}``.
+
+        Raises:
+            CursorCloudNotFoundError: 404 ``agent_not_found`` (spec §7
+                user-locked exit 4 routing happens at the CLI layer
+                via DECISIONS.md OQ-1).
+            CursorCloudAuthError: 401 / 403 (catalog-mapped to
+                ``cli_exit=77`` per DECISIONS.md OQ-2).
+            CursorCloudError: any other 4xx / 5xx (full taxonomy in
+                :func:`_map_http_error`).
+        """
+        params: dict[str, Any] = {"limit": max(1, min(100, limit))}
+        if cursor is not None:
+            params["cursor"] = cursor
+        return self._request_json(
+            "GET",
+            f"/v1/agents/{agent_id}/runs",
+            params=params,
+            timeout_s=timeout_s,
+        )
+
+    # -----------------------------------------------------------------
+    # v0.8.8 — multi-run follow-up dispatch (T2.1.1)
+    # event-merge-spec.md §1 #1 + §2.3:
+    #   * "Send a follow-up prompt to an existing active agent"
+    #   * 409 ``agent_busy`` → CursorCloudConflictError; queue path lives
+    #     in T2.2.2 (cloud.busy_queued / busy_dispatched).
+    # -----------------------------------------------------------------
+
+    def create_followup_run(
+        self,
+        agent_id: str,
+        prompt: str,
+        *,
+        model: str | None = None,
+        timeout_s: float | None = None,
+    ) -> dict[str, Any]:
+        """POST ``/v1/agents/{id}/runs`` — send a follow-up prompt (T2.1.1).
+
+        The new run uses the agent's current conversation and workspace
+        state (per Cursor docs ``endpoints.md#create-a-run`` retrieved
+        2026-05-08T15:24Z). Only one run per agent may be non-terminal at
+        a time: calling this while another run is ``CREATING`` or
+        ``RUNNING`` returns ``409 agent_busy``, which :meth:`_request_json`
+        maps to :class:`CursorCloudConflictError` via the catalog
+        ``conflict_agent_busy`` entry. The async-queue handling for that
+        409 lives in T2.2.2 (``daemon/cloud_poller.py`` ``PendingDispatchQueue``);
+        this method is the synchronous *primitive* — callers that want
+        the queue semantics must compose with the poller.
+
+        Args:
+            agent_id: Cursor durable ``bc-...`` agent id.
+            prompt: Follow-up prompt body (placed under ``prompt.text``).
+            model: Optional Cursor model id (``composer-2`` etc.); when
+                ``None`` the upstream API selects the agent's current
+                default. Sending an explicit model lets a follow-up flip
+                models without rewinding the conversation.
+            timeout_s: Per-call timeout override; ``None`` falls back to
+                the client-level default.
+
+        Returns:
+            Parsed JSON body — typically ``{"id": "run-...", "status":
+            "CREATING", ...}``. The new ``run_id`` lives at the top-level
+            ``id`` key (per upstream wire shape).
+
+        Raises:
+            CursorCloudConflictError: 409 ``agent_busy`` (a prior run is
+                still ``CREATING`` / ``RUNNING``); not retryable in
+                ``mode = "fail_fast"``.
+            CursorCloudNotFoundError: 404 ``agent_not_found`` (agent
+                deleted / wrong account).
+            CursorCloudError: any other 4xx / 5xx (full taxonomy in
+                :func:`_map_http_error`).
+        """
+        if not prompt:
+            raise ValueError("cursor-cloud: prompt must be non-empty for create_followup_run")
+        payload: dict[str, Any] = {"prompt": {"text": prompt}}
+        if model is not None:
+            if not isinstance(model, str) or not model:
+                raise ValueError(
+                    "cursor-cloud: model must be a non-empty str when provided"
+                )
+            payload["model"] = {"id": model}
+        return self._request_json(
+            "POST",
+            f"/v1/agents/{agent_id}/runs",
+            json_body=payload,
+            timeout_s=timeout_s,
+        )
+
     def stream_run(
         self,
         agent_id: str,
@@ -1065,14 +1336,20 @@ class CloudCursorClient:
         path: str,
         *,
         json_body: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
+        # v0.8.8 (T2.4.1) — additive ``params`` kwarg for query-string GETs
+        # (e.g. ``GET /v1/agents/{id}/runs?limit=...&cursor=...``); existing
+        # callers omit it so behavior is unchanged. Per
+        # ``runs-subcommand-spec.md`` §6.3 trailing note.
         timeout: float | httpx.Timeout | None = timeout_s if timeout_s is not None else None
         try:
             response = self._client.request(
                 method,
                 path,
                 json=json_body,
+                params=params,
                 timeout=timeout,
             )
         except httpx.TimeoutException as exc:
@@ -1100,6 +1377,183 @@ class CloudCursorClient:
         if not response.content:
             return {}
         return cast(dict[str, Any], response.json())
+
+    # -----------------------------------------------------------------
+    # v0.8.8 — quota-aware retry wrapper (T2.1.3)
+    # quota-config.md §3 algorithm + §3.4 integration points.
+    #
+    # Disjoint code block from T2.1.1's ``create_followup_run`` (above).
+    # Both ``CloudPollLoop._poll_run_body`` (single-shot ``GET /runs/{id}``)
+    # and the future follow-up dispatch path delegate here so the only
+    # 429 / quota-class schedule lives in this single helper, eliminating
+    # the ad-hoc ``0.5 * 2**attempt`` schedule that v0.8.5–v0.8.7 carried.
+    # -----------------------------------------------------------------
+
+    def _retrying_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        json_body: dict[str, Any] | None = None,
+        timeout_s: float | None = None,
+        backoff_config: BackoffConfig | None = None,
+        event_log: EventLog | None = None,
+        task_id: str | None = None,
+        sleep: Any = None,
+        rng: random.Random | None = None,
+    ) -> dict[str, Any]:
+        """``_request_json`` with quota-aware retry per ``quota-config.md`` §3.
+
+        On a ``429`` (or quota-class ``409`` per :func:`_is_quota_class_409`)
+        the helper sleeps ``compute_backoff(attempt, cfg, retry_after)`` and
+        retries up to :attr:`BackoffConfig.max_retries` times. Other 4xx /
+        5xx errors propagate verbatim through :func:`_map_http_error` (i.e.
+        the catalog's bilingual hints + ``cli_exit`` unchanged).
+
+        Event semantics (per `quota-config.md` §3.3 + §5.1):
+
+        - ``cloud.queued_quota_exceeded`` fires **once per backoff sequence**
+          (on the first 429 / quota-class 409 only — NOT once per attempt).
+        - ``cloud.queue_exit`` closes the bracket with one of three outcomes:
+
+          * ``"success"`` — the eventual response is < 400.
+          * ``"exhausted"`` — ``max_retries`` reached without success → the
+            caller surfaces ``CursorCloudRateLimitError`` (cli_exit=75).
+          * ``"cancelled"`` — reserved for the future cancel path (``not yet
+            wired in v0.8.8 — placeholder for symmetry).
+
+        Args:
+            method: HTTP verb, e.g. ``"GET"``, ``"POST"``.
+            path: API path, e.g. ``"/v1/agents"`` (joined to base_url).
+            json_body: Optional JSON request body.
+            timeout_s: Per-call timeout (None → client default).
+            backoff_config: Validated :class:`BackoffConfig`. When ``None``
+                falls back to spec defaults (`max_retries=5`, `500 ms` /
+                `30 s` cap / ±25 % jitter / honor Retry-After).
+            event_log: Optional :class:`EventLog` to record
+                ``cloud.queued_quota_exceeded`` / ``cloud.queue_exit``. When
+                ``None``, the helper still retries but emits no events.
+            task_id: Required when ``event_log`` is provided so each event
+                carries the per-task scope.
+            sleep: Optional injectable sleep function (defaults to
+                :func:`time.sleep`); tests may pass a no-op + a chaperone
+                that records the requested durations.
+            rng: Optional :class:`random.Random` for deterministic jitter
+                (tests may pin via ``random.Random(seed)``).
+
+        Returns:
+            Parsed JSON body (same as :meth:`_request_json`).
+
+        Raises:
+            CursorCloudRateLimitError: ``max_retries`` reached on a sustained
+                429 / quota-class 409. ``cli_exit=75``.
+            CursorCloudError: any non-quota error (auth, validation,
+                conflict, etc.) — propagates verbatim.
+        """
+        cfg = backoff_config if backoff_config is not None else BackoffConfig()
+        sleeper: Any = sleep if sleep is not None else time.sleep
+        attempt = 0
+        total_wait_ms: float = 0.0
+        emitted_quota_exceeded = False
+
+        while True:
+            try:
+                response = self._client.request(
+                    method,
+                    path,
+                    json=json_body,
+                    timeout=timeout_s if timeout_s is not None else None,
+                )
+            except httpx.TimeoutException as exc:
+                raise CursorCloudError(
+                    f"cursor-cloud request timeout: {exc}",
+                    status_code=None,
+                    is_retryable=True,
+                ) from exc
+            except httpx.RequestError as exc:
+                raise CursorCloudError(
+                    f"cursor-cloud request failed: {exc}",
+                    status_code=None,
+                    is_retryable=True,
+                ) from exc
+
+            if response.status_code < 400:
+                if attempt > 0 and event_log is not None and task_id is not None:
+                    event_log.append(
+                        "cloud.queue_exit",
+                        {
+                            "task_id": task_id,
+                            "attempts": attempt,
+                            "total_wait_ms": int(total_wait_ms),
+                            "outcome": "success",
+                        },
+                    )
+                if not response.content:
+                    return {}
+                return cast(dict[str, Any], response.json())
+
+            is_429 = response.status_code == 429
+            is_quota_409 = _is_quota_class_409(response)
+            if is_429 or is_quota_409:
+                if attempt >= cfg.max_retries:
+                    if event_log is not None and task_id is not None:
+                        event_log.append(
+                            "cloud.queue_exit",
+                            {
+                                "task_id": task_id,
+                                "attempts": attempt,
+                                "total_wait_ms": int(total_wait_ms),
+                                "outcome": "exhausted",
+                            },
+                        )
+                    logger.warning(
+                        "cursor-cloud %s %s -> %s exhausted after %d attempts",
+                        method,
+                        path,
+                        response.status_code,
+                        attempt,
+                    )
+                    raise _map_http_error(response)
+
+                retry_after_header = response.headers.get("Retry-After")
+                if not emitted_quota_exceeded and event_log is not None and task_id is not None:
+                    parsed_ms = _parse_retry_after(retry_after_header)
+                    event_log.append(
+                        "cloud.queued_quota_exceeded",
+                        {
+                            "task_id": task_id,
+                            "status": response.status_code,
+                            "retry_after_ms": parsed_ms,
+                            "max_retries": cfg.max_retries,
+                            "ts": datetime.now(UTC)
+                            .isoformat(timespec="milliseconds")
+                            .replace("+00:00", "Z"),
+                        },
+                    )
+                    emitted_quota_exceeded = True
+
+                delay_ms = _compute_backoff(attempt, cfg, retry_after_header, rng=rng)
+                logger.warning(
+                    "cursor-cloud %s %s -> %s retry %d/%d after %.0f ms",
+                    method,
+                    path,
+                    response.status_code,
+                    attempt + 1,
+                    cfg.max_retries,
+                    delay_ms,
+                )
+                sleeper(delay_ms / 1000.0)
+                total_wait_ms += delay_ms
+                attempt += 1
+                continue
+
+            logger.warning(
+                "cursor-cloud %s %s -> %s",
+                method,
+                path,
+                response.status_code,
+            )
+            raise _map_http_error(response)
 
 
 class SSEReader:
@@ -1139,6 +1593,7 @@ class SSEReader:
         run_id: str,
         *,
         agent_id: str,
+        run_index: int = 0,
     ) -> None:
         # Q-A-8: SSE reader is structurally barred from cloud_phase mutation.
         collaborator_types = {type(arg).__name__ for arg in (event_log, client)}
@@ -1157,6 +1612,11 @@ class SSEReader:
         self._task_id = task_id
         self._run_id = run_id
         self._agent_id = agent_id
+        # v0.8.8 (T2.1.1): per-run ordinal stamped into every cloud.sse.* envelope
+        # under data.run_index (event-merge-spec.md §2.2). Default 0 keeps legacy
+        # v0.8.6 single-run callers compatible — they get the implicit run-0
+        # identity that v0.8.6 already assumed but never spelled out.
+        self._run_index: int = run_index
         # OQ-5 default: stream_session_id is per-task_id, minted on construction.
         self._stream_session_id: str = f"{task_id}-{int(time.monotonic() * 1000)}"
         self._seq: int = 0
@@ -1196,6 +1656,16 @@ class SSEReader:
         """
         return self._terminal_hint_event
 
+    @property
+    def run_index(self) -> int:
+        """Per-run ordinal stamped into every emitted envelope (v0.8.8, T2.1.1).
+
+        ``0`` is the default for legacy v0.8.6 callers / the initial run;
+        follow-ups created via :meth:`CloudCursorClient.create_followup_run`
+        carry ``1, 2, ...`` per ``event-merge-spec.md`` §2.2.
+        """
+        return self._run_index
+
     def _envelope(
         self,
         sse_id: str | None,
@@ -1204,10 +1674,17 @@ class SSEReader:
         *,
         extra: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
+        # v0.8.8 (T2.1.1) — sextuple identity: stamp run_index into data so
+        # downstream consumers (renderer §3.1, replay §4.1, dedup §4.3) can
+        # group + sort by (run_index, seq) without a separate lookup.
+        # event-merge-spec.md §2.1 + §2.4: the field lives under data.* (not
+        # in the CloudEvents extensions block) because it is task-scoped
+        # business data, not infra metadata.
         env: dict[str, Any] = {
             "task_id": self._task_id,
             "agent_id": self._agent_id,
             "run_id": self._run_id,
+            "run_index": self._run_index,
             "stream_session_id": self._stream_session_id,
             "sse_id": sse_id,
             "seq": seq,
@@ -1228,6 +1705,7 @@ class SSEReader:
                 "task_id": self._task_id,
                 "agent_id": self._agent_id,
                 "run_id": self._run_id,
+                "run_index": self._run_index,
                 "stream_session_id": self._stream_session_id,
                 "sse_id": None,
                 "seq": seq,
@@ -1257,13 +1735,16 @@ class SSEReader:
     ) -> None:
         # state-source-of-truth.md §5 failure mode #4 specifies parse_error
         # carries raw_chunk_b64 + error_type at the top level of ``data``;
-        # there is no parsed ``payload`` to nest, so we flatten.
+        # there is no parsed ``payload`` to nest, so we flatten. v0.8.8 adds
+        # run_index to keep all cloud.sse.* envelopes sextuple-identifiable
+        # (event-merge-spec.md §2.4).
         seq = self._seq
         self._seq += 1
         envelope: dict[str, Any] = {
             "task_id": self._task_id,
             "agent_id": self._agent_id,
             "run_id": self._run_id,
+            "run_index": self._run_index,
             "stream_session_id": self._stream_session_id,
             "sse_id": sse_id,
             "seq": seq,

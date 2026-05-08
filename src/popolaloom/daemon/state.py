@@ -40,6 +40,7 @@ from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
+from typing import Any
 
 
 class TaskState(StrEnum):
@@ -107,10 +108,26 @@ class TaskHandle:
             local runtime or before the cloud ``POST /v1/agents`` call returns.
         cursor_run_id: Cloud run id; ``None`` for local; one popola task =
             one Cursor run in v0.8.5 (follow-up runs deferred to v0.8.6).
+            v0.8.8 promotes the semantics to "latest run id" (the most-recent
+            run for this agent) without renaming — see ``cloud_runs`` for the
+            per-run authoritative map and DECISIONS.md EOQ-E3 for why the
+            rename was deferred to v0.9.0.
         cloud_phase: Fine-grained cloud lifecycle string (``CREATING`` /
             ``RUNNING`` / ``FINISHED`` / ``ERROR`` / ``CANCELLED`` / ``EXPIRED``)
             as reported by the poller; complements the coarse ``state`` field.
             ``None`` for local runtime.
+        cloud_runs: v0.8.8 multi-run support — maps Cursor ``run_id`` →
+            per-run metadata dict; the ``run_index`` key (0-based ordinal
+            within the agent: ``0`` for the initial run, ``n`` for the nth
+            follow-up) is the canonical identifier consumed by EventLog
+            sextuple identity (``event-merge-spec.md`` §2.1) and by the
+            ``[run-N]`` renderer prefix (§3.1). Mutated only by the
+            supervisor (at run creation, before the cloud
+            ``POST /v1/agents`` / ``POST /v1/agents/{id}/runs`` call returns)
+            so the v0.8.6 sole-writer rule for ``cloud_phase`` is unchanged
+            and ``run_index`` writes never race the poller's lifecycle
+            updates. Persisted across daemon restart via ArkTower (Stage C).
+            Empty for local-runtime tasks.
     """
 
     task_id: str
@@ -129,6 +146,7 @@ class TaskHandle:
     cursor_agent_id: str | None = None
     cursor_run_id: str | None = None
     cloud_phase: str | None = None
+    cloud_runs: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     def is_terminal(self) -> bool:
         """``True`` iff this task is in a terminal state (no further transitions)."""
@@ -178,6 +196,7 @@ class StateStore:
         cursor_agent_id: str | None = None,
         cursor_run_id: str | None = None,
         cloud_phase: str | None = None,
+        cloud_runs: dict[str, dict[str, Any]] | None = None,
     ) -> TaskHandle:
         """Update mutable fields on a registered handle and return the new value.
 
@@ -190,6 +209,16 @@ class StateStore:
         v0.8.5: optional cloud kwargs ``runtime``, ``cursor_agent_id``,
         ``cursor_run_id``, ``cloud_phase`` — each field is assigned only when
         the corresponding argument is not ``None`` (pass-through semantics).
+
+        v0.8.8 (T2.1.1): ``cloud_runs`` extends the multi-run map. The
+        argument is a partial dict that is **merged** into the existing
+        ``handle.cloud_runs`` (per-key overwrite of the inner dict) so a
+        caller can add or update a single ``run_id`` entry without losing
+        prior runs. Mutation discipline mirrors ``event-merge-spec.md``
+        §2.2: only the supervisor invokes this path at run-creation time
+        (before ``POST /v1/agents`` / ``POST /v1/agents/{id}/runs``
+        returns), so the I-1 sole-writer guarantee for ``cloud_phase``
+        (in ``daemon/cloud_poller.py``) is unchanged.
 
         Raises:
             KeyError: 当 ``task_id`` 未注册。
@@ -220,6 +249,13 @@ class StateStore:
                 handle.cursor_run_id = cursor_run_id
             if cloud_phase is not None:
                 handle.cloud_phase = cloud_phase
+            if cloud_runs is not None:
+                # Merge semantics: per-run-id overwrite. Caller submits a
+                # partial dict (typically a single run_id key); we preserve
+                # any prior entries so an in-flight follow-up does not
+                # lose the initial run's run_index record.
+                for run_id_key, run_meta in cloud_runs.items():
+                    handle.cloud_runs[run_id_key] = run_meta
             return handle
 
     def cloud_handles(self) -> list[TaskHandle]:

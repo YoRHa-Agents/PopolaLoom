@@ -25,6 +25,11 @@ translation_url: /zh/USER_GUIDE.html
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
 - [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085)
 - [Cloud HITL (Enterprise / Self-Hosted) (v0.8.7+)](#cloud-hitl-enterprise--self-hosted)
+- [Multi-run cloud agents (v0.8.8+)](#multi-run-cloud-agents-v088)
+- [Cost transparency — `status --verbose` (v0.8.8+)](#cost-transparency--status---verbose-v088)
+- [Cross-PR relay — `popola relay` (v0.8.8+)](#cross-pr-relay--popola-relay-v088)
+- [Quota-aware retry (`[cloud.backoff]` / `[cloud.busy_strategy]`) (v0.8.8+)](#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088)
+- [`popola cloud runs` — list cloud-agent run history (v0.8.8+)](#popola-cloud-runs--list-cloud-agent-run-history-v088)
 - [Hands-off envelope (v0.8.0+)](#hands-off-envelope)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
@@ -879,6 +884,473 @@ The `failed` event is emitted **before** the MCP tool returns the error envelope
 - [`long-tool-call-probe.md`](../.local/research/v0.8.7_hitl/long-tool-call-probe.md) — long-tool-call probe protocol; T1.1.1 OQ-1 status (local-only)
 - [`SECURITY_CHECKLIST.md`](../.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md) — 10-item lateral-movement checklist + 4 secret-hygiene items + 4 idempotency items + 4 audit items + 3 approval-policy items + sign-off matrix (local-only)
 - [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](known-issues.md#v087--cloud-hitl-transport-anti-patterns) — the explicit "do NOT do this" callout
+
+## Multi-run cloud agents (v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+v0.8.8 adds **multi-run support** to the `--cli=cursor-cloud` runtime: a single Cursor cloud agent (durable `agent.id`, `bc-*` prefix) may host N sequential follow-up runs created via `POST /v1/agents/{id}/runs`. Each run owns its own lifecycle (`CREATING → RUNNING → terminal`) and its own SSE channel `/v1/agents/{id}/runs/{run_id}/stream` — per Cursor's official wording, *"the stream is scoped to the requested run and does not replay prior runs"*. The PopolaLoom EventLog NDJSON file under `~/.popola/events/<task_id>.jsonl` is therefore the **only** durable source of cross-run history; once the per-run SSE retention window elapses (`X-Cursor-Stream-Retention-Seconds` header), the upstream stream returns `410 stream_expired` and the daemon reads terminal state via `GET /v1/agents/{id}/runs/{run_id}` instead of retrying the stream.
+
+The contract is **strictly sequential**: per Cursor's API, *"Only one run can be active per agent. Calling this while another run is `CREATING` or `RUNNING` returns `409 agent_busy`. Wait for the existing run to terminate, or cancel it."* v0.8.8 honors this with the new async-queue `[cloud.busy_strategy]` (see [Quota-aware retry](#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088) below) — the daemon enqueues the follow-up dispatch behind the active run rather than failing fast, then re-issues the request when the existing run reaches a terminal phase. Parallel runs within one agent are explicitly out of scope (forbidden by upstream).
+
+### Sextuple identity (extends the v0.8.6 quintuple)
+
+Each event envelope written by v0.8.8 producers carries a six-tuple identity key under `data` so downstream consumers (replay, ArkTower archival, attach renderers) can dedup + re-order deterministically:
+
+| Field | Source | Notes |
+|---|---|---|
+| `task_id` | popola-internal | stable across daemon restarts |
+| `run_id` | Cursor `runId` | per-run, stable |
+| `run_index` | popola-derived (0-based) | **NEW in v0.8.8** — first run = `0`, first follow-up = `1`, nth follow-up = `n` |
+| `stream_session_id` | minted per `attach` connect | unchanged from v0.8.6 |
+| `sse_id` | SSE `id:` line; falls back to `seq-{seq}` | unchanged |
+| `seq` | per-`stream_session_id` monotonic | unchanged |
+
+Legacy v0.8.6 envelopes that lack `run_index` are interpreted as `run_index=0` (single-run-only world) so historical event logs replay cleanly. v0.8.8 producers (`SSEReader._envelope`, `cloud_poller._emit_run_status`, terminal `task.{completed,failed,canceled}` paths, and the new `daemon/cloud_events.py` typed wrappers) MUST emit it explicitly.
+
+### Two new event types: `cloud.run_started` / `cloud.run_finished`
+
+Both events are **terminal-cycle markers** that bracket the inner stream of `cloud.run_status` and `cloud.sse.*` events for one run. Because they are emitted by popolad code (not synthesised from SSE), they are dedup-immune and safely re-orderable on replay. They are the canonical handles for renderers and replay tools to detect run boundaries without scanning every intermediate event.
+
+| Producer | `type` | Cadence | Required `data` keys |
+|---|---|---|---|
+| popolad / supervisor | `cloud.run_started` | once per run, at creation | `task_id, agent_id, run_id, run_index, started_at, parent_run_id?, prompt_digest?` |
+| poller (`CloudPollLoop`) | `cloud.run_finished` | once per run, at terminal phase | `task_id, agent_id, run_id, run_index, terminal_phase, ended_at, exit_code` |
+
+`cloud.run_started.parent_run_id` carries the prior `run_id` when this is a follow-up; `null` for the initial run. Renderers use it to display "follow-up of run-N" in the divider line. `prompt_digest` (optional) is a SHA-256 hex of the follow-up `prompt.text` for at-a-glance diffing without leaking secrets.
+
+### `attach --follow` rendering rules
+
+Every line emitted by `popola attach <task_id> --follow` for a cloud task is now prefixed with `[run-N]` where `N = run_index` of the producing event. When the renderer's last-emitted `run_index` differs from the next event's `run_index`, a single divider line is emitted **before** the new event. Example session output for a 2-run agent:
+
+```text
+[run-0] STARTING ───► RUNNING
+[run-0] tool_call: read_file(path="src/main.py")
+[run-0] assistant: I will refactor the main module.
+[run-0] FINISHED (exit 0)
+─── follow-up: run-1 (parent=run-0) ───
+[run-1] CREATING ───► RUNNING
+[run-1] assistant: Adding troubleshooting steps.
+[run-1] FINISHED (exit 0)
+```
+
+Dividers are **renderer-only** — they are NOT appended to EventLog (the underlying `cloud.run_started` event already encodes the boundary, so a fresh replay reconstructs the divider from event metadata).
+
+Per-event sort key for live tail and replay: `(time, run_index, seq)` lexicographic ascending. Late-arriving events (poller observed run-0's terminal phase **after** the user issued the run-1 follow-up) sort by their original `time`, so the renderer can emit a `(late)` badge if their `time` is older than the most-recently-rendered event. Live tail is best-effort; replay (offline rendering) re-orders strictly.
+
+### Replay determinism (I-9 invariant)
+
+Replay is the operation `attach` performs when the user reconnects after a disconnect, or when ArkTower / `popola status --history` re-renders the EventLog file from scratch. **Replay MUST be idempotent**: running it twice on the same NDJSON file yields byte-identical rendered output. Permutations (original order, reversed, shuffled) all yield the same rendered output. Algorithm:
+
+1. Read all envelopes from `~/.popola/events/<task_id>.jsonl`.
+2. Drop duplicates on the sextuple `IdemKey_v088` — keep the **first** occurrence per key.
+3. Sort surviving envelopes by `(time, run_index, seq)` ascending.
+4. Render each envelope through the `[run-N]` prefix + divider rules above.
+
+The sole-writer rule is unchanged from v0.8.6: only `CloudPollLoop` mutates `cloud_phase` on `TaskHandle`; SSE remains append-only on the EventLog. Multi-run inherits this — `run_index` lives on `TaskHandle.cloud_runs[run_id].run_index` and is mutated only by the supervisor (at creation) + persisted via ArkTower so it survives daemon restart.
+
+### Reconciliation against manual follow-ups (lazy)
+
+When run history pre-exists popolad's view (e.g., the user manually launched a follow-up via `https://cursor.com/agents` outside of `popola dispatch`), the daemon reconciles **only on the missing-`run_index` path**: at attach time, if an envelope arrives with no `run_index` and the in-memory counter cannot fill it, popolad calls `GET /v1/agents/{id}/runs?limit=100` once, counts oldest-first, and emits a `cloud.run_index_reconciled` SRE-visibility event so operators can detect runaway out-of-band activity. The reconcile call rides the `[cloud.backoff]` schedule (see below) — it is NOT unconditional on every attach.
+
+For wire-level details (full sextuple semantics, six test invariants I-7..I-12, late-event handling, the `cloud.run_index_reconciled` event payload), see the local-only research note at `.local/research/v0.8.8_multi_run/event-merge-spec.md`.
+
+## Cost transparency — `status --verbose` (v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+v0.8.8 ships a **`popola status <task_id> --verbose`** flag that surfaces a curated set of cost-adjacent fields for cloud-runtime tasks. Per the locked v0.8.8 design decision **Q-C-2** (`decision-matrices-zh.md`), the cost block is **`--verbose`-only** — default `popola status` output is unchanged.
+
+### Honest disclosure: `cost: n/a` is the only value in v0.8.8
+
+The Cursor Cloud Agents v1 API does **not** document any per-run cost or token usage fields on the public REST or SSE wire. Run JSON (`GET /v1/agents/{id}/runs/{run_id}`) is just `{id, agentId, status, createdAt, updatedAt}` — no `usage`, no `cost`, no `tokens_*`. The only cost surface (`/teams/filtered-usage-events`) lives on the **Admin API**, is gated by Enterprise plan + `admin:*` scope, polls at hourly cadence, and has **no documented `runId` join key** to attribute charges to a specific cloud-agent run. Heuristic matching of money is unsafe.
+
+PopolaLoom v0.8.8 therefore prints **`cost: n/a`** as a deliberate honest-disclosure literal rather than fabricating a number derived from token deltas × per-model rate-card. The display follows the locked compact one-line format below; surface tracking + future Admin-API correlation is in the v0.9+ roadmap.
+
+### The 5 documented fields
+
+```text
+cost: n/a  model: <id|->  [mode: max|thinking-high]  wall: NN.Ns  link: <agent.url>
+```
+
+| Field | Source | Notes |
+|---|---|---|
+| `cost: n/a` | locked literal | No fabricated numbers — operators verify cost via the dashboard link below. |
+| `model: <id>` | `extra["model"]` recorded at dispatch time | Falls back to `model: -` when the user did not pass `model` and Cursor server-side-resolved the default. The daemon emits a `cloud.model_default_used` event so SREs can audit drift if Cursor's system default ever changes. |
+| `mode: max` (segment) | `extra["model_params"]` includes a non-default reasoning / max-mode value | Omitted entirely (NOT rendered as `mode: std`) when defaults apply, to keep the line compact. |
+| `wall: NN.Ns` | derived from `(updatedAt − createdAt)` for terminal runs; `now − createdAt` for `RUNNING` (suffixed `~`) | This is end-to-end **latency**, not invoice-line minutes — Cursor may bill on tokens, not wall time. |
+| `link: <agent.url>` | `agent.url` from `GET /v1/agents/{id}` | Open in browser to inspect raw cost via the dashboard if you have admin scope. |
+
+Example renderings:
+
+```text
+$ popola status cursor-cloud-deadbeef --verbose
+... (default block — runtime, state, cursor_agent_id, cursor_run_id, cloud_phase, etc.) ...
+cost: n/a  model: composer-2  wall: 41.2s  link: https://cursor.com/agents?id=bc-xxxxxxxx
+
+$ popola status cursor-cloud-archived --verbose
+... (default block) ...
+cost: n/a  model: claude-4-sonnet-thinking  mode: max  wall: 312.7s  agent: ARCHIVED  link: https://cursor.com/agents?id=bc-xxxxxxxx
+```
+
+### `--json --verbose` schema
+
+```json
+{
+  "task_id": "cursor-cloud-deadbeef",
+  "status": "FINISHED",
+  "verbose": {
+    "cost_estimate_usd": null,
+    "model_id": "composer-2",
+    "model_mode": "std",
+    "tokens_input": null,
+    "tokens_output": null,
+    "tokens_total": null,
+    "wall_clock_s": 41.2,
+    "agent_status": "ACTIVE",
+    "agent_url": "https://cursor.com/agents?id=bc-xxxxxxxx",
+    "doc_anchor": "https://cursor.com/docs/cloud-agent/api/endpoints.md#get-a-run"
+  }
+}
+```
+
+All cost / token fields are explicitly `null` (not absent) so machine-readers can `if x.cost_estimate_usd is None` without a `KeyError`. `doc_anchor` points the reader at the public schema so they can verify field provenance independent of PopolaLoom version. **`--json` without `--verbose` MUST omit the entire `verbose` block** (key absent, NOT null) so accidental `jq .verbose.cost_estimate_usd` on default-mode JSON is a hard error rather than a silent null.
+
+### Logging policy (file permissions, log levels)
+
+PopolaLoom v0.8.8 enforces the **No Quiet Leakage** invariant for cost-adjacent data:
+
+- The `daemon/log_redact.py` helper `scrub_cost_fields(payload: dict) -> dict` deep-copies and removes any of `{"usage", "tokens_input", "tokens_output", "cacheReadTokens", "cacheWriteTokens", "chargedCents", "totalCents", "tokenUsage", "cursorTokenFee", "spendCents", "cost_estimate_usd"}` before any `INFO` / `WARNING` emit.
+- `EventLog.append()` calls `os.chmod(path, 0o600)` after rotation/creation; `events/*.jsonl` is owner-only.
+- `popolad.debug.log` (only enabled by explicit `LOG_LEVEL=DEBUG`) is mode `0o600` since DEBUG payloads may contain undocumented response extras.
+- A CI lint guard in the default lane greps `logger.info(.*\busage\b)` and `logger.info(.*\bcost\b)` outside `tests/`.
+
+For the full 13-field catalog (F1..F13: documented stable, SDK-only deferred, Admin-API never-joined), see the local-only research note at `.local/research/v0.8.8_multi_run/cost-fields.md`.
+
+## Cross-PR relay — `popola relay` (v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+> **⚠️ Q-C-4 deviation callout — relay defaults to AUTO**
+>
+> v0.8.8 changes `popola relay <task_a>` from "default human-confirm" (the v0.8.7 baseline) to **default auto-dispatch**. This is a deliberate deviation from the safe default in `decision-matrices-zh.md` Q-C-4 (per the user-locked roadmap entry *"若选其他：全自动 handoff"*). Operators opt out with `--no-confirm` (refuse) or `--dry-run` (preview-only); operators wanting the v0.8.7 default flip back globally by setting `[cloud.relay] mode = "confirm"` in `popolad.toml`.
+>
+> Five mandatory mitigations (M1..M5) replace the human gate with a machine-enforced policy gate; **read this section before running `popola relay` in a multi-org or production context.** Spec: [`relay-auto-safety.md`](../.local/research/v0.8.8_multi_run/relay-auto-safety.md) (research note, local-only — `.local/` is gitignored).
+
+### What `popola relay` does
+
+`popola relay <task_a>` turns the **output** of one cloud run (`task_a`) into the **input** of a brand-new cloud run (`task_b`). It targets the most common reviewer-loop pattern: run A produced a PR / branch / summary; run B has to pick that up and continue work — possibly against a sibling repository. The primitive sits one rung above the v0.7.x file-based `HandoffEnvelope` and one rung below `popola dispatch --cli=cursor-cloud`. It does three things in a single well-typed step:
+
+1. **Read terminal-state outputs of `task_a`** via `CloudCursorClient.get_agent` / `.get_run` (filtering on `state.is_terminal()`).
+2. **Materialise a follow-up dispatch payload** (`prompt`, `repos[0].url`, `model`, `auto_create_pr=False`) shaped exactly like `CloudCursorClient.create_agent` expects.
+3. **Dispatch (or preview) the payload** through the same daemon pipeline `popola dispatch --cli=cursor-cloud` already uses — a relay-launched run is observably indistinguishable from a hand-typed `dispatch`.
+
+### Synopsis (7 flags)
+
+```text
+popola relay <task_a> [--target-repo URL]
+                      [--message TEXT]
+                      [--dry-run | --no-confirm]
+                      [--confirm-allowlist]
+                      [--idempotency-key KEY]
+                      [--json]
+                      [--verbose]
+                      [-h | --help]
+```
+
+| flag | default | semantics |
+|---|---|---|
+| `--dry-run` | off | Compute the proposed payload, run the **full** allowlist + secret-regex + size-cap policy gate, write a `mode="dry-run"` row to the audit log, print the payload (or its JSON shape under `--json`), and **exit 0 without any cloud API call**. Mutually exclusive with `--no-confirm`. |
+| `--no-confirm` | off | **Explicit per-invocation opt-in** to the auto-dispatch deviation. When the operator has set `[cloud.relay] mode = "confirm"` in `popolad.toml`, this flag re-enables auto on a per-call basis. Mutually exclusive with `--dry-run`. |
+| `--target-repo URL` | inherited from `task_a.repos[0].url` | Override target repo for run_b. Required when run_a's payload had no repo (legacy / pure-prUrl runs). MUST be a fully-qualified GitHub URL (`https://github.com/<org>/<repo>`). |
+| `--confirm-allowlist` | off | Required when `--target-repo` resolves to a repo NOT in `[cloud.relay] repo_allowlist`. Without this flag, an out-of-allowlist target is rejected with **exit 1** (`PolicyDenied`). The override is recorded as `gate_decision="override_confirm_allowlist"` in the audit log. |
+| `--message TEXT` | extracted summary from run_a's last `result` SSE event (truncated to 4000 chars) | Custom prompt **prefix** for run_b. The final prompt is `f"{message_prefix}\n\nFollow-up to: {prUrl}\n\nContext:\n{summary}"`. Empty `--message ""` is rejected with exit 2. |
+| `--idempotency-key KEY` | derived sha256-prefix | Stable token used to suppress double-dispatch on operator retry. Same `(source_task, target_repo, idempotency_key)` within `[cloud.relay] idempotency_window_s` (default 3600 s = 1 h) returns the previously-recorded `target_task` with `outcome="dispatched_idempotent"`. |
+| `--json` | off | Emit the dispatch summary as a single JSON object on stdout (machine-readable). Keys: `source_task, source_repo, target_task, target_repo, model, prompt_sha256, mode, outcome, audit_path, dispatched_at`. |
+
+### The 5 mandatory mitigations (M1..M5)
+
+The deviation is locked safely behind five mitigations enforced as **Stage 5 release-gate criteria** — `tag v0.8.8 + GitHub Release` does NOT proceed until all 5 are evidenced (zero deferred items per `relay-auto-safety.md` §10):
+
+1. **M1 — Repo allowlist** (`[cloud.relay] repo_allowlist`). **Default `[]` BLOCKS all relays out-of-the-box.** A fresh install cannot accidentally relay anywhere; operators MUST configure the allowlist consciously. The match is full string equality on the canonicalised `<org>/<repo>` form (no regex, no glob — operator's "looks safe" intuition doesn't map to glob's actual matching semantics, and the v0.8.8 lock window is too small to ship a typed regex grammar with full coverage). Override per-invocation with `--confirm-allowlist`; the override is forensically recorded.
+2. **M2 — Append-only audit log** at `.local/.agent/archive/relay/<task_a_id>.jsonl` (mode `0o600`, parent dir `0o700`). Every `popola relay` invocation produces exactly one terminal audit row — `auto` / `confirmed` / `dry-run` / `rejected_*` / `secret_detected` / `cloud_api_error`. The audit row is written **before** the cloud `POST` (so a crash mid-call leaves a `dispatch_inflight` row that the next invocation reconciles against the daemon's StateStore). 14 mandatory keys per row including `payload_sha256` (sha256 of the canonical envelope, NOT the prompt body — the audit log NEVER stores the prompt body, only its hash, so a 30 KB prompt produces a 16-byte audit field).
+3. **M3 — Secret-redaction pre-flight scanner**. Primary backend: [`detect-secrets`](https://github.com/Yelp/detect-secrets) v1.5.0+; fallback: built-in regex catalogue covering 6 token shapes — AWS Access Key (`AKIA…`), GitHub PAT (`ghp_…`), Stripe API Key (`sk_live_…` / `sk_test_…`), JWT (`eyJ…`), Slack Token (`xoxb-…`), and a generic high-entropy heuristic (Shannon ≥ 4.5 bits/char). Hit → exit 1, audit row `outcome="rejected_secret_detected"`, full token redacted to `…<last4>` everywhere. The escape hatch `--allow-secret-shape <name>` is per-shape (NOT a global bypass) and is itself audited. The scanner runs **before** the allowlist gate so a leaked secret never enters an audit log keyed off "we then chose to override the allowlist".
+4. **M4 — RELEASE_NOTES callout** at the top of every v0.8.8 release-notes block warning operators of the auto-default behavior change. See [`RELEASE_NOTES.md`](../RELEASE_NOTES.md). A docs-side test (`tests/docs/test_release_notes_callout.py`) asserts the callout's presence + position above the first `##` H2 heading.
+5. **M5 — CI isolation tests** in `tests/cli/test_relay_safety.py` (default `pytest -m "not real_cursor_cloud"` lane): allowlist accept/reject, secret rejection parametrized over all 6 shapes (S1..S6), audit-row shape with `0o600` mode assertion, and `--dry-run` produces zero outbound HTTP requests (mock `httpx` via `respx`).
+
+### Minimal `[cloud.relay]` config
+
+```toml
+# popolad.toml — cross-PR relay primitive (v0.8.8)
+[cloud.relay]
+mode                  = "auto"     # "auto" (default; Q-C-4 deviation) | "confirm" (restores v0.8.7 human gate)
+repo_allowlist        = ["neolix-ai/popola-loom", "neolix-ai/arktower"]
+prompt_size_cap_bytes = 16384      # int, [1024, 1_048_576]; default 16 KiB
+idempotency_window_s  = 3600       # int, [60, 86_400]; default 1 h
+audit_root            = ""         # str; default ".local/.agent/archive/relay/" when empty
+```
+
+The loader rejects three forbidden values for v0.8.8 (with the spec-locked error messages so the rejection is forensically traceable): `require_confirm_allowlist_flag = false`, `secret_scan_enabled = false`, `dry_run_emits_audit = false`. These are locked-on for v0.8.8; v0.9 may relax `secret_scan_enabled` to `true`-default-warn-on-set-false.
+
+### Examples
+
+```bash
+# Default — auto-dispatch (Q-C-4 deviation), inheriting target repo
+$ popola relay v088-task-abc
+DISPATCHED v088-task-def → https://github.com/neolix-ai/popola-loom
+  model=composer-2  prUrl=https://github.com/neolix-ai/popola-loom/pull/42
+  audit=.local/.agent/archive/relay/v088-task-abc.jsonl
+
+# Preview only — no API call, full policy gate runs
+$ popola relay v088-task-abc --dry-run --json
+{"mode": "dry-run", "outcome": "would_dispatch",
+ "source_task": "v088-task-abc", "source_repo": "neolix-ai/popola-loom",
+ "target_repo": "neolix-ai/popola-loom", "model": "composer-2",
+ "prompt_sha256": "9c1f...", "audit_path": "...", "dispatched_at": null}
+
+# Cross-org relay — repo NOT in allowlist; requires explicit override
+$ popola relay v088-task-abc --target-repo https://github.com/external/fork
+ERROR: target repo 'external/fork' is not in [cloud.relay] repo_allowlist
+       (allowlist: ['neolix-ai/popola-loom', 'neolix-ai/arktower'])
+       Pass --confirm-allowlist to override; the override is recorded
+       to the audit log and visible in popola status --verbose.
+$ echo $?
+1
+
+# Same invocation, allowlist override accepted (forensically traceable)
+$ popola relay v088-task-abc --target-repo https://github.com/external/fork \
+                              --confirm-allowlist
+WARNING: dispatching relay outside repo_allowlist via --confirm-allowlist
+         (target=external/fork); audit row recorded at <path>
+DISPATCHED v088-task-ghi → https://github.com/external/fork  ...
+```
+
+### Exit-code matrix
+
+The `popola relay` exit codes are a **strict subset** of the codes already in flight from `cursor_cloud.py` plus the local CLI codes 0 / 1 / 2; no new codes introduced. CI integrations may safely write `case $? in` switches against this closed set:
+
+| Code | Class | When |
+|---|---|---|
+| **0** | success | dispatch returned 200/201; OR dry-run completed; OR idempotent skip |
+| **1** | policy denied | allowlist gate failed (no override); secret regex hit; payload too large; user typed `n` at confirm prompt under `mode = "confirm"` |
+| **2** | invalid args | mutex flags, bad URL, empty `--message`, non-terminal `task_a`, missing `task_a`, TTY-less confirm |
+| **75** | cloud API error | 5xx from `POST /v1/agents`; network timeout; `CursorCloudError` base |
+| **77** | cloud auth error | 401/403 → `CursorCloudAuthError` |
+| **78** | cloud feature unavailable | `CursorCloudPlanRequiredError` / `GithubAppMissingError` / `GithubAppPermissionError` |
+| **100** | cloud not found | `CursorCloudNotFoundError` on the run_a probe |
+| **102** | cloud conflict | `CursorCloudConflictError` (`409 agent_busy`) when `[cloud.busy_strategy] mode = "fail_fast"`; under the default `"queue"` mode the daemon converts this to a queued dispatch and the CLI exits 0 with a `queued_at` timestamp in the JSON body |
+
+For the full design (12-key audit row + 5 optional keys, payload extraction rules, derivation of `prompt_sha256`, the order-of-operations gate, integration points, the 8 test invariants TI-1..TI-8), see the local-only research notes at `.local/research/v0.8.8_multi_run/relay-primitive.md` and `.local/research/v0.8.8_multi_run/relay-auto-safety.md`.
+
+## Quota-aware retry (`[cloud.backoff]` / `[cloud.busy_strategy]`) (v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+v0.8.5–v0.8.7 surfaced 429 / 409 errors immediately; operators had **no knob** to tune the backoff schedule, no `Retry-After` honoring, and no observable signal that the daemon was sitting in backoff (a stalled CLI looked indistinguishable from a hung daemon). v0.8.8 closes both gaps via two new `popolad.toml` sections — `[cloud.backoff]` (configurable retry schedule with `Retry-After` honoring; Q-C-3) and `[cloud.busy_strategy]` (async-queue for `409 agent_busy`; Q-C-5) — and four new default-visible EventLog event types (`cloud.queued_quota_exceeded`, `cloud.queue_exit`, `cloud.busy_queued`, `cloud.busy_dispatched`, `cloud.busy_timeout`) per Q-C-7.
+
+### `[cloud.backoff]` — 429 retry schedule
+
+```toml
+[cloud.backoff]
+max_retries        = 5      # int, [0, 20]; 0 disables retry entirely (single-shot)
+base_backoff_ms    = 500    # int, [50, 60_000]; initial delay for retry #0
+max_backoff_ms     = 30000  # int, [base_backoff_ms, 600_000]; per-attempt cap
+jitter_pct         = 25     # int, [0, 100]; ±N% multiplicative jitter
+honor_retry_after  = true   # bool; when present, server header replaces the computed backoff
+```
+
+With the documented defaults, the **un-jittered** schedule is `500 ms → 1 s → 2 s → 4 s → 8 s → 16 s` (cumulative worst-case ≈ 31.5 s). With ±25% jitter it lands in `[23.6 s, 39.4 s]` — five retries fits inside Cursor's per-minute rate-limit window. The wrapper helper `cursor_cloud._retrying_request` consumes this config and is now the **sole** backoff implementation in PopolaLoom; the existing ad-hoc `0.5 * 2**attempt` in `CloudPollLoop._poll_run_body` (which had **no jitter and no `Retry-After` honoring**) has been retired.
+
+`Retry-After` is RFC 7231 §7.1.3: either a `delta-seconds` integer or an HTTP-date. The parser handles both forms (HTTP-date via `email.utils.parsedate_to_datetime`, clamped ≥ 0); a garbled header logs a `WARNING` (per No Silent Failures) and falls through to the local schedule. When `honor_retry_after = true` (default) and the server header is parseable, the server hint **replaces** the computed backoff (clamped to `max_backoff_ms`). `false` is a debug escape hatch — useful for validating the local schedule independently of server hints.
+
+The events surface — a single `cloud.queued_quota_exceeded` envelope at attempt #0 plus a `cloud.queue_exit` envelope at the end of the sequence (`outcome ∈ {"success","exhausted","cancelled"}`) — fires **once per backoff sequence**, not per attempt; the attach UI cares about "we hit a wall", not the individual retry beats. Default-visible: `popola status` surfaces a single line `WAITING: rate_limit retry 2/5 next=~2.5s` until the matching `cloud.queue_exit success` arrives, and `popola attach` prints the events inline (NOT debug-filtered).
+
+### `[cloud.busy_strategy]` — `409 agent_busy` async queue
+
+Cursor's API contract: *"Only one run can be active per agent. Calling this while another run is `CREATING` or `RUNNING` returns `409 agent_busy`. Wait for the existing run to terminate, or cancel it."* — meaning **the conflict is transient and self-resolving**. v0.8.8 ships `mode = "queue"` as the default per Q-C-5: the daemon enqueues the follow-up dispatch (FIFO, keyed by `agent_id`), polls the existing run every `queue_poll_interval_s`, and re-issues the request when it reaches a terminal phase.
+
+```toml
+[cloud.busy_strategy]
+mode                  = "queue"   # "queue" (default) | "fail_fast" (preserves v0.8.7 behavior)
+queue_poll_interval_s = 5         # int, [1, 60]; cadence for the daemon's pending-queue drainer
+queue_max_wait_s      = 1800      # int, [60, 86_400]; ceiling per queued task; 0 = no ceiling
+notify_on_dispatch    = true      # bool; emit cloud.busy_dispatched on transition (default true)
+```
+
+CLI contract under `mode = "queue"`: `popola dispatch --cli=cursor-cloud ...` returns immediately when the daemon enqueues, with stderr `QUEUED: agent=<id> position=<n> deadline=<iso>; popola attach <task_id> to follow.` — and exits **0** at this point. The daemon owns subsequent failures; once the dispatch fires, the standard `task.completed` / `task.failed` event sequence drives the eventual exit code surfaced via `popola status` / `popola attach`. No exit-code change for the dispatch CLI — the queue path is asynchronous by design. `popola attach <task_id>` shows a `WAITING` banner until `cloud.busy_dispatched` is observed.
+
+Three new default-visible events fire in this path:
+
+| Event | When | Payload |
+|---|---|---|
+| `cloud.busy_queued` | On 409 → enqueue | `{task_id, agent_id, current_run_id, queue_position, deadline_ts}` |
+| `cloud.busy_dispatched` | On successful re-issue | `{task_id, agent_id, prev_run_id, new_run_id, waited_ms}` |
+| `cloud.busy_timeout` | On `queue_max_wait_s` expiry | `{task_id, agent_id, waited_ms, current_run_id_at_timeout}` |
+
+Timeout semantics: `queue_max_wait_s` expiry → the queued task is converted to a **fail-fast result with exit `75`** — overload, NOT exit `102` — because the wait expired, not the agent itself. Under `mode = "fail_fast"` (v0.8.7-compatible), `409 agent_busy` propagates immediately to exit `102` and no queue is consulted.
+
+### Validation rules (No Silent Failures)
+
+The `daemon/main.py:load_popolad_config` extension follows the v0.8.7 `[hitl.cloud]` rejection style: type-strict (`bool` rejected for any int field; `int` rejected for any `str` field), range-strict (no clamping — out-of-range rejected), inter-key invariant `max_backoff_ms ≥ base_backoff_ms` and `mode = "queue" ⇒ queue_poll_interval_s ≤ queue_max_wait_s` (when `queue_max_wait_s > 0`), and unknown-key warning so a future-flag typo (`max_retires`, `repos_allowlist`) surfaces before bite. v0.8.7 deployments with no `[cloud.backoff]` / `[cloud.busy_strategy]` blocks load cleanly under the v0.8.8 schema with documented defaults.
+
+For wire-level details (full backoff algorithm with jitter, `Retry-After` parser, queue lifecycle state machine, exit-code matrix, and the catalog redundancy plan for v0.8.9), see the local-only research note at `.local/research/v0.8.8_multi_run/quota-config.md`.
+
+## `popola cloud runs` — list cloud-agent run history (v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+> **Q-C-1 deviation note**: the locked decision in `decision-matrices-zh.md` was to defer this subcommand to v0.9.0 (default `"status` displays `cursor_run_id` / `latest`; document the API for power users") — v0.8.8 ships the **偏离默认 path** so users can enumerate, paginate, and inspect every run of a cloud agent without leaving the CLI. `popola list` stays single-row-per-task (no multi-run sprawl) and `popola cloud runs` is the dedicated history viewer.
+
+`popola cloud runs <task_id>` wraps Cursor's `GET /v1/agents/{id}/runs` REST endpoint **directly** via a new `CloudCursorClient.list_runs` method. The authoritative source for run history is Cursor's REST — the CLI bypasses local cache so listings are always a fresh authoritative read.
+
+### Synopsis
+
+```text
+popola cloud runs <task_id> [--limit N | --cursor S | --json | --include-events]
+```
+
+| flag | default | help |
+|---|---|---|
+| `--limit N` | `20` | Max rows per page. Mirrors Cursor REST `?limit=`; **capped at 100** per official docs. Values >100 are clamped + a stderr warning is logged (No-Silent-Failures). |
+| `--cursor S` | `None` | Pagination cursor from a previous page's `next_cursor`. Honored verbatim — popola does not auto-paginate. |
+| `--json` | `false` | Emit machine-readable JSON instead of a Rich table (full `run_id` un-truncated; matches the schema below). |
+| `--include-events` | `false` | Add per-row `events_summary` (1 extra `GET /runs/{run_id}` round-trip per row). Slower but useful for post-mortem. |
+
+The new sub-app `popola cloud` is a **Typer sub-app** registered alongside `popola popolad` / `popola init` / `popola skill` / `popola handoff`; future cloud-only verbs (`popola cloud agents list`, `popola cloud cancel <run>`) will extend the same group without further CLI churn.
+
+### Default 6-column table
+
+| # | Column | Render rule |
+|---|---|---|
+| 1 | `run_id` | Truncated to first 16 chars + `…`. Full id available in `--json`. |
+| 2 | `run_index` | Zero-based; **latest run = highest index** (per user-locked Q-C-1 derivation). Computed from `(total_returned + paged_offset) - 1 - i` where `i` is position in `items` (newest-first). |
+| 3 | `state` | Lowercased Cursor `RunStatus` enum: `creating` / `running` / `finished` / `cancelled` / `expired` / `error`. |
+| 4 | `created_at` | Verbatim ISO-8601 (e.g. `2026-04-13T18:30:00.000Z`). |
+| 5 | `wall_clock` | `HH:MM:SS` when `≥ 60 s`; `N.Ns` when `< 60 s`. Live runs (non-terminal) suffix `…` (e.g. `00:01:23…`) to signal the clock is still ticking. |
+| 6 | `model` | Parent agent's request-time model (1 cached `GET /v1/agents/{id}` per invocation). Falls back to `-` when unavailable. |
+
+Sample output:
+
+```text
+$ popola cloud runs cursor-add-readme-3a7f9c1d
+┃ run_id              ┃ run_index ┃ state    ┃ created_at                  ┃ wall_clock ┃ model                    ┃
+│ run-00000000-00…    │ 1         │ running  │ 2026-04-13T18:50:00.000Z    │ 00:01:00…  │ claude-4-sonnet-thinking │
+│ run-aaaaaaaa-00…    │ 0         │ finished │ 2026-04-13T18:30:00.000Z    │ 00:15:00   │ claude-4-sonnet-thinking │
+
+... showing 2 runs (page); more available. To continue:
+  popola cloud runs cursor-add-readme-3a7f9c1d --cursor=eyJyZHNJZCI6...
+```
+
+Empty list: when `items == []` and `nextCursor == null`, prints `No runs for task <task_id>` to stdout and exits **0** (an empty result is NOT an error).
+
+### `--json` schema preview
+
+```json
+{
+  "task_id": "cursor-add-readme-3a7f9c1d",
+  "agent_id": "bc-00000000-0000-0000-0000-000000000001",
+  "runs": [
+    {
+      "run_id": "run-00000000-0000-0000-0000-000000000002",
+      "run_index": 1,
+      "state": "running",
+      "created_at": "2026-04-13T18:50:00.000Z",
+      "updated_at": "2026-04-13T18:51:00.000Z",
+      "wall_clock_s": 60.0,
+      "model": "claude-4-sonnet-thinking",
+      "events_summary": null
+    }
+  ],
+  "next_cursor": "eyJ...",
+  "has_more": true
+}
+```
+
+`runs[].run_id` is un-truncated (table truncation is render-only); `next_cursor` is echoed verbatim from Cursor REST; `has_more = (next_cursor != None)`. The `--json` output validates against the JSON schema fixture at `tests/cli/fixtures/cloud_runs_v1.json`.
+
+### Error matrix (8 cases)
+
+| Failure | Cursor HTTP | popola exit | stderr message |
+|---|---|---|---|
+| `task_id` unknown locally | n/a | **4** | `error: task not found: <task_id>` |
+| Task is `runtime=local` (not cloud) | n/a | **1** | `error: not a cloud task; use 'popola list' to find a cloud task` |
+| `CURSOR_API_KEY` unset | n/a | **77** | `error: CURSOR_API_KEY env var is required for 'popola cloud runs'` |
+| Cursor API agent gone | 404 `agent_not_found` | **4** (Q-C-1 OQ-1 — diverges from `popola dispatch` exit 100) | `error: cursor agent not found (may have been deleted): <agent_id>` + bilingual hint |
+| Cursor API auth / revoked key | 401 / 403 | **77** (Q-C-1 OQ-2 — aligns with catalog `CursorCloudAuthError`) | `error: cursor API auth failed: <hint_zh + hint_en>` |
+| Plan required | 403 `plan_required` | **78** | catalog hint |
+| Rate limit (429) | 429 | **75** | catalog hint + observed `Retry-After` |
+| Backend 5xx | 500/502/503/504 | **75** | catalog hint |
+| Daemon down (Step 1 — `GET /status/...`) | n/a | **1** | `error: popolad not running, run 'popola popolad start' to start it` |
+
+The two-step call structure: **(1)** daemon-bound `GET /status/{task_id}` (UDS) resolves `cursor_agent_id` and validates `runtime=cloud`; failures route through `_render_connect_error` (exit 1) for daemon-down and `error: task not found: <task_id>` (exit 4) for missing. **(2)** Cloud-direct `GET /v1/agents/{id}/runs` (Cursor REST) — failures route through `_map_http_error` per the table above. **No** caching layer sits between (1) and (2): each `popola cloud runs` invocation is a fresh authoritative read.
+
+### Compared to `popola status --verbose`
+
+| | `popola status <task_id> --verbose` | `popola cloud runs <task_id>` |
+|---|---|---|
+| Scope | **Single latest run** (v0.8.5+ `cursor_run_id` semantics; v0.8.8 makes this `latest_run_id`) | **Full pageable history** of every run for the agent, newest first |
+| Source | Local daemon (`GET /status/{task_id}` over UDS) | Cursor REST live (`GET /v1/agents/{id}/runs`); local consulted only to resolve `cursor_agent_id` |
+| Cost surface | 5 fields incl. `cost: n/a`, `model`, `wall`, `link` | 6-column table (no cost surface; `model` echoed from agent-level fallback) |
+| Pagination | n/a (one row) | `--cursor` + `--limit` (default 20, max 100); CLI does NOT auto-paginate |
+| Use when | "what's the current state of my task?" | "what's the full run history of my long-running cloud task?" |
+
+### Walkthrough scenarios
+
+#### Scenario 1 — list all runs of a long-running cloud task (default + pagination)
+
+You dispatched a cloud task days ago, manually issued several follow-ups via the [Cloud Agents dashboard](https://cursor.com/agents), and now want to enumerate every run for post-mortem. The default page size is 20 (matches Cursor REST), and the CLI does NOT auto-paginate so long listings stay scriptable:
+
+```bash
+$ popola cloud runs cursor-cloud-deadbeef
+┃ run_id              ┃ run_index ┃ state    ┃ created_at                  ┃ wall_clock ┃ model        ┃
+│ run-zzzzzzzz-00…    │ 4         │ running  │ 2026-05-08T19:00:00.000Z    │ 00:02:30…  │ composer-2   │
+│ run-yyyyyyyy-00…    │ 3         │ finished │ 2026-05-08T18:00:00.000Z    │ 00:32:00   │ composer-2   │
+│ ... 18 more runs ...                                                                                  │
+
+... showing 20 runs (page); more available. To continue:
+  popola cloud runs cursor-cloud-deadbeef --cursor=eyJyZHNJZCI6...
+
+# Walk pagination scriptably (e.g., dump everything to JSON for jq processing)
+$ NEXT="" && while :; do
+    OUT=$(popola cloud runs cursor-cloud-deadbeef --json --limit 100 ${NEXT:+--cursor "$NEXT"})
+    echo "$OUT" | jq '.runs[]'
+    NEXT=$(echo "$OUT" | jq -r '.next_cursor // empty')
+    [ -z "$NEXT" ] && break
+  done
+```
+
+#### Scenario 2 — inspect events of a specific run (`--include-events` slow path)
+
+You suspect run-2 had a tool-call failure and want to see the per-run events summary without opening the dashboard. `--include-events` triggers a per-row `GET /runs/{run_id}` for `events_summary` (`tool_call_count`, `assistant_message_count`, `had_error`, `first_event_at`, `last_event_at`); per-row failure → `null` + stderr WARN, but the table row still renders (No-Silent-Failures):
+
+```bash
+$ popola cloud runs cursor-cloud-deadbeef --include-events --json --limit 5 \
+    | jq '.runs[] | {run_index, state, events_summary}'
+{
+  "run_index": 4,
+  "state": "running",
+  "events_summary": {
+    "tool_call_count": 12,
+    "assistant_message_count": 3,
+    "had_error": false,
+    "first_event_at": "2026-05-08T19:00:01.000Z",
+    "last_event_at":  "2026-05-08T19:02:30.000Z"
+  }
+}
+{
+  "run_index": 2,
+  "state": "error",
+  "events_summary": {
+    "tool_call_count": 3,
+    "assistant_message_count": 1,
+    "had_error": true,
+    "first_event_at": "2026-05-08T17:00:01.000Z",
+    "last_event_at":  "2026-05-08T17:00:45.000Z"
+  }
+}
+```
+
+For wire-level details (full request/response shapes, `nextCursor` round-trip, the JSON schema fixture, the 8 acceptance criteria AC.1..AC.8, and the rationale for the 404→4 / 401→77 exit-code disposition diverging from `popola dispatch`'s legacy 100/77), see the local-only research note at `.local/research/v0.8.8_multi_run/runs-subcommand-spec.md` — the spec is the single source of truth and these docs only summarise.
 
 ## Hands-off envelope (v0.8.0+)
 
