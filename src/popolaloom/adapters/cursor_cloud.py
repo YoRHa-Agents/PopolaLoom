@@ -26,22 +26,53 @@ import base64
 import json
 import logging
 import os
+import re
+import threading
+import time
+from collections import OrderedDict
+from collections.abc import Iterable, Iterator
 from pathlib import Path
-from typing import Any, cast
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
+
+if TYPE_CHECKING:
+    from popolaloom.daemon.event_log import EventLog
 
 logger = logging.getLogger(__name__)
 
 CLOUD_BUILD_COMMAND_MARKER: list[str] = ["__cloud__", "cursor-cloud"]
 CURSOR_API_BASE: str = "https://api.cursor.com"
 DEFAULT_TIMEOUT_S: float = 60.0
+DEFAULT_STREAM_TIMEOUT_S: float = 600.0
+"""Default httpx timeout for ``GET .../stream`` SSE connections (10 min).
+
+A long ceiling matches Cursor's stream retention; the actual loop wakes on
+each frame so a short network read timeout would prematurely cut keepalives."""
 
 _CURSOR_API_KEY_ENV: str = "CURSOR_API_KEY"
 
+_PARSE_ERROR_EVENT: str = "parse_error"
+"""Synthetic SSE event_type emitted by :func:`iter_events` for malformed
+frames. Pump translates it to ``cloud.sse.parse_error`` per
+``state-source-of-truth.md`` §5 failure mode #4."""
+
+_SSE_RAW_CHUNK_CAP_BYTES: int = 4096
+"""Cap on raw payload bytes embedded in ``cloud.sse.parse_error`` (per
+``state-source-of-truth.md`` §5)."""
+
 
 class CursorCloudError(Exception):
-    """Base exception for :class:`CloudCursorClient`."""
+    """Base exception for :class:`CloudCursorClient`.
+
+    Subclasses populated by :func:`_map_http_error` carry bilingual user-facing
+    hints (``hint_en`` / ``hint_zh``) and a ``cli_exit`` code per the v0.8.6
+    error catalog (``.local/research/v0.8.6_sse/422-error-catalog.md`` §3).
+    """
+
+    hint_en: str = ""
+    hint_zh: str = ""
+    cli_exit: int = 1
 
     def __init__(
         self,
@@ -49,31 +80,801 @@ class CursorCloudError(Exception):
         *,
         status_code: int | None = None,
         is_retryable: bool = False,
+        hint_en: str | None = None,
+        hint_zh: str | None = None,
+        cli_exit: int | None = None,
     ) -> None:
         super().__init__(message)
         self.status_code: int | None = status_code
         self.is_retryable: bool = is_retryable
+        if hint_en is not None:
+            self.hint_en = hint_en
+        if hint_zh is not None:
+            self.hint_zh = hint_zh
+        if cli_exit is not None:
+            self.cli_exit = cli_exit
 
 
 class CursorCloudAuthError(CursorCloudError):
     """401/403 — credentials invalid or insufficient permission."""
 
+    cli_exit = 77
+
 
 class CursorCloudConflictError(CursorCloudError):
     """409 — e.g. ``agent_busy`` / ``run_not_cancellable``; not retryable."""
 
+    cli_exit = 102
+
+
+# ---------------------------------------------------------------------------
+# v0.8.6 — 422 / integration error catalog (T2.1.3, blueprint:
+# ``.local/research/v0.8.6_sse/422-error-catalog.md`` §4 YAML).
+#
+# Single source of truth for HTTP error → exception subclass mapping plus
+# bilingual operator hints. The selector :func:`_map_http_error` consults
+# this dict in three priority phases:
+#
+#   1. ``error.code`` exact match (catalog entry's ``code`` list)
+#   2. ``error.message`` regex match (catalog entry's ``message_pattern``)
+#   3. HTTP status fallback (catalog entry's ``http``)
+#
+# Adding a new entry: append to ``_ERROR_CATALOG`` then declare the
+# corresponding subclass below referencing ``_ERROR_CATALOG[<id>]`` for
+# class-level ``hint_en`` / ``hint_zh`` / ``cli_exit``.
+# ---------------------------------------------------------------------------
+
+_ERROR_CATALOG: dict[str, dict[str, Any]] = {
+    "unauthorized_invalid_key": {
+        "http": 401,
+        "code": ["unauthorized"],
+        "message_pattern": None,
+        "subclass": "CursorCloudAuthError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 77,
+        "hint_en": (
+            "Your Cursor API key was rejected as invalid. Generate or rotate a key at "
+            "https://cursor.com/dashboard/integrations and re-export CURSOR_API_KEY "
+            "before re-running popola dispatch --cli=cursor-cloud."
+        ),
+        "hint_zh": (
+            "Cursor API key 校验失败：可能未设置或格式错误。请在 "
+            "https://cursor.com/dashboard/integrations 重新生成 / 轮换密钥，"
+            "导出新的 CURSOR_API_KEY 后重试 popola dispatch --cli=cursor-cloud。"
+        ),
+    },
+    "unauthorized_revoked": {
+        "http": 401,
+        "code": ["api_key_not_found"],
+        "message_pattern": None,
+        "subclass": "CursorCloudApiKeyRevokedError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 77,
+        "hint_en": (
+            "The API key was revoked or never existed. Open "
+            "https://cursor.com/dashboard/integrations to mint a fresh key — old "
+            "keys can't be reactivated."
+        ),
+        "hint_zh": (
+            "该 API key 已被吊销或从未存在。请到 https://cursor.com/dashboard/integrations "
+            "申请新密钥；已删除的密钥无法恢复。"
+        ),
+    },
+    "forbidden_plan_required": {
+        "http": 403,
+        "code": ["plan_required"],
+        "message_pattern": None,
+        "subclass": "CursorCloudPlanRequiredError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 78,
+        "hint_en": (
+            "Cloud Agents require a paid Cursor plan; this account is on a free "
+            "tier. Upgrade at https://cursor.com/pricing or use an account with "
+            "paid access."
+        ),
+        "hint_zh": (
+            "Cloud Agents 需要付费版 Cursor 套餐，当前账户为免费档。请到 "
+            "https://cursor.com/pricing 升级，或切换到已付费账户。"
+        ),
+    },
+    "forbidden_role": {
+        "http": 403,
+        "code": ["role_forbidden"],
+        "message_pattern": None,
+        "subclass": "CursorCloudAuthError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 77,
+        "hint_en": (
+            "Your Cursor team role is not allowed to call this endpoint. Ask a "
+            "team admin at https://cursor.com/dashboard to grant access or use a "
+            "service-account API key."
+        ),
+        "hint_zh": (
+            "该接口需要更高的团队角色权限。请联系团队管理员（"
+            "https://cursor.com/dashboard）授予权限，或改用服务账号 API key。"
+        ),
+    },
+    "forbidden_feature": {
+        "http": 403,
+        "code": ["feature_unavailable"],
+        "message_pattern": None,
+        "subclass": "CursorCloudFeatureUnavailableError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 78,
+        "hint_en": (
+            "The requested cloud feature is not enabled for your team. Visit "
+            "https://cursor.com/dashboard/cloud-agents (Team feature settings) to "
+            "enable it, or remove the conflicting flag from extra."
+        ),
+        "hint_zh": (
+            "该云功能未对你所在团队启用。请到 https://cursor.com/dashboard/cloud-agents"
+            "（Team feature settings）开启，或在 extra 中去掉相关 flag。"
+        ),
+    },
+    "not_found_agent_or_run": {
+        "http": 404,
+        "code": ["agent_not_found", "run_not_found"],
+        "message_pattern": None,
+        "subclass": "CursorCloudNotFoundError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 100,
+        "hint_en": (
+            "Cursor cannot find this agent or run — it may have been deleted or "
+            "belong to another account. Check https://cursor.com/agents for the "
+            "latest IDs and re-run with the correct task_id."
+        ),
+        "hint_zh": (
+            "Cursor 找不到对应的 agent / run，可能已被删除或属于其他账号。请到 "
+            "https://cursor.com/agents 查最新 ID，并用正确的 task_id 重试。"
+        ),
+    },
+    "conflict_agent_busy": {
+        "http": 409,
+        "code": ["agent_busy"],
+        "message_pattern": None,
+        "subclass": "CursorCloudConflictError",
+        # v0.8.6 default; revisit in v0.8.8 per Q-C-5 (queue + notify)
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 102,
+        "hint_en": (
+            "Another run on this agent is still active. Wait for it to finish, or "
+            "cancel it via popola cancel <task_id> "
+            "(POST https://api.cursor.com/v1/agents/{id}/runs/{runId}/cancel) before "
+            "sending a follow-up."
+        ),
+        "hint_zh": (
+            "该 agent 已有另一次 run 在跑。等待其结束，或先 popola cancel <task_id>"
+            "（即 POST https://api.cursor.com/v1/agents/{id}/runs/{runId}/cancel）"
+            "再发起 follow-up。"
+        ),
+    },
+    "conflict_archived": {
+        "http": 409,
+        "code": ["agent_archived"],
+        "message_pattern": None,
+        "subclass": "CursorCloudConflictError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 102,
+        "hint_en": (
+            "This agent is archived and cannot accept new runs. Unarchive it (POST "
+            "https://api.cursor.com/v1/agents/{id}/unarchive) or create a new "
+            "agent at https://cursor.com/agents."
+        ),
+        "hint_zh": (
+            "该 agent 已归档，无法接收新 run。请先解除归档（POST "
+            "https://api.cursor.com/v1/agents/{id}/unarchive），或在 "
+            "https://cursor.com/agents 新建 agent。"
+        ),
+    },
+    "conflict_not_cancellable": {
+        "http": 409,
+        "code": ["run_not_cancellable"],
+        "message_pattern": None,
+        "subclass": "CursorCloudConflictError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 102,
+        "hint_en": (
+            "This run already reached a terminal state — there is nothing to "
+            "cancel. Use popola status <task_id> to inspect the final result; see "
+            "https://cursor.com/agents."
+        ),
+        "hint_zh": (
+            "该 run 已经到达终态，无需取消。请用 popola status <task_id> 查看最终结果；"
+            "完整对话仍可在 https://cursor.com/agents 查看。"
+        ),
+    },
+    "stream_expired": {
+        "http": 410,
+        "code": ["stream_expired"],
+        "message_pattern": None,
+        "subclass": "CursorCloudStreamExpiredError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 75,
+        "hint_en": (
+            "The live stream for this run has expired. Fetch terminal state via "
+            "popola status <task_id> (GET "
+            "https://api.cursor.com/v1/agents/{id}/runs/{runId}); the original "
+            "conversation is still readable on https://cursor.com/agents."
+        ),
+        "hint_zh": (
+            "该 run 的 SSE 流已过期。请用 popola status <task_id>（对应 GET "
+            "https://api.cursor.com/v1/agents/{id}/runs/{runId}）拉终态；"
+            "完整对话仍可在 https://cursor.com/agents 查看。"
+        ),
+    },
+    "integration_repo_allowlist": {
+        # observed 422; documented 400/403 (unverified — needs follow-up)
+        "http": [422, 400, 403],
+        "code": ["validation_error", "feature_unavailable", None],
+        "message_pattern": (
+            r"(?i)(allow.?list|allowed.?repositor|"
+            r"repository.+not.+(configured|installed|allowed))"
+        ),
+        "subclass": "RepoAllowlistError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 78,
+        "hint_en": (
+            "The Cursor GitHub App is not allow-listed for this repository. Open "
+            "https://github.com/apps/cursor (or your org's Integrations page) and "
+            "add the repo, then revisit https://cursor.com/dashboard/integrations "
+            "to confirm the GitHub connection."
+        ),
+        "hint_zh": (
+            "Cursor GitHub App 未对该仓库开通。请到 https://github.com/apps/cursor"
+            "（或组织 Integrations 页）勾选目标仓库，再到 "
+            "https://cursor.com/dashboard/integrations 确认连接已生效。"
+        ),
+    },
+    "integration_github_app_missing": {
+        # observed 422; documented 403 (unverified — needs follow-up)
+        "http": [422, 403],
+        "code": ["feature_unavailable", None],
+        "message_pattern": (
+            r"(?i)(github.?app.+(not.?installed|missing)|"
+            r"install.+(cursor|github.?app))"
+        ),
+        "subclass": "GithubAppMissingError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 78,
+        "hint_en": (
+            "The Cursor GitHub App is not installed on the owning organization. A "
+            "GitHub org admin must install it from https://github.com/apps/cursor "
+            "and grant repository access — see "
+            "https://cursor.com/docs/integrations/github.md."
+        ),
+        "hint_zh": (
+            "目标仓库所在 GitHub 组织尚未安装 Cursor GitHub App。需要 GitHub 组织管理员到 "
+            "https://github.com/apps/cursor 安装并授予仓库权限（参考 "
+            "https://cursor.com/docs/integrations/github.md）。"
+        ),
+    },
+    "integration_github_app_perms": {
+        # observed 422; documented 403 (unverified — needs follow-up)
+        "http": [422, 403],
+        "code": ["feature_unavailable", "role_forbidden", None],
+        "message_pattern": (
+            r"(?i)(permission.+(denied|insufficient)|"
+            r"missing.+(write|push|pull.?request))"
+        ),
+        "subclass": "GithubAppPermissionError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 78,
+        "hint_en": (
+            "The Cursor GitHub App is installed but missing required permissions "
+            "on this repo. Re-install or 'Configure' the app at "
+            "https://github.com/apps/cursor and accept the updated permissions — "
+            "full list at https://cursor.com/docs/integrations/github.md#permissions."
+        ),
+        "hint_zh": (
+            "Cursor GitHub App 已安装但缺少必需权限。请到 https://github.com/apps/cursor "
+            "'Configure' 并同意最新权限；完整权限表见 "
+            "https://cursor.com/docs/integrations/github.md#permissions。"
+        ),
+    },
+    "validation_request_body": {
+        "http": [400, 422],
+        "code": ["validation_error", "missing_body"],
+        "message_pattern": None,
+        "subclass": "CursorCloudValidationError",
+        "retry": False,
+        "backoff": None,
+        "cli_exit": 64,
+        "hint_en": (
+            "Cursor rejected the request body — likely an invalid repos[0].url, "
+            "prUrl, or startingRef. Verify the URL format and re-run; see "
+            "https://cursor.com/docs/cloud-agent/api/endpoints.md#create-an-agent "
+            "for the schema."
+        ),
+        "hint_zh": (
+            "Cursor 拒绝了请求体：通常是 repos[0].url、prUrl 或 startingRef 格式不合法。请按 "
+            "https://cursor.com/docs/cloud-agent/api/endpoints.md#create-an-agent "
+            "的 schema 校正后重试。"
+        ),
+    },
+    "rate_limit": {
+        # full handling deferred to v0.8.8 per Q-C-3 (rate limiting policy)
+        "http": 429,
+        "code": ["rate_limit_exceeded"],
+        "message_pattern": None,
+        "subclass": "CursorCloudRateLimitError",
+        "retry": True,
+        "backoff": {
+            "kind": "exponential",
+            "base_s": 1,
+            "factor": 2,
+            "cap_s": 16,
+            "max_attempts": 5,
+            "honor_header": "Retry-After",
+        },
+        "cli_exit": 75,
+        "hint_en": (
+            "Cursor rate-limited this client; immediate retry will fail. Honor the "
+            "Retry-After header (default ~60 s) and reduce dispatch concurrency; "
+            "see https://cursor.com/docs/api.md#rate-limits."
+        ),
+        "hint_zh": (
+            "Cursor 已限流，立即重试仍会失败。请按 Retry-After 头部等待（默认 ~60 s），"
+            "并降低调度并发；详见 https://cursor.com/docs/api.md#rate-limits。"
+        ),
+    },
+    "backend_5xx": {
+        "http": [500, 502, 503, 504],
+        "code": ["internal_error", "upstream_error", None],
+        "message_pattern": None,
+        "subclass": "CursorCloudError",
+        "retry": True,
+        "backoff": {
+            "kind": "exponential",
+            "base_s": 1,
+            "factor": 2,
+            "cap_s": 4,
+            "max_attempts": 4,
+        },
+        "cli_exit": 75,
+        "hint_en": (
+            "Cursor's backend is failing — try again in a minute. If the error "
+            "persists, check https://status.cursor.com (unverified — needs "
+            "follow-up) and report to background-agent-feedback@cursor.com with "
+            "the request id."
+        ),
+        "hint_zh": (
+            "Cursor 后端故障，请稍后（约 1 分钟）重试。若持续失败，请查看 "
+            "https://status.cursor.com（未验证 — 需后续确认）并附 request id 反馈到 "
+            "background-agent-feedback@cursor.com。"
+        ),
+    },
+}
+
+
+class CursorCloudApiKeyRevokedError(CursorCloudAuthError):
+    """401 + ``api_key_not_found`` — key revoked or never existed."""
+
+    hint_en = _ERROR_CATALOG["unauthorized_revoked"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["unauthorized_revoked"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["unauthorized_revoked"]["cli_exit"]
+
+
+class CursorCloudPlanRequiredError(CursorCloudError):
+    """403 + ``plan_required`` — paid plan needed for cloud agents."""
+
+    hint_en = _ERROR_CATALOG["forbidden_plan_required"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["forbidden_plan_required"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["forbidden_plan_required"]["cli_exit"]
+
+
+class CursorCloudFeatureUnavailableError(CursorCloudError):
+    """403 + ``feature_unavailable`` — team feature flag not enabled."""
+
+    hint_en = _ERROR_CATALOG["forbidden_feature"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["forbidden_feature"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["forbidden_feature"]["cli_exit"]
+
+
+class CursorCloudNotFoundError(CursorCloudError):
+    """404 — agent / run not found."""
+
+    hint_en = _ERROR_CATALOG["not_found_agent_or_run"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["not_found_agent_or_run"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["not_found_agent_or_run"]["cli_exit"]
+
+
+class CursorCloudStreamExpiredError(CursorCloudError):
+    """410 + ``stream_expired`` — SSE retention window elapsed (T2.1.1)."""
+
+    hint_en = _ERROR_CATALOG["stream_expired"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["stream_expired"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["stream_expired"]["cli_exit"]
+
+
+class CursorCloudStreamInvalidLastEventIdError(CursorCloudError):
+    """410 + ``invalid_last_event_id`` — recoverable: drop saved id, reconnect (T2.1.1).
+
+    Distinct from :class:`CursorCloudStreamExpiredError`: the latter is
+    terminal for the stream channel (poller takes over per Q-A-4). This one
+    only invalidates the resume cursor — caller should retry the same
+    ``stream_run`` *without* a ``Last-Event-ID`` header. Intentionally NOT
+    in :data:`_ERROR_CATALOG` to keep the 16-entry contract stable; hint
+    text is hardcoded here.
+    """
+
+    cli_exit = 75
+    hint_en = (
+        "Cursor rejected the Last-Event-ID sent on resume; the saved cursor "
+        "is no longer valid for this run. The SSE reader should drop the "
+        "saved id and reconnect without the header — see "
+        "https://cursor.com/docs/cloud-agent/api/endpoints.md for the "
+        "resume contract."
+    )
+    hint_zh = (
+        "断线续传时携带的 Last-Event-ID 已被 Cursor 拒绝，该游标对当前 run 已失效。"
+        "SSE 读取器应丢弃已保存的 id 并不带头部重新连接；续传契约见 "
+        "https://cursor.com/docs/cloud-agent/api/endpoints.md。"
+    )
+
+
+class RepoAllowlistError(CursorCloudError):
+    """422 — repo not in Cursor GitHub App allow-list."""
+
+    hint_en = _ERROR_CATALOG["integration_repo_allowlist"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["integration_repo_allowlist"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["integration_repo_allowlist"]["cli_exit"]
+
+
+class GithubAppMissingError(CursorCloudError):
+    """422 — Cursor GitHub App not installed on owning org."""
+
+    hint_en = _ERROR_CATALOG["integration_github_app_missing"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["integration_github_app_missing"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["integration_github_app_missing"]["cli_exit"]
+
+
+class GithubAppPermissionError(CursorCloudError):
+    """422 — Cursor GitHub App lacks required repo permissions."""
+
+    hint_en = _ERROR_CATALOG["integration_github_app_perms"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["integration_github_app_perms"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["integration_github_app_perms"]["cli_exit"]
+
+
+class CursorCloudValidationError(CursorCloudError):
+    """400/422 — generic request-body validation failure (fallback for 422)."""
+
+    hint_en = _ERROR_CATALOG["validation_request_body"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["validation_request_body"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["validation_request_body"]["cli_exit"]
+
+
+class CursorCloudRateLimitError(CursorCloudError):
+    """429 — rate limit; retryable per ``Retry-After`` (full backoff in v0.8.8)."""
+
+    hint_en = _ERROR_CATALOG["rate_limit"]["hint_en"]
+    hint_zh = _ERROR_CATALOG["rate_limit"]["hint_zh"]
+    cli_exit = _ERROR_CATALOG["rate_limit"]["cli_exit"]
+
+
+_SUBCLASS_REGISTRY: dict[str, type[CursorCloudError]] = {
+    "CursorCloudError": CursorCloudError,
+    "CursorCloudAuthError": CursorCloudAuthError,
+    "CursorCloudConflictError": CursorCloudConflictError,
+    "CursorCloudApiKeyRevokedError": CursorCloudApiKeyRevokedError,
+    "CursorCloudPlanRequiredError": CursorCloudPlanRequiredError,
+    "CursorCloudFeatureUnavailableError": CursorCloudFeatureUnavailableError,
+    "CursorCloudNotFoundError": CursorCloudNotFoundError,
+    "CursorCloudStreamExpiredError": CursorCloudStreamExpiredError,
+    "CursorCloudStreamInvalidLastEventIdError": CursorCloudStreamInvalidLastEventIdError,
+    "RepoAllowlistError": RepoAllowlistError,
+    "GithubAppMissingError": GithubAppMissingError,
+    "GithubAppPermissionError": GithubAppPermissionError,
+    "CursorCloudValidationError": CursorCloudValidationError,
+    "CursorCloudRateLimitError": CursorCloudRateLimitError,
+}
+
+
+def _http_matches(entry: dict[str, Any], status: int) -> bool:
+    http = entry.get("http")
+    if isinstance(http, list):
+        return status in http
+    return http == status
+
+
+def _normalize_code_list(raw: Any) -> list[str | None] | None:
+    if raw is None:
+        return None
+    if isinstance(raw, str):
+        return [raw]
+    if isinstance(raw, list):
+        return cast(list[str | None], raw)
+    return None
+
+
+def _parse_error_body(response: httpx.Response) -> tuple[str | None, str | None]:
+    """Extract ``(error.code, error.message)`` from a Cursor REST response.
+
+    Tolerates both canonical ``{"error": {"code", "message"}}`` (Cloud Agents
+    v1) and legacy flat ``{"error": "<title>", "message": "<text>"}`` shapes
+    (per ``api.md``). Falls back to ``detail`` (gateway-style 422) when
+    neither matches. Returns ``(None, None)`` on JSON parse failure or empty
+    body.
+    """
+    try:
+        data: Any = response.json()
+    except (json.JSONDecodeError, ValueError, UnicodeDecodeError):
+        return None, None
+    except Exception as exc:  # noqa: BLE001 — httpx may raise httpx-specific errors here
+        logger.debug("cursor-cloud body json parse failed: %s", exc)
+        return None, None
+
+    if not isinstance(data, dict):
+        return None, None
+
+    err_obj = data.get("error")
+    code: str | None = None
+    message: str | None = None
+
+    if isinstance(err_obj, dict):
+        raw_code = err_obj.get("code")
+        if isinstance(raw_code, str) and raw_code:
+            code = raw_code
+        raw_msg = err_obj.get("message")
+        if isinstance(raw_msg, str) and raw_msg:
+            message = raw_msg
+
+    if message is None:
+        for key in ("message", "detail", "error_description"):
+            raw = data.get(key)
+            if isinstance(raw, str) and raw:
+                message = raw
+                break
+
+    if message is None and isinstance(err_obj, str) and err_obj:
+        # Legacy ``{"error": "<Title>"}`` shape (per ``api.md``) — used only
+        # when no richer field exists, since the title alone ("Unprocessable
+        # Entity") is rarely actionable.
+        message = err_obj
+
+    return code, message
+
+
+def _score_entry(
+    entry: dict[str, Any],
+    status: int,
+    err_code: str | None,
+    err_message: str | None,
+) -> int | None:
+    """Return a match score (higher = better fit) or ``None`` if incompatible.
+
+    Scoring follows the catalog precedence (``error.code → error.message
+    regex → HTTP status``):
+
+    - **+1** baseline for any entry whose ``http`` matches.
+    - **+10** when ``error.code`` is present in the entry's ``code`` list.
+    - **+5** when ``error.message`` is matched by the entry's
+      ``message_pattern`` regex.
+    - Returns **None** when an explicit ``code`` constraint is set and the
+      response carries a non-matching ``error.code`` (entry is not a candidate).
+    - Returns **None** when an explicit ``message_pattern`` constraint is set,
+      the response carries a non-empty message, and the regex does not match.
+    """
+    if not _http_matches(entry, status):
+        return None
+
+    score = 1
+
+    code_list = _normalize_code_list(entry.get("code"))
+    if code_list is not None and err_code is not None:
+        if err_code in code_list:
+            score += 10
+        else:
+            return None
+
+    msg_pattern = entry.get("message_pattern")
+    if isinstance(msg_pattern, str) and err_message is not None:
+        if re.search(msg_pattern, err_message):
+            score += 5
+        else:
+            return None
+
+    return score
+
+
+def _build_error(
+    entry: dict[str, Any],
+    status: int,
+    response: httpx.Response,
+) -> CursorCloudError:
+    subclass_name = entry["subclass"]
+    cls = _SUBCLASS_REGISTRY.get(subclass_name, CursorCloudError)
+    detail = response.text[:500] if response.text else ""
+    msg = (
+        f"cursor-cloud HTTP {status}: {detail}"
+        if detail
+        else f"cursor-cloud HTTP {status}"
+    )
+    is_retryable = bool(entry.get("retry", False))
+    return cls(
+        msg,
+        status_code=status,
+        is_retryable=is_retryable,
+        hint_en=entry["hint_en"],
+        hint_zh=entry["hint_zh"],
+        cli_exit=entry["cli_exit"],
+    )
+
 
 def _map_http_error(response: httpx.Response) -> CursorCloudError:
+    """Map an HTTP error response to the most-specific :class:`CursorCloudError`.
+
+    Selector precedence (per ``422-error-catalog.md`` §4 YAML header):
+
+    1. ``error.code`` exact match against catalog ``code`` lists.
+    2. ``error.message`` regex match against catalog ``message_pattern``.
+    3. HTTP status fallback against catalog ``http``.
+
+    On a 422 with no scoring match (no code, no regex hit), logs the body at
+    ``WARNING`` and returns :class:`CursorCloudValidationError` rather than
+    silently downgrading to the generic base — see workspace
+    ``No Silent Failures`` rule.
+    """
     status = response.status_code
+    err_code, err_message = _parse_error_body(response)
+
+    best_entry: dict[str, Any] | None = None
+    best_score: int = 0
+    for entry in _ERROR_CATALOG.values():
+        score = _score_entry(entry, status, err_code, err_message)
+        if score is None:
+            continue
+        if score > best_score:
+            best_entry = entry
+            best_score = score
+
+    if best_entry is not None and best_score >= 5:
+        return _build_error(best_entry, status, response)
+
+    if status == 422:
+        logger.warning(
+            "cursor-cloud unrecognized 422 body (status=%s, code=%r, message=%r): %s",
+            status,
+            err_code,
+            err_message,
+            response.text[:1000] if response.text else "<empty>",
+        )
+        return _build_error(_ERROR_CATALOG["validation_request_body"], status, response)
+
+    if best_entry is not None:
+        return _build_error(best_entry, status, response)
+
     detail = response.text[:500] if response.text else ""
-    msg = f"cursor-cloud HTTP {status}: {detail}" if detail else f"cursor-cloud HTTP {status}"
-    if status in (401, 403):
-        return CursorCloudAuthError(msg, status_code=status, is_retryable=False)
-    if status == 409:
-        return CursorCloudConflictError(msg, status_code=status, is_retryable=False)
-    if status >= 500:
-        return CursorCloudError(msg, status_code=status, is_retryable=True)
-    return CursorCloudError(msg, status_code=status, is_retryable=False)
+    msg = (
+        f"cursor-cloud HTTP {status}: {detail}"
+        if detail
+        else f"cursor-cloud HTTP {status}"
+    )
+    is_retryable = status >= 500
+    return CursorCloudError(msg, status_code=status, is_retryable=is_retryable)
+
+
+# ---------------------------------------------------------------------------
+# v0.8.6 — SSE wire parser (T2.1.1, blueprint:
+# ``.local/research/v0.8.6_sse/sse-event-schema.md`` §3 mapping table).
+#
+# Standalone parser kept module-level so unit tests can drive it with
+# in-memory line iterables without an httpx round-trip. Per
+# ``state-source-of-truth.md`` §1.2 rule 4, malformed frames MUST surface
+# as ``parse_error`` events (No-Silent-Failures) rather than be dropped.
+# ---------------------------------------------------------------------------
+
+
+def _emit_sse_frame(
+    event: str | None,
+    data_lines: list[str],
+    sse_id: str | None,
+) -> Iterator[tuple[str, dict[str, Any], str | None]]:
+    """Yield exactly one parsed event for a completed SSE frame."""
+    event_type = event if event is not None else "message"
+    raw_data = "\n".join(data_lines) if data_lines else ""
+
+    if not raw_data:
+        yield event_type, {}, sse_id
+        return
+
+    try:
+        parsed: Any = json.loads(raw_data)
+    except (json.JSONDecodeError, ValueError) as exc:
+        # No-Silent-Failures: emit a synthetic parse_error frame so pump
+        # records a ``cloud.sse.parse_error`` envelope instead of dropping.
+        cap = raw_data[:_SSE_RAW_CHUNK_CAP_BYTES]
+        yield (
+            _PARSE_ERROR_EVENT,
+            {
+                "raw_chunk_b64": base64.b64encode(cap.encode("utf-8")).decode("ascii"),
+                "error_type": type(exc).__name__,
+                "error_message": str(exc),
+                "event_attempt": event_type,
+            },
+            sse_id,
+        )
+        return
+
+    if isinstance(parsed, dict):
+        yield event_type, cast(dict[str, Any], parsed), sse_id
+    else:
+        yield event_type, {"value": parsed}, sse_id
+
+
+def iter_events(
+    line_source: Iterable[str],
+) -> Iterator[tuple[str, dict[str, Any], str | None]]:
+    """Parse an SSE byte stream into ``(event_type, data_dict, sse_id)`` triples.
+
+    Implements the ``text/event-stream`` framing rules from MDN /
+    `WHATWG <https://html.spec.whatwg.org/multipage/server-sent-events.html>`_:
+
+    - Frame ends on a blank line.
+    - ``event:``, ``data:`` (multi-line concatenated by ``\\n``), and
+      ``id:`` lines are recognized; ``retry:`` and unknown fields are
+      ignored.
+    - A leading single space after the field separator is stripped.
+    - Lines starting with ``:`` are comments / keepalives.
+    - JSON parse failure on the assembled ``data:`` payload yields a
+      synthetic ``parse_error`` event (see :data:`_PARSE_ERROR_EVENT`)
+      rather than silently dropping the frame.
+
+    Args:
+        line_source: iterable of decoded SSE lines (httpx
+            ``Response.iter_lines()`` format — newline already stripped).
+
+    Yields:
+        tuples of ``(event_type, data_dict, sse_event_id)`` where
+        ``sse_event_id`` is the ``id:`` line value (or ``None`` if absent).
+    """
+    event: str | None = None
+    data_lines: list[str] = []
+    sse_id: str | None = None
+
+    def _frame_pending() -> bool:
+        return event is not None or bool(data_lines) or sse_id is not None
+
+    for raw_line in line_source:
+        line = raw_line.rstrip("\r")
+        if line == "":
+            if _frame_pending():
+                yield from _emit_sse_frame(event, data_lines, sse_id)
+                event = None
+                data_lines = []
+                sse_id = None
+            continue
+        if line.startswith(":"):
+            continue
+        if ":" in line:
+            field, _, value = line.partition(":")
+            if value.startswith(" "):
+                value = value[1:]
+        else:
+            field, value = line, ""
+        if field == "event":
+            event = value
+        elif field == "data":
+            data_lines.append(value)
+        elif field == "id":
+            sse_id = value
+        # retry: and unknown fields are ignored per spec
+
+    if _frame_pending():
+        yield from _emit_sse_frame(event, data_lines, sse_id)
 
 
 class CloudCursorClient:
@@ -81,9 +882,9 @@ class CloudCursorClient:
 
     Auth: HTTP Basic via ``auth=(api_key, "")``.
 
-    Note:
-        ``stream_run`` (SSE on ``GET .../stream``) and ``create_followup``
-        (``POST .../runs``) are **not** implemented here — reserved for v0.8.6.
+    v0.8.6 (T2.1.1) adds :meth:`stream_run` for SSE on
+    ``GET .../runs/{runId}/stream``; ``create_followup`` (``POST .../runs``)
+    is still reserved for a later milestone.
     """
 
     def __init__(
@@ -197,6 +998,67 @@ class CloudCursorClient:
             timeout_s=timeout_s,
         )
 
+    def stream_run(
+        self,
+        agent_id: str,
+        run_id: str,
+        *,
+        last_event_id: str | None = None,
+        timeout_s: float = DEFAULT_STREAM_TIMEOUT_S,
+    ) -> Iterator[tuple[str, dict[str, Any], str | None]]:
+        """Open an SSE stream and yield typed events (T2.1.1).
+
+        Calls ``GET /v1/agents/{agent_id}/runs/{run_id}/stream`` with
+        ``Accept: text/event-stream`` and (optionally) a ``Last-Event-ID``
+        resume header. Each yielded tuple is
+        ``(event_type, data_dict, sse_event_id_or_None)`` per the §3
+        mapping in ``sse-event-schema.md``.
+
+        Error semantics:
+
+        - ``410 stream_expired`` (or message containing it): raises
+          :class:`CursorCloudStreamExpiredError` per Q-A-4. Caller MUST
+          NOT auto-reconnect — fall back to poll.
+        - ``410 invalid_last_event_id``: raises
+          :class:`CursorCloudStreamInvalidLastEventIdError`. Caller may
+          drop the saved id and retry once without the header.
+        - Any other 4xx/5xx: routed through :func:`_map_http_error`.
+        - Per-frame JSON parse failure: yielded as a synthetic
+          ``parse_error`` event (No-Silent-Failures); the stream
+          continues. The caller decides whether to escalate.
+
+        Yields:
+            ``(event_type, data_dict, sse_event_id)`` triples; ``data_dict``
+            is the JSON-decoded payload (empty dict for heartbeats);
+            ``sse_event_id`` is the ``id:`` line value (``None`` if absent).
+        """
+        url = f"/v1/agents/{agent_id}/runs/{run_id}/stream"
+        headers = {"Accept": "text/event-stream"}
+        if last_event_id is not None:
+            headers["Last-Event-ID"] = last_event_id
+
+        with self._client.stream(
+            "GET",
+            url,
+            headers=headers,
+            timeout=timeout_s,
+        ) as response:
+            if response.status_code >= 400:
+                response.read()
+                if response.status_code == 410:
+                    err_code, err_msg = _parse_error_body(response)
+                    msg_l = (err_msg or "").lower()
+                    if err_code == "invalid_last_event_id" or "invalid_last_event_id" in msg_l:
+                        raise CursorCloudStreamInvalidLastEventIdError(
+                            "cursor-cloud HTTP 410: invalid Last-Event-ID; "
+                            "drop the saved id and retry without the header",
+                            status_code=410,
+                            is_retryable=True,
+                        )
+                raise _map_http_error(response)
+
+            yield from iter_events(response.iter_lines())
+
     def _request_json(
         self,
         method: str,
@@ -238,6 +1100,259 @@ class CloudCursorClient:
         if not response.content:
             return {}
         return cast(dict[str, Any], response.json())
+
+
+class SSEReader:
+    """Pump Cursor SSE events into an :class:`EventLog` (append-only).
+
+    The reader is the **fine-grained event appender** in v0.8.6's writer
+    contract (``state-source-of-truth.md`` §1.2). It owns:
+
+    - per-session monotonic ``seq`` counter (initialised to 0; written
+      verbatim into each ``cloud.sse.*`` envelope);
+    - in-memory LRU dedup of ``(run_id, sse_event_id)`` keys with size cap
+      :attr:`LRU_MAX` (256, LRU eviction via :class:`OrderedDict`);
+    - a per-``task_id`` ``stream_session_id`` (Q-A-OQ-5 default) minted in
+      :meth:`__init__` so reconnects can be correlated downstream;
+    - a public :meth:`terminal_hint` :class:`threading.Event` handle whose
+      semantics are wired by T2.2.2 (the reader itself does not consume it).
+
+    Q-A-8 sole-writer rule: this class **MUST NOT** receive a
+    :class:`~popolaloom.daemon.state.StateStore` reference. The constructor
+    rejects any collaborator whose class name is ``StateStore`` (defence in
+    depth on top of the static type signature). The CI static-grep guard
+    from T2.2.2 additionally enforces that no ``StateStore.update(...
+    cloud_phase=...)`` call lives outside ``daemon/cloud_poller.py``.
+    """
+
+    LRU_MAX: int = 256
+    """Max entries in the ``(run_id, sse_event_id)`` LRU dedup window."""
+
+    DEDUP_DROP_FLUSH_EVERY: int = 10
+    """Emit a ``cloud.sse.dedup_drop`` summary every N drops + at end of pump."""
+
+    def __init__(
+        self,
+        client: CloudCursorClient,
+        event_log: EventLog,
+        task_id: str,
+        run_id: str,
+        *,
+        agent_id: str,
+    ) -> None:
+        # Q-A-8: SSE reader is structurally barred from cloud_phase mutation.
+        collaborator_types = {type(arg).__name__ for arg in (event_log, client)}
+        assert "StateStore" not in collaborator_types, (
+            "SSE reader is structurally barred from cloud_phase mutation (Q-A-8); "
+            "a StateStore was passed where an EventLog/CloudCursorClient was expected."
+        )
+        if "StateStore" in collaborator_types:  # pragma: no cover — defence in depth
+            raise TypeError(
+                "SSE reader is structurally barred from cloud_phase mutation (Q-A-8); "
+                "a StateStore was passed where an EventLog/CloudCursorClient was expected."
+            )
+
+        self._client = client
+        self._event_log = event_log
+        self._task_id = task_id
+        self._run_id = run_id
+        self._agent_id = agent_id
+        # OQ-5 default: stream_session_id is per-task_id, minted on construction.
+        self._stream_session_id: str = f"{task_id}-{int(time.monotonic() * 1000)}"
+        self._seq: int = 0
+        self._lru: OrderedDict[tuple[str, str], None] = OrderedDict()
+        self._dedup_drop_count: int = 0
+        self._dedup_drop_total: int = 0
+        self._dedup_drop_first: str | None = None
+        self._dedup_drop_last: str | None = None
+        self._last_event_id: str | None = None
+        self._terminal_hint_event: threading.Event = threading.Event()
+
+    @property
+    def last_event_id(self) -> str | None:
+        """The most-recent non-None ``sse_event_id`` observed (None pre-first event).
+
+        Caller may pass this back into :meth:`CloudCursorClient.stream_run`
+        as ``last_event_id`` for resume after disconnect.
+        """
+        return self._last_event_id
+
+    @property
+    def stream_session_id(self) -> str:
+        """Per-``task_id`` session id minted in ``__init__`` (OQ-5 default)."""
+        return self._stream_session_id
+
+    @property
+    def seq(self) -> int:
+        """Current monotonic seq value (next emitted event uses this then increments)."""
+        return self._seq
+
+    @property
+    def terminal_hint(self) -> threading.Event:
+        """Public read-only handle for T2.2.2 to ``set()`` for poller wakeup.
+
+        Not consumed by the reader itself; T2.2.2 will wire the actual
+        SSE↔poller wakeup semantics. Documented per AC (b).
+        """
+        return self._terminal_hint_event
+
+    def _envelope(
+        self,
+        sse_id: str | None,
+        payload: dict[str, Any],
+        seq: int,
+        *,
+        extra: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
+        env: dict[str, Any] = {
+            "task_id": self._task_id,
+            "agent_id": self._agent_id,
+            "run_id": self._run_id,
+            "stream_session_id": self._stream_session_id,
+            "sse_id": sse_id,
+            "seq": seq,
+            "payload": payload,
+        }
+        if extra:
+            env.update(extra)
+        return env
+
+    def _emit_dedup_summary(self) -> None:
+        if self._dedup_drop_count == 0:
+            return
+        seq = self._seq
+        self._seq += 1
+        self._event_log.append(
+            "cloud.sse.dedup_drop",
+            {
+                "task_id": self._task_id,
+                "agent_id": self._agent_id,
+                "run_id": self._run_id,
+                "stream_session_id": self._stream_session_id,
+                "sse_id": None,
+                "seq": seq,
+                "count": self._dedup_drop_count,
+                "first_id": self._dedup_drop_first,
+                "last_id": self._dedup_drop_last,
+                "total_dropped_so_far": self._dedup_drop_total,
+            },
+        )
+        self._dedup_drop_count = 0
+        self._dedup_drop_first = None
+        self._dedup_drop_last = None
+
+    def _record_dedup(self, sse_id: str) -> None:
+        self._dedup_drop_count += 1
+        self._dedup_drop_total += 1
+        if self._dedup_drop_first is None:
+            self._dedup_drop_first = sse_id
+        self._dedup_drop_last = sse_id
+        if self._dedup_drop_count >= self.DEDUP_DROP_FLUSH_EVERY:
+            self._emit_dedup_summary()
+
+    def _emit_parse_error(
+        self,
+        sse_id: str | None,
+        parse_fields: dict[str, Any],
+    ) -> None:
+        # state-source-of-truth.md §5 failure mode #4 specifies parse_error
+        # carries raw_chunk_b64 + error_type at the top level of ``data``;
+        # there is no parsed ``payload`` to nest, so we flatten.
+        seq = self._seq
+        self._seq += 1
+        envelope: dict[str, Any] = {
+            "task_id": self._task_id,
+            "agent_id": self._agent_id,
+            "run_id": self._run_id,
+            "stream_session_id": self._stream_session_id,
+            "sse_id": sse_id,
+            "seq": seq,
+        }
+        envelope.update(parse_fields)
+        self._event_log.append("cloud.sse.parse_error", envelope)
+
+    def _emit_stream_expired(self) -> None:
+        seq = self._seq
+        self._seq += 1
+        self._event_log.append(
+            "cloud.sse.stream_expired",
+            self._envelope(
+                None,
+                {},
+                seq,
+                extra={"reason": "stream_expired"},
+            ),
+        )
+
+    def pump(self, stop_event: threading.Event | None = None) -> None:
+        """Drive a single ``stream_run`` iteration end-to-end.
+
+        Each frame is dedup'd via the LRU and appended as a
+        ``cloud.sse.<event_type>`` envelope carrying the
+        ``(task_id, run_id, stream_session_id, sse_id, seq)`` quintuple
+        plus the parsed ``payload`` dict. Heartbeats and id-less events
+        are emitted unconditionally (no dedup, but ``seq`` still
+        advances). Duplicate ids are counted into the next
+        ``cloud.sse.dedup_drop`` summary.
+
+        Returns cleanly on:
+
+        - end of the SSE iterator (server closed the stream),
+        - ``stop_event.is_set()``,
+        - :class:`CursorCloudStreamExpiredError` (also emits a
+          ``cloud.sse.stream_expired`` envelope per OQ-6 / Q-A-4),
+        - any low-level ``httpx`` protocol/parse error (also emits a
+          ``cloud.sse.parse_error`` envelope; No-Silent-Failures).
+
+        ``CursorCloudStreamInvalidLastEventIdError`` is intentionally
+        propagated so the caller can drop the saved id and retry without
+        the resume header.
+        """
+        try:
+            for event_type, data, sse_id in self._client.stream_run(
+                self._agent_id,
+                self._run_id,
+                last_event_id=self._last_event_id,
+            ):
+                if stop_event is not None and stop_event.is_set():
+                    self._emit_dedup_summary()
+                    return
+
+                if event_type == _PARSE_ERROR_EVENT:
+                    self._emit_parse_error(sse_id, data)
+                    continue
+
+                if sse_id is not None:
+                    key = (self._run_id, sse_id)
+                    if key in self._lru:
+                        self._lru.move_to_end(key)
+                        self._record_dedup(sse_id)
+                        continue
+                    self._lru[key] = None
+                    if len(self._lru) > self.LRU_MAX:
+                        self._lru.popitem(last=False)
+                    self._last_event_id = sse_id
+
+                seq = self._seq
+                self._seq += 1
+                self._event_log.append(
+                    f"cloud.sse.{event_type}",
+                    self._envelope(sse_id, data, seq),
+                )
+
+            self._emit_dedup_summary()
+        except CursorCloudStreamExpiredError:
+            self._emit_stream_expired()
+            self._emit_dedup_summary()
+        except (httpx.RemoteProtocolError, httpx.ReadError) as exc:
+            self._emit_parse_error(
+                None,
+                {
+                    "error_type": type(exc).__name__,
+                    "error_message": str(exc),
+                },
+            )
+            self._emit_dedup_summary()
 
 
 class CursorCloudAdapter:

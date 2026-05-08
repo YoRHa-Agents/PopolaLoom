@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.5
+version: 0.8.6
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -50,10 +50,12 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 | `popola handoff list [--json]` | 列出 active envelope（按 mtime 倒排，v0.7.2+） | `popola handoff list` |
 | `popola handoff show <handoff_id> [--json]` | 打印 active envelope 内容（默认 raw Markdown） | `popola handoff show cursor-fix-bug-foo-py-3a7f9c1d` |
 | `popola handoff archive <handoff_id> <task_id>` | 复制到 `<archive_root>/<task_id>/<id>.md`（D4 双层） | `popola handoff archive <handoff_id> cursor-23e74ec18917` |
-| `popola list` | 列出非终态任务（含 task_id / cli / state / pid） | `popola list` |
+| `popola list` | 列出非终态任务（v0.8.6+ 默认含 `runtime` 列：`local`/`cloud`） | `popola list` |
+| `popola list --no-runtime` | v0.8.6+ 隐藏 `runtime` 列（escape hatch；`--json` 输出不受影响） | `popola list --no-runtime` |
 | `popola list --all` | 含已完成 / 失败 / 取消的所有任务 | `popola list --all` |
 | `popola status <task_id>` | 单任务全字段状态（JSON 加 `--json`） | `popola status cursor-23e74ec18917` |
-| `popola attach <task_id> --follow` | 跟随 SSE 事件流（默认 follow=true） | `popola attach cursor-23e74ec18917 --follow` |
+| `popola attach <task_id> --follow` | 跟随 SSE 事件流（默认 follow=true；v0.8.6+ 云任务额外 ingest Cursor SSE） | `popola attach cursor-23e74ec18917 --follow` |
+| `popola attach <id> --follow --no-stream` | v0.8.6+ 强制 legacy poll-only 路径（escape hatch） | `popola attach <id> --follow --no-stream` |
 | `popola attach <task_id> --no-follow` | 一次性 dump 已有事件（不阻塞） | `popola attach <id> --no-follow` |
 | `popola cancel <task_id>` | SIGTERM → 5 秒 grace → SIGKILL | `popola cancel cursor-23e74ec18917` |
 | `popola probe` | 轻量 daemon 健康（pid / uptime / active） | `popola probe` |
@@ -184,7 +186,9 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
    popola eval show --json
    ```
 
-### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+)
+### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+)
+
+<!-- updated: 2026-05-08 -->
 
 云端 Background Agent：**不走本机 subprocess**，而是用 httpx 调 Cursor Cloud Agents REST（`CloudCursorClient`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()` + **cloud poller** 线程对齐状态事件。
 
@@ -218,11 +222,15 @@ popola dispatch "implement smoke-test stub in README" \
 | `timeout_s` | HTTP 单次请求超时 float |
 | `api_key` | 覆盖环境变量里的 key（一般由测试/DI 用；生产不推荐写进 envelope） |
 
-**与本地 `cursor` subprocess 的差异（一眼）**：`popola list` / `popola status` 会带出 `runtime="cloud"`、`cursor_agent_id`（通常 `bc-*`）、`cursor_run_id`、`cloud_phase`。取消：`popola cancel` 在云路径走 **`cancel_run` REST**，不是 `SIGTERM`。HITL：若云端任务需要通过 Popola daemon 请人拍板走 Lark，可走 **`cloud`** 通道：`POST /hitl/cloud/request` → block `GET /hitl/cloud/wait/{hitl_id}` → Lark 侧照旧 first-responder wins → **`POST /hitl/cloud/answer/{hitl_id}`**。
+**与本地 `cursor` subprocess 的差异（一眼）**：`popola list` / `popola status` 会带出 `runtime="cloud"`、`cursor_agent_id`（通常 `bc-*`）、`cursor_run_id`、`cloud_phase`。v0.8.6+ 起 `popola list` 默认渲染 **`runtime` 列**（在 `task_id` 与 `cli` 之间，`local`/`cloud`），加 `--no-runtime` 可隐藏。取消：`popola cancel` 在云路径走 **`cancel_run` REST**，不是 `SIGTERM`。HITL：若云端任务需要通过 Popola daemon 请人拍板走 Lark，可走 **`cloud`** 通道：`POST /hitl/cloud/request` → block `GET /hitl/cloud/wait/{hitl_id}` → Lark 侧照旧 first-responder wins → **`POST /hitl/cloud/answer/{hitl_id}`**。
+
+**SSE 实时拉取（v0.8.6+）**：`popola attach <task_id> --follow` 在 `runtime=cloud` 任务上**默认启用 SSE**：在 daemon `/attach_stream` 之外另起一个后台线程 pump Cursor 的 `GET /v1/agents/{id}/runs/{run_id}/stream`，把 `cloud.sse.{assistant,tool_call,result,status,parse_error,stream_expired,dedup_drop}` 事件流入同一渲染器。每条 envelope 携带 `(task_id, run_id, stream_session_id, sse_id, seq)` 五元组用于幂等去重。**自动 fallback 到 poll**：遇到 `CursorCloudStreamExpiredError`（HTTP `410 stream_expired`）/ `httpx.ReadError` / `httpx.ConnectError` / `httpx.TimeoutException` / 缺 `CURSOR_API_KEY` / 主线程 Ctrl-C 时，SSE 线程优雅退出并 append 一条 `cloud.sse.fallback_to_poll` 边界事件 + stderr 一行 `[cloud sse] ...` 提示（No-Silent-Failures），既有 poll-driven 视图继续工作。**强制 legacy 路径**：`popola attach <id> --follow --no-stream`。**容忍漂移**：`cloud_poller` 仍是 `cloud_phase` 的唯一写入者（state SoT 锁），SSE 是 append-only 旁路；SSE-side `stream:running` 与 poller-side `cloud_phase=CREATING` 之间最长容忍 ≤3 s 不一致（`interval_s + 1s`，默认 `interval_s=2s`）。
+
+**云端错误提示（v0.8.6+）**：v0.8.6 在 `cursor_cloud.py` 内嵌 16 条 `_ERROR_CATALOG` 条目，按 `(error.code → error.message regex → HTTP status)` 优先级派发到 10 个新 `CursorCloud*Error` 子类，每个都带双语 `.hint_en` / `.hint_zh`（每条 ≤2 句、含 ≥1 个 dashboard URL）+ 稳定 `.cli_exit` 退出码。覆盖：`401 unauthorized` / `api_key_not_found`、`403 plan_required` / `role_forbidden` / `feature_unavailable`、`404 agent_not_found` / `run_not_found`、`409 agent_busy` / `agent_archived` / `run_not_cancellable`、`410 stream_expired`、`422` 三类 GitHub-App 集成错（`RepoAllowlistError` / `GithubAppMissingError` / `GithubAppPermissionError`）、`400/422 validation_error`、`429 rate_limit_exceeded`（v0.8.8 完整重试）、`5xx internal_error`/`upstream_error`。完整提示文本与重试矩阵见研究备忘 `.local/research/v0.8.6_sse/422-error-catalog.md` §3（`.local/` 仅本地存在，已 gitignore）。
 
 **Opt-in quota smoke**：导出 `CURSOR_API_KEY` 后跑 `pytest tests/real_cursor_cloud/ -m real_cursor_cloud`，否则该目录四项 case 仅 **skipped**（见 `pytest` marker `real_cursor_cloud`）。
 
-出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7。
+出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7；v0.8.6 SSE / 422 / state SoT 设计：`.local/research/v0.8.6_sse/{sse-event-schema,state-source-of-truth,422-error-catalog}.md`（local-only research notes）。
 
 ## Configuration
 

@@ -12,13 +12,22 @@ through the new E3 internal-unification path) writes envelope files to a
 disposable location instead of polluting the real workspace
 ``.local/.agent/handoff/``.
 
+v0.8.6 (T2.2.2) appends :func:`test_invariant_i1_sole_writer_of_cloud_phase`
+— a CI static-grep guard that asserts ``daemon/cloud_poller.py`` is the **only**
+module passing ``cloud_phase=`` to ``StateStore.update`` (invariant **I-1** in
+``state-source-of-truth.md`` §6). Any new call site outside the allow-list
+fails this test at PR time.
+
 Lives in ``tests/`` (not ``src/``) so production code never imports it.
 """
 
 from __future__ import annotations
 
+import io
 import os
+import re
 import sys
+import tokenize
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
@@ -88,3 +97,142 @@ def popolad_factory() -> Callable[..., Popolad]:
         return Popolad(events_dir=events_dir, adapter=adapter or _default_noop_adapter)
 
     return _build
+
+
+# ---------------------------------------------------------------------------
+# v0.8.6 T2.2.2 — I-1 sole-writer guard (CI static-grep fixture)
+# ---------------------------------------------------------------------------
+#
+# Cross-reference: ``state-source-of-truth.md`` §1.2 rule 1 + §6 I-1.
+# Cross-reference: ``daemon/cloud_poller.py`` carries the matching inline
+# ``# I-1 sole-writer: ...`` comment at the canonical ``_emit_run_status``
+# site so reviewers can trace the contract from either direction.
+#
+# Cross-reference (I-2): a non-poller invocation of
+# ``state_store.update(cloud_phase=...)`` from any future SSE worker — for
+# example a refactor that hands a :class:`StateStore` reference to
+# :class:`SSEReader` — would be caught by THIS guard at CI time and would
+# fail the build. I-2 (append-only SSE) is enforced at runtime by
+# :class:`SSEReader.__init__` rejecting any ``StateStore``-typed
+# collaborator (see ``adapters/cursor_cloud.py`` Q-A-8 docstring).
+
+# Single-source allow-list. Paths are POSIX-style relative to
+# ``src/popolaloom/``. To extend (e.g., when refactoring), edit only here.
+_I1_MUST_BE_ONLY_FILE: frozenset[str] = frozenset({"daemon/cloud_poller.py"})
+
+# Regex (per T2.2.2 spec §Hints): tolerant of formatting — the ``[^)]*``
+# greedy class spans newlines so a multi-line ``state_store.update(...
+# cloud_phase=...)`` call still matches. ``state[_\s]*store`` lets us catch
+# both ``state_store`` and the rarer ``state store`` typo. ``re.IGNORECASE``
+# guards against a future ``StateStore.update(...)`` rename.
+_I1_PATTERN: re.Pattern[str] = re.compile(
+    r"state[_\s]*store\.update\([^)]*cloud_phase\s*=",
+    re.IGNORECASE,
+)
+
+
+def _i1_repo_root() -> Path:
+    """Return the repository root, derived from this conftest's location."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _i1_strip_strings_and_comments(content: str) -> str:
+    """Replace string literals + comments with spaces, preserving line numbers.
+
+    Without this step the I-1 regex would false-positive on docstrings that
+    *describe* the rule (e.g., the ``cursor_cloud.py`` Q-A-8 docstring quotes
+    ``StateStore.update(... cloud_phase=...)`` as part of explaining the
+    invariant). Replacing token characters with spaces keeps every newline
+    intact so the line number we report still points at the original source.
+    On a tokenize failure (corrupt source) we fall back to the raw content
+    rather than silently skipping the file (No-Silent-Failures rule).
+    """
+    line_chars = [list(line) for line in content.splitlines(keepends=True)]
+    try:
+        tokens = list(tokenize.generate_tokens(io.StringIO(content).readline))
+    except (tokenize.TokenError, IndentationError, SyntaxError):
+        return content
+    for tok in tokens:
+        if tok.type not in (tokenize.STRING, tokenize.COMMENT):
+            continue
+        (start_row, start_col), (end_row, end_col) = tok.start, tok.end
+        for row_idx in range(start_row - 1, end_row):
+            if row_idx >= len(line_chars):
+                continue
+            row = line_chars[row_idx]
+            col_lo = start_col if row_idx == start_row - 1 else 0
+            col_hi = end_col if row_idx == end_row - 1 else len(row)
+            for col in range(col_lo, min(col_hi, len(row))):
+                if row[col] not in ("\n", "\r"):
+                    row[col] = " "
+    return "".join("".join(row) for row in line_chars)
+
+
+def _i1_collect_offenders() -> dict[str, list[tuple[int, str]]]:
+    """Walk ``src/popolaloom/**/*.py``; return offenders → list of (lineno, line).
+
+    A file is an "offender" when the I-1 regex matches its **executable**
+    content (after stripping strings + comments) AND the file's POSIX-relative
+    path under ``src/popolaloom/`` is NOT in :data:`_I1_MUST_BE_ONLY_FILE`.
+    The ``_vendored/`` tree is skipped because it is upstream code we are not
+    allowed to modify (see ``VENDORING.md``); this mirrors the existing carve-
+    outs in ``pyproject.toml`` for ruff / mypy / coverage.
+    """
+    src_dir = _i1_repo_root() / "src" / "popolaloom"
+    offenders: dict[str, list[tuple[int, str]]] = {}
+    for py_path in sorted(src_dir.rglob("*.py")):
+        rel_posix = py_path.relative_to(src_dir).as_posix()
+        if rel_posix.startswith("_vendored/"):
+            continue
+        try:
+            raw = py_path.read_text(encoding="utf-8")
+        except OSError:
+            continue
+        scanned = _i1_strip_strings_and_comments(raw)
+        match = _I1_PATTERN.search(scanned)
+        if match is None:
+            continue
+        if rel_posix in _I1_MUST_BE_ONLY_FILE:
+            continue
+        # Compute 1-indexed line of the match start; show the ORIGINAL line
+        # (with literals + comments intact) so the diagnostic is readable.
+        line_no = scanned[: match.start()].count("\n") + 1
+        raw_lines = raw.splitlines()
+        offending_line = (
+            raw_lines[line_no - 1] if 0 < line_no <= len(raw_lines) else "<?>"
+        )
+        offenders.setdefault(rel_posix, []).append((line_no, offending_line))
+    return offenders
+
+
+def test_invariant_i1_sole_writer_of_cloud_phase() -> None:
+    """I-1: only ``daemon/cloud_poller.py`` may write ``cloud_phase`` via StateStore.
+
+    This static-grep guard fails CI if any module under ``src/popolaloom/``
+    (other than the allow-listed canonical writer) passes ``cloud_phase=`` to
+    ``StateStore.update``. It is the strongest preventer of regression for
+    invariant **I-1** in ``state-source-of-truth.md`` §6 because it fires at
+    PR time, before review. Diagnostic output lists every offending file +
+    line so a reviewer can immediately see what to fix.
+
+    Cross-reference: see the ``# I-1 sole-writer`` comment block at the top
+    of :meth:`CloudPollLoop._emit_run_status` in ``daemon/cloud_poller.py``.
+    """
+    offenders = _i1_collect_offenders()
+    if not offenders:
+        return
+    msg_lines: list[str] = [
+        "I-1 sole-writer rule violated.",
+        "Only files in MUST_BE_ONLY_FILE may pass `cloud_phase=` to "
+        "`StateStore.update`.",
+        f"  allow-list = {sorted(_I1_MUST_BE_ONLY_FILE)}",
+        "Offending files (relative to src/popolaloom/):",
+    ]
+    for rel in sorted(offenders):
+        msg_lines.append(f"  - {rel}:")
+        for line_no, offending in offenders[rel]:
+            msg_lines.append(f"      L{line_no}: {offending.strip()}")
+    msg_lines.append(
+        "See state-source-of-truth.md §1.2 rule 1 + §6 I-1 for the contract."
+    )
+    raise AssertionError("\n".join(msg_lines))

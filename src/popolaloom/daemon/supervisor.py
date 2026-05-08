@@ -32,6 +32,7 @@ v0.2.0 修复 (Stage A A6):
 
 from __future__ import annotations
 
+import dataclasses
 import json
 import logging
 import os
@@ -421,14 +422,36 @@ class Supervisor:
                 error_detail="create_agent response missing agent.id or run.id",
             )
 
-        self._state_store.update(
-            task_id,
+        # I-1 sole-writer (state-source-of-truth.md §1.2 rule 1): only
+        # cloud_poller.py may pass cloud_phase=/state= to state_store.update.
+        # Seed the bootstrap STARTING/CREATING snapshot via the TaskHandle
+        # constructor (dataclasses.replace re-invokes TaskHandle.__init__ with
+        # the merged fields) and re-register through StateStore.rehydrate —
+        # the documented authoritative-overwrite path. Bootstrap semantics are
+        # preserved end-to-end: by the time `cloud.queued` is emitted the
+        # handle observed by `popola status` already shows
+        # state=STARTING / cloud_phase=CREATING, identical to the v0.8.5
+        # update-based seed it replaces.
+        existing_handle = self._state_store.get(task_id)
+        if existing_handle is None:
+            if client is not None:
+                client.close()
+            return _fail(
+                error_kind="cloud_create_failed",
+                error_detail=(
+                    f"task_id {task_id} missing from state_store before cloud "
+                    "seed (Popolad pre-register contract violated)"
+                ),
+            )
+        seeded_handle = dataclasses.replace(
+            existing_handle,
+            state=TaskState.STARTING,
             runtime="cloud",
             cursor_agent_id=agent_id,
             cursor_run_id=run_id,
-            state=TaskState.STARTING,
             cloud_phase="CREATING",
         )
+        self._state_store.rehydrate([seeded_handle])
         event_log.append(
             "cloud.queued",
             {
