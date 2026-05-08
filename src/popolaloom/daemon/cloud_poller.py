@@ -62,7 +62,16 @@ def _safe_on_exit(
 
 @dataclass
 class CloudPollLoop:
-    """One-task cloud polling loop."""
+    """One-task cloud polling loop.
+
+    v0.8.6 (T2.2.2): optional ``wake_event`` parameter lets external signalers
+    (e.g., :class:`SSEReader.terminal_hint`) interrupt the inter-poll sleep so
+    the poller can confirm a terminal phase faster than the default
+    ``interval_s`` cadence. The signal is **advisory only** — the next iteration
+    still calls :meth:`CloudCursorClient.get_run` to obtain the authoritative
+    phase. Backwards compatible: ``wake_event=None`` (default) keeps the v0.8.5
+    behaviour of a plain :func:`time.sleep`.
+    """
 
     task_id: str
     agent_id: str
@@ -74,6 +83,7 @@ class CloudPollLoop:
     interval_s: float = 2.0
     max_polls: int = 1800
     retry_max: int = 5
+    wake_event: threading.Event | None = None
 
     def _poll_run_body(self) -> dict[str, Any]:
         last_exc: CursorCloudError | None = None
@@ -101,6 +111,9 @@ class CloudPollLoop:
         raise last_exc
 
     def _emit_run_status(self, phase: str, prev_phase: str | None) -> None:
+        # I-1 sole-writer: only this module writes cloud_phase via StateStore.update
+        # (see state-source-of-truth.md §1.2 rule 1; CI guard in tests/conftest.py
+        # via test_invariant_i1_sole_writer_of_cloud_phase enforces this at PR time).
         self.event_log.append(
             "cloud.run_status",
             {
@@ -282,7 +295,19 @@ class CloudPollLoop:
                     _safe_on_exit(self.on_exit, self.task_id, 1)
                     return
 
-                time.sleep(self.interval_s)
+                # v0.8.6 T2.2.2: wake_event lets the SSEReader (or any other
+                # signaler) interrupt the inter-poll sleep so we can confirm a
+                # terminal phase faster than ``interval_s`` (validates I-6 drift
+                # bound). When None, fall back to the v0.8.5 plain sleep so all
+                # existing tests remain green. The signal is advisory — we still
+                # call ``get_run`` on the next loop to obtain the authoritative
+                # phase. A spurious wake during a non-sleep window is a no-op
+                # because we ``clear()`` immediately after each wait.
+                if self.wake_event is not None:
+                    self.wake_event.wait(self.interval_s)
+                    self.wake_event.clear()
+                else:
+                    time.sleep(self.interval_s)
         finally:
             try:
                 self.client.close()
@@ -306,8 +331,17 @@ def run_poll_loop(
     interval_s: float = 2.0,
     max_polls: int = 1800,
     retry_max: int = 5,
+    wake_event: threading.Event | None = None,
 ) -> threading.Thread:
-    """Create and start a daemon thread running :meth:`CloudPollLoop.run`."""
+    """Create and start a daemon thread running :meth:`CloudPollLoop.run`.
+
+    v0.8.6 T2.2.2: the optional ``wake_event`` parameter is forwarded to
+    :class:`CloudPollLoop`. When set, calls to ``wake_event.set()`` from any
+    other thread (typically :class:`SSEReader.terminal_hint` from
+    ``adapters/cursor_cloud.py``) interrupt the inter-poll sleep so the poller
+    can confirm a terminal phase within ≤200 ms instead of waiting up to
+    ``interval_s``. ``wake_event=None`` (default) preserves v0.8.5 behaviour.
+    """
     loop = CloudPollLoop(
         task_id=task_id,
         agent_id=agent_id,
@@ -319,6 +353,7 @@ def run_poll_loop(
         interval_s=interval_s,
         max_polls=max_polls,
         retry_max=retry_max,
+        wake_event=wake_event,
     )
     thread = threading.Thread(
         target=loop.run,

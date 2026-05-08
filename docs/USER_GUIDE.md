@@ -432,10 +432,68 @@ These compose with existing Lark fan-out: the **`cloud`** `HITLChannel` particip
 2. Prefer **narrow prompts** — every dispatch still records the Markdown handoff envelope for audit, but quota accrues on Cursor’s side.
 3. Regression / smoke coverage lives under `tests/real_cursor_cloud/` with marker **`real_cursor_cloud`**; exporting `CURSOR_API_KEY` runs four cheap live tests (`create` + immediate `cancel`, metadata GETs, bogus-key sentinel). Omit the env var locally or in CI for **skipped-not-failed** semantics.
 
+### SSE ingest (v0.8.6+)
+
+<!-- updated: 2026-05-08 -->
+
+For `runtime=cloud` tasks, `popola attach <task_id> --follow` now defaults to **SSE-by-default**: alongside the daemon's existing `/attach_stream` feed, the CLI opens an `httpx.stream("GET", /v1/agents/{id}/runs/{run_id}/stream)` against Cursor's REST and pumps `cloud.sse.*` envelopes (`assistant`, `tool_call`, `result`, `status`, `parse_error`, `stream_expired`, `dedup_drop`) into the same renderer. Each envelope carries the idempotency quintuple `(task_id, run_id, stream_session_id, sse_id, seq)` so downstream consumers can dedupe deterministically.
+
+| Surface | Default behaviour (v0.8.6+) | Escape hatch |
+|---|---|---|
+| `popola attach <id> --follow` (cloud task) | SSE pump on a background thread + poll-driven `/attach_stream` view in foreground | `--no-stream` forces legacy poll-only |
+| `popola attach <id> --follow` (local task) | Unchanged (poll-driven `/attach_stream`) | n/a |
+| `popola attach <id> --no-follow` | One-shot dump (no SSE) | n/a |
+
+**Auto-fallback to poll.** The SSE thread bows out cleanly without crashing when any of the following happens, and the existing poll-driven view continues:
+
+- `CursorCloudStreamExpiredError` (HTTP `410 stream_expired` after the Cursor server's retention window elapses) — the reader does NOT reconnect `/stream`; status reconciles via the next `cloud.run_status` poll.
+- `httpx.ReadError` / `httpx.ConnectError` / `httpx.TimeoutException` (network blip mid-stream).
+- Missing `CURSOR_API_KEY` (cannot authenticate; surfaces a `[cloud sse] ...` one-liner on stderr per No-Silent-Failures).
+- Main-thread teardown via `stop_event.set()` (Ctrl-C unwind).
+
+On any fallback the renderer appends a `cloud.sse.fallback_to_poll` boundary marker so attached operators can see the transition without inspecting daemon logs.
+
+**Tolerated divergence.** The `cloud_poller` thread remains the **sole writer** of `TaskHandle.cloud_phase` (per `state-source-of-truth.md` §1.2 rule 1); SSE events are **append-only on the EventLog** and never mutate state. As a consequence, the SSE-side "stream:running" hint may briefly disagree with the poller-driven `cloud_phase=CREATING` (or vice versa) for **up to ≤3 s** (poll interval `interval_s` + 1 s jitter; default `interval_s=2 s`). The renderer applies the §4 reconciliation rules: poller wins on every `cloud_phase` disagreement; SSE wins for fields the poller does not own (assistant text, per-tool diagnostics).
+
+```bash
+popola attach cursor-cloud-deadbeef --follow            # SSE-by-default
+popola attach cursor-cloud-deadbeef --follow --no-stream # legacy poll-only
+```
+
+A `cloud.sse.*` envelope as it appears in `~/.popola/events/<task_id>.jsonl` (one CloudEvents 1.0 line per frame; the idempotency quintuple lives under `data`):
+
+```json
+{"type":"cloud.sse.assistant","time":"2026-05-08T10:00:01.234+00:00","data":{"task_id":"task-cloud-002","run_id":"run_abc123","stream_session_id":1,"sse_id":"42","seq":7,"payload":{"text":"Looking at the failing test..."}}}
+```
+
+### Cloud error hints (v0.8.6+)
+
+<!-- updated: 2026-05-08 -->
+
+v0.8.6 ships a 16-entry **422-family error catalog** embedded in `cursor_cloud.py` (`_ERROR_CATALOG` constant). The selector follows precedence `(error.code → error.message regex → HTTP status)` and dispatches into one of ten new `CursorCloud*Error` subclasses (e.g. `CursorCloudPlanRequiredError`, `RepoAllowlistError`, `GithubAppMissingError`, `GithubAppPermissionError`, `CursorCloudStreamExpiredError`). Every subclass carries `.hint_en` + `.hint_zh` strings (each ≤2 sentences, each containing ≥1 dashboard URL) and a stable `.cli_exit` code so scripted callers can branch on outcome.
+
+Two representative bilingual hints (verbatim from the catalog so future drift is detectable by hash diff):
+
+**`RepoAllowlistError`** (HTTP 422 / 400 / 403; `error.message` matches `(?i)(allow.?list|allowed.?repositor|repository.+not.+(configured|installed|allowed))`; CLI exit `78`):
+
+- **EN hint:** *The Cursor GitHub App is not allow-listed for this repository. Open `https://github.com/apps/cursor` (or your org's Integrations page) and add the repo, then revisit `https://cursor.com/dashboard/integrations` to confirm the GitHub connection.*
+- **ZH hint:** *Cursor GitHub App 未对该仓库开通。请到 `https://github.com/apps/cursor`（或组织 Integrations 页）勾选目标仓库，再到 `https://cursor.com/dashboard/integrations` 确认连接已生效。*
+
+**`CursorCloudPlanRequiredError`** (HTTP 403 `plan_required`; CLI exit `78`):
+
+- **EN hint:** *Cloud Agents require a paid Cursor plan; this account is on a free tier. Upgrade at `https://cursor.com/pricing` or use an account with paid access.*
+- **ZH hint:** *Cloud Agents 需要付费版 Cursor 套餐，当前账户为免费档。请到 `https://cursor.com/pricing` 升级，或切换到已付费账户。*
+
+The other 14 entries cover `401 unauthorized`, `401 api_key_not_found`, `403 role_forbidden`, `403 feature_unavailable`, `404 agent_not_found`/`run_not_found`, `409 agent_busy` / `agent_archived` / `run_not_cancellable`, `410 stream_expired`, `400/422 validation_error`, two more 422 GitHub-App categories, `429 rate_limit_exceeded` (deferred to v0.8.8), and `5xx internal_error` / `upstream_error`. The full text + retry/backoff matrix lives in the [research note (local-only)](../.local/research/v0.8.6_sse/422-error-catalog.md) §3 and is reproduced into the Python `_ERROR_CATALOG` constant verbatim.
+
 Canonical design references:
 
 - `.local/research/v0.8.5_cloud_agent/research.md`
 - `.local/research/v0.8.5_cloud_agent/00-decision-matrix-zh.md`
+- `.local/research/v0.8.6_sse/sse-event-schema.md` (v0.8.6 SSE protocol — local-only)
+- `.local/research/v0.8.6_sse/state-source-of-truth.md` (writer contract + §4 reconciliation rules — local-only)
+- `.local/research/v0.8.6_sse/422-error-catalog.md` (canonical hint source — local-only)
+- [`docs/known-issues.md` — Cloud task hydration after daemon restart](known-issues.md)
 
 ## Hands-off envelope (v0.8.0+)
 

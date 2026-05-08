@@ -1,0 +1,74 @@
+# .github/workflows/cloud-smoke.yml
+#
+# v0.8.6 Wave 2.3 T2.3.1 — manual cloud-smoke for tests/real_cursor_cloud/.
+#
+# Exercises the opt-in Cursor Cloud Agents REST smoke quartet (the
+# `pytest -m real_cursor_cloud -k smoke` subset). Every run consumes
+# real Cursor Cloud API quota (the cheapest case is create + immediate
+# cancel; see `tests/real_cursor_cloud/test_smoke.py`), so we gate on:
+#
+#   1. `workflow_dispatch` ONLY — no `push`, no `pull_request`, no
+#      schedule. Forks cannot trigger `workflow_dispatch` on the
+#      upstream repo, so they cannot drain the maintainer's quota.
+#   2. Repo secret `CURSOR_API_KEY` is present. When unset (fresh
+#      fork, or before any maintainer adds it), the `smoke` job is
+#      skipped (no red X) and a sibling `notify-skip` job records a
+#      friendly green-check explanation in the workflow run, satisfying
+#      the v0.8.6 PLAN §4.3 T2.3.1 AC (e) "fail-soft, NOT a red X"
+#      requirement.
+#
+# The `CURSOR_API_KEY` value is consumed only via `env.CURSOR_API_KEY`
+# in the pytest step (no `echo`, no debug print) per the workspace
+# rule "禁止 `CURSOR_API_KEY` 入库". Manual `tests_path` input is
+# passed through an env var, never inlined into the shell command, so
+# the workflow is safe even if a future input gains shell-meta chars.
+
+name: cloud-smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      tests_path:
+        description: "Pytest target path (default: tests/real_cursor_cloud/)."
+        required: false
+        default: "tests/real_cursor_cloud/"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    name: real_cursor_cloud smoke (-k smoke)
+    runs-on: ubuntu-22.04
+    if: ${{ secrets.CURSOR_API_KEY != '' }}
+    steps:
+      - name: Checkout repo
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.11
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install package + dev deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -e ".[dev]"
+
+      - name: Run real_cursor_cloud smoke subset
+        env:
+          CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
+          TESTS_PATH: ${{ inputs.tests_path }}
+        run: |
+          pytest "$TESTS_PATH" -m real_cursor_cloud -k "smoke" -q --no-header
+
+  notify-skip:
+    name: notify-skip (CURSOR_API_KEY not configured)
+    runs-on: ubuntu-22.04
+    if: ${{ secrets.CURSOR_API_KEY == '' }}
+    steps:
+      - name: Friendly skip message
+        run: |
+          echo "skipping: CURSOR_API_KEY not configured (set as repo secret)"
+          exit 0

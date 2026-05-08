@@ -36,10 +36,13 @@ from __future__ import annotations
 import json
 import logging
 import os
+import threading
 import time
+import uuid
 from dataclasses import dataclass
+from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
+from typing import TYPE_CHECKING, Any, cast
 
 import httpx
 import typer
@@ -49,6 +52,15 @@ from rich.text import Text
 
 from popolaloom import __version__
 from popolaloom.adapters import get_adapter, list_registered
+from popolaloom.adapters.cursor_cloud import (
+    CloudCursorClient,
+    CursorCloudError,
+    CursorCloudStreamInvalidLastEventIdError,
+    SSEReader,
+)
+
+if TYPE_CHECKING:
+    from popolaloom.daemon.event_log import EventLog
 
 __all__ = ["app", "make_async_client", "make_sync_client"]
 
@@ -405,14 +417,33 @@ def attach(
             "Use --no-follow for a one-shot dump (R-005 fix in v0.2.0)."
         ),
     ),
+    no_stream: bool = typer.Option(
+        False,
+        "--no-stream",
+        help=(
+            "v0.8.6 (T2.2.1): force the legacy poll-only path even for "
+            "runtime=cloud tasks (escape hatch). By default --follow on a "
+            "cloud task additionally pumps Cursor's SSE events into the "
+            "renderer alongside the daemon's /attach_stream feed."
+        ),
+    ),
 ) -> None:
     """Print task events as ``<time>  <type>  <data_summary>`` lines.
 
     R-005 fix: ``--follow`` defaults to **True** so cross-process attach
     sees new events live. Use ``--no-follow`` for the legacy one-shot dump.
+
+    v0.8.6 (T2.2.1): for ``runtime=cloud`` tasks the default ``--follow``
+    additionally launches a Cursor SSE pump on a background thread that
+    feeds ``cloud.sse.*`` events into the same renderer as the daemon's
+    ``/attach_stream`` feed. On disconnect / ``410 stream_expired`` /
+    network error the SSE thread bows out cleanly with a
+    ``cloud.sse.fallback_to_poll`` boundary marker and a stderr notice;
+    the existing poll-driven view continues. Use ``--no-stream`` to force
+    the legacy poll-only path (escape hatch).
     """
     if follow:
-        _attach_streaming(task_id, from_index=from_index)
+        _attach_streaming(task_id, from_index=from_index, no_stream=no_stream)
     else:
         _attach_one_shot(task_id, from_index=from_index)
 
@@ -452,8 +483,26 @@ def _attach_one_shot(task_id: str, *, from_index: int) -> None:
         _render_connect_error(exc)
 
 
-def _attach_streaming(task_id: str, *, from_index: int) -> None:
-    """Long-poll the SSE attach_stream endpoint until terminal or Ctrl-C."""
+def _attach_streaming(
+    task_id: str,
+    *,
+    from_index: int,
+    no_stream: bool = False,
+) -> None:
+    """Long-poll the SSE attach_stream endpoint until terminal or Ctrl-C.
+
+    v0.8.6 (T2.2.1): when the status snapshot reports ``runtime=cloud``
+    and ``--no-stream`` was *not* passed, additionally spawn a daemon
+    thread that pumps Cursor's SSE events into the local renderer. The
+    thread exits cleanly on ``CursorCloudStreamExpiredError``,
+    ``httpx.ReadError`` / ``httpx.ConnectError`` /
+    ``httpx.TimeoutException``, missing API key, or main-thread teardown
+    (``stop_event.set()``). On any error path it surfaces a
+    ``cloud.sse.fallback_to_poll`` boundary event via the sink + a
+    ``[cloud sse] ...`` one-liner on stderr (No-Silent-Failures).
+    """
+    sse_thread: threading.Thread | None = None
+    sse_stop_event: threading.Event | None = None
     try:
         with make_sync_client() as client:
             r_status = client.get(f"/status/{task_id}")
@@ -464,19 +513,35 @@ def _attach_streaming(task_id: str, *, from_index: int) -> None:
                 typer.echo(f"error: status {r_status.status_code}: {r_status.text}", err=True)
                 raise typer.Exit(code=1)
 
-            with client.stream(
-                "GET",
-                f"/attach_stream/{task_id}",
-                params={"since": from_index},
-                timeout=httpx.Timeout(connect=5.0, read=None, write=10.0, pool=10.0),
-            ) as stream:
-                if stream.status_code != 200:
-                    typer.echo(
-                        f"error: attach_stream {stream.status_code}",
-                        err=True,
-                    )
-                    raise typer.Exit(code=1)
-                _consume_sse(stream, terminate_on_terminal=True)
+            status_info = _safe_status_payload(r_status)
+
+            if not no_stream and status_info.get("runtime") == "cloud":
+                sse_stop_event = threading.Event()
+                sse_thread = _maybe_spawn_cloud_sse_thread(
+                    task_id=task_id,
+                    status_info=status_info,
+                    stop_event=sse_stop_event,
+                )
+
+            try:
+                with client.stream(
+                    "GET",
+                    f"/attach_stream/{task_id}",
+                    params={"since": from_index},
+                    timeout=httpx.Timeout(connect=5.0, read=None, write=10.0, pool=10.0),
+                ) as stream:
+                    if stream.status_code != 200:
+                        typer.echo(
+                            f"error: attach_stream {stream.status_code}",
+                            err=True,
+                        )
+                        raise typer.Exit(code=1)
+                    _consume_sse(stream, terminate_on_terminal=True)
+            finally:
+                if sse_stop_event is not None:
+                    sse_stop_event.set()
+                if sse_thread is not None:
+                    sse_thread.join(timeout=2.0)
     except httpx.ConnectError as exc:
         _render_connect_error(exc)
     except KeyboardInterrupt:
@@ -549,6 +614,267 @@ def _consume_sse(response: httpx.Response, *, terminate_on_terminal: bool) -> bo
     return saw_terminal
 
 
+# ── cloud SSE pump (T2.2.1) ──────────────────────────────────────────────
+
+
+def _utc_now_iso_ms() -> str:
+    """ISO-8601 UTC timestamp with millisecond precision and ``Z`` suffix.
+
+    Mirrors the format produced by :func:`popolaloom.daemon.event_log._utc_now_iso`
+    so cloud SSE envelopes rendered by :class:`_CloudSSEEventSink` look the
+    same as those streamed from the daemon's ``/attach_stream`` feed.
+    """
+    return (
+        datetime.now(UTC)
+        .isoformat(timespec="milliseconds")
+        .replace("+00:00", "Z")
+    )
+
+
+class _CloudSSEEventSink:
+    """Duck-typed :class:`EventLog` for the CLI cloud SSE worker (T2.2.1).
+
+    Implements the same ``append(event_type, data) -> dict`` contract as
+    :class:`popolaloom.daemon.event_log.EventLog`, but instead of writing to
+    disk it renders each envelope with :func:`_format_event` and emits it via
+    :func:`typer.echo` so ``cloud.sse.*`` events appear inline in
+    ``popola attach`` output alongside the daemon's ``/attach_stream`` feed.
+
+    Per the v0.8.6 writer contract (``state-source-of-truth.md`` §1.2 rule 1),
+    the SSE reader must NOT receive a :class:`StateStore` reference — it is
+    structurally barred from ``cloud_phase`` mutation. This sink mirrors that
+    property: it has no ``state_store`` attribute, never imports the daemon
+    state module, and never makes a daemon RPC call.
+
+    The collected ``events`` list is exposed for tests so they can introspect
+    every envelope appended without having to capture stdout.
+    """
+
+    closed: bool = False
+
+    def __init__(self, *, source: str = "popola/cli-cloud-sse") -> None:
+        self._source = source
+        self.events: list[dict[str, Any]] = []
+
+    def append(self, event_type: str, data: dict[str, Any]) -> dict[str, Any]:
+        envelope: dict[str, Any] = {
+            "specversion": "1.0",
+            "id": f"evt-cli-{uuid.uuid4().hex}",
+            "source": self._source,
+            "type": event_type,
+            "time": _utc_now_iso_ms(),
+            "data": data,
+        }
+        self.events.append(envelope)
+        try:
+            typer.echo(_format_event(envelope))
+        except Exception as exc:  # noqa: BLE001 — render failures must not crash worker
+            logger.warning(
+                "cloud SSE sink failed to render event %s: %s", event_type, exc
+            )
+        return envelope
+
+
+def _safe_status_payload(response: httpx.Response) -> dict[str, Any]:
+    """Tolerantly parse a ``GET /status/{task_id}`` JSON body.
+
+    Returns an empty dict on any decode failure or non-dict shape so the
+    caller's ``runtime``/``cursor_agent_id`` lookups simply fall through to
+    the legacy poll-only path (No-Silent-Failures: a warning is logged at
+    DEBUG level).
+    """
+    try:
+        body = response.json()
+    except (ValueError, json.JSONDecodeError) as exc:
+        logger.debug("attach: status payload not JSON-decodable: %s", exc)
+        return {}
+    if not isinstance(body, dict):
+        return {}
+    return cast(dict[str, Any], body)
+
+
+def _maybe_spawn_cloud_sse_thread(
+    *,
+    task_id: str,
+    status_info: dict[str, Any],
+    stop_event: threading.Event,
+) -> threading.Thread | None:
+    """Construct and start a daemon thread pumping Cursor SSE.
+
+    Returns ``None`` (no thread spawned) when the prerequisites for the
+    cloud SSE channel are not met:
+
+    - ``cursor_agent_id`` or ``cursor_run_id`` missing on the status
+      snapshot (the dispatch may have failed before the cloud
+      ``POST /v1/agents`` returned, or runtime hydration is incomplete);
+    - ``CURSOR_API_KEY`` env var is unset/empty (no cloud auth possible).
+
+    Each fall-back path emits a ``[cloud sse] ...`` notice on stderr per
+    the workspace **No-Silent-Failures** rule so the user understands why
+    the SSE channel is silent and why we're using the existing poll-driven
+    view alone.
+    """
+    agent_id = status_info.get("cursor_agent_id")
+    run_id = status_info.get("cursor_run_id")
+    if not agent_id or not isinstance(agent_id, str):
+        logger.warning(
+            "cloud SSE skipped for task_id=%s: cursor_agent_id missing/invalid (%r)",
+            task_id,
+            agent_id,
+        )
+        typer.echo(
+            f"[cloud sse] cursor_agent_id missing for {task_id}; using poll-only view",
+            err=True,
+        )
+        return None
+    if not run_id or not isinstance(run_id, str):
+        logger.warning(
+            "cloud SSE skipped for task_id=%s: cursor_run_id missing/invalid (%r)",
+            task_id,
+            run_id,
+        )
+        typer.echo(
+            f"[cloud sse] cursor_run_id missing for {task_id}; using poll-only view",
+            err=True,
+        )
+        return None
+
+    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+    if not api_key:
+        logger.warning(
+            "cloud SSE skipped for task_id=%s: CURSOR_API_KEY env var unset",
+            task_id,
+        )
+        typer.echo(
+            "[cloud sse] CURSOR_API_KEY not set; using poll-only view",
+            err=True,
+        )
+        return None
+
+    sink = _CloudSSEEventSink()
+    thread = threading.Thread(
+        target=_run_cloud_sse_pump,
+        kwargs={
+            "api_key": api_key,
+            "task_id": task_id,
+            "agent_id": agent_id,
+            "run_id": run_id,
+            "sink": sink,
+            "stop_event": stop_event,
+        },
+        name=f"popola-cloud-sse-{task_id}",
+        daemon=True,
+    )
+    thread.start()
+    return thread
+
+
+def _run_cloud_sse_pump(
+    *,
+    api_key: str,
+    task_id: str,
+    agent_id: str,
+    run_id: str,
+    sink: _CloudSSEEventSink,
+    stop_event: threading.Event,
+) -> None:
+    """Pump Cursor SSE into ``sink`` until done, error, or ``stop_event``.
+
+    Constructs a fresh :class:`CloudCursorClient` (one per attach session,
+    closed in the ``finally`` block), wires it to a :class:`SSEReader`
+    pointed at our duck-typed sink, and drives ``pump()``. ``pump()``
+    already absorbs :class:`CursorCloudStreamExpiredError` and
+    ``httpx.RemoteProtocolError`` / ``httpx.ReadError`` internally —
+    emitting ``cloud.sse.stream_expired`` / ``cloud.sse.parse_error``
+    envelopes — so the worker only has to catch the broader
+    ``httpx.ConnectError`` / ``httpx.TimeoutException`` /
+    :class:`CursorCloudStreamInvalidLastEventIdError` / generic
+    :class:`CursorCloudError` cases.
+
+    On any non-graceful exit (``stop_event`` not set), emits a single
+    ``cloud.sse.fallback_to_poll`` envelope via the sink + a stderr
+    one-liner so users see the transition to poll-only mode (AC e + g).
+    """
+    fallback_reason: str | None = None
+    fallback_error: str | None = None
+    client: CloudCursorClient | None = None
+    try:
+        try:
+            client = CloudCursorClient(api_key)
+        except (ValueError, CursorCloudError) as exc:
+            logger.warning("cloud SSE client init failed: %s", exc)
+            fallback_reason = "client_init_failed"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+            return
+
+        try:
+            reader = SSEReader(
+                client,
+                cast("EventLog", sink),
+                task_id,
+                run_id,
+                agent_id=agent_id,
+            )
+        except (TypeError, AssertionError) as exc:
+            logger.warning("cloud SSE reader init rejected: %s", exc)
+            fallback_reason = "reader_init_failed"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+            return
+
+        try:
+            reader.pump(stop_event=stop_event)
+        except CursorCloudStreamInvalidLastEventIdError as exc:
+            logger.warning(
+                "cloud SSE invalid Last-Event-ID for task_id=%s; aborting: %s",
+                task_id,
+                exc,
+            )
+            fallback_reason = "invalid_last_event_id"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+        except (httpx.ConnectError, httpx.TimeoutException, httpx.ReadError) as exc:
+            logger.warning(
+                "cloud SSE network error for task_id=%s: %s", task_id, exc
+            )
+            fallback_reason = "network_error"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+        except CursorCloudError as exc:
+            logger.warning(
+                "cloud SSE Cursor API error for task_id=%s: %s", task_id, exc
+            )
+            fallback_reason = "cursor_error"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+        except Exception as exc:  # noqa: BLE001 — surface unexpected, then fallback
+            logger.exception("cloud SSE unexpected error for task_id=%s", task_id)
+            fallback_reason = "unexpected_error"
+            fallback_error = f"{type(exc).__name__}: {exc}"
+        else:
+            fallback_reason = "stream_ended"
+    finally:
+        if client is not None:
+            try:
+                client.close()
+            except Exception as exc:  # noqa: BLE001 — close failure is non-fatal
+                logger.debug("cloud SSE client.close() failed: %s", exc)
+        if not stop_event.is_set() and fallback_reason is not None:
+            data: dict[str, Any] = {
+                "reason": fallback_reason,
+                "task_id": task_id,
+            }
+            if fallback_error is not None:
+                data["error"] = fallback_error
+            try:
+                sink.append("cloud.sse.fallback_to_poll", data)
+            except Exception:  # noqa: BLE001 — sink errors must never crash worker
+                logger.debug("cloud SSE failed to append fallback envelope", exc_info=True)
+            try:
+                typer.echo(
+                    f"[cloud sse] stream ended ({fallback_reason}); switching to poll",
+                    err=True,
+                )
+            except Exception:  # noqa: BLE001 — stderr write must never crash worker
+                logger.debug("cloud SSE failed to write stderr notice", exc_info=True)
+
+
 # ── list ──────────────────────────────────────────────────────────────────
 
 
@@ -566,8 +892,25 @@ def list_active(
         help="Include terminal tasks (completed/failed/canceled).",
     ),
     json_out: bool = typer.Option(False, "--json", help="Emit JSON instead of a table."),
+    no_runtime: bool = typer.Option(
+        False,
+        "--no-runtime",
+        help=(
+            "Hide the runtime column (escape hatch). v0.8.6: column is shown by "
+            "default; --json output always includes the field."
+        ),
+    ),
 ) -> None:
-    """List currently-running (non-terminal) tasks, optionally filtered by state."""
+    """List currently-running (non-terminal) tasks, optionally filtered by state.
+
+    v0.8.6 (T2.1.2): the table gains a default-on ``runtime`` column showing
+    ``local`` (subprocess) vs ``cloud`` (Cursor Cloud Agent) per row, sourced
+    from ``TaskHandle.runtime`` via the daemon ``/list`` summary builder.
+    The ``--no-runtime`` flag hides the column without affecting JSON output
+    (``--json`` always emits the field, no schema change).
+    Legacy rows missing the field render ``"-"`` (No Silent Failures).
+    Column order: ``task_id, runtime, cli, state, pid, started_at``.
+    """
     try:
         with make_sync_client() as client:
             r = client.get("/list", params={"include_terminal": include_terminal})
@@ -596,16 +939,26 @@ def list_active(
         show_header=True,
         header_style="bold",
     )
-    for col in ("task_id", "cli", "state", "pid", "started_at"):
+    columns: tuple[str, ...] = (
+        ("task_id", "cli", "state", "pid", "started_at")
+        if no_runtime
+        else ("task_id", "runtime", "cli", "state", "pid", "started_at")
+    )
+    for col in columns:
         table.add_column(col)
     for item in items:
-        table.add_row(
-            item.get("task_id", ""),
-            item.get("cli", ""),
-            item.get("state", ""),
-            "" if item.get("pid") is None else str(item["pid"]),
-            item.get("started_at", ""),
+        row: list[str] = [item.get("task_id", "")]
+        if not no_runtime:
+            row.append(item.get("runtime") or "-")
+        row.extend(
+            [
+                item.get("cli", ""),
+                item.get("state", ""),
+                "" if item.get("pid") is None else str(item["pid"]),
+                item.get("started_at", ""),
+            ]
         )
+        table.add_row(*row)
     _console_out.print(table)
 
 

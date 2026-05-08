@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.8.5
+version: 0.8.6
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]

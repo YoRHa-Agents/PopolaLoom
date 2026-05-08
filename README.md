@@ -82,13 +82,25 @@ Supported KEYs per adapter: see [`docs/USER_GUIDE.md#adapter-passthrough`](docs/
 
 ### Cloud Agent dispatch (v0.8.5+)
 
+<!-- updated: 2026-05-08 -->
+
 PopolaLoom now speaks Cursor’s Background Agent REST alongside the historical local CLIs:
 
 - **Invocation**: start `popolad`, export `CURSOR_API_KEY`, then `popola dispatch "<prompt>" --cli=cursor-cloud --cli-flag repo_url=https://github.com/you/repo [--cli-flag model=composer-2 ...]`.
 - **Why daemon still matters**: the supervisor swaps `Popen` for `CloudCursorClient.create_agent(...)`, persists `cursor_agent_id` / `cursor_run_id`, and tracks phases via the cloud poller so `attach`/`status`/`cancel` semantics stay cohesive with local workloads.
-- **Observability**: browser dashboard **https://cursor.com/dashboard/cloud-agents** complements `popola status <task>` (shows `runtime=cloud`).
+- **Observability**: browser dashboard **https://cursor.com/dashboard/cloud-agents** complements `popola status <task>` (shows `runtime=cloud`). v0.8.6+ also surfaces a default-on `runtime` column in `popola list` so local vs cloud rows are distinguishable at a glance — pass `--no-runtime` to hide it.
+- **Live attach (v0.8.6+)**: `popola attach <id> --follow` for `runtime=cloud` tasks now ingests Cursor's SSE stream by default and auto-falls back to the legacy poll-only view on `410 stream_expired` / network errors; pass `--no-stream` to force the legacy path. See [`docs/USER_GUIDE.md#sse-ingest-v086`](docs/USER_GUIDE.md#sse-ingest-v086) for the full contract (incl. ≤3 s tolerated divergence between SSE and `cloud_phase`).
 - **HITL bridge**: synchronous HTTP callers (or MCP-side harnesses) can wait on human approvals through `POST /hitl/cloud/request`, `GET /hitl/cloud/wait/{hitl_id}`, `POST /hitl/cloud/answer/{hitl_id}` authenticated like the rest of `popolad`.
 - **Opt-in QA**: `pytest tests/real_cursor_cloud/ -m real_cursor_cloud` only after exporting the API key — four cheap tests (create+cancel sentinel, metadata GETs, bogus-key auth assertion); default CI lane **deselects** `-m real_cursor_cloud`.
+
+Example `popola list` rendering with the v0.8.6+ `runtime` column (between `task_id` and `cli`):
+
+```text
+$ popola list
+┃ task_id              ┃ runtime ┃ cli           ┃ state    ┃ pid    ┃ started_at                  ┃
+│ task-local-001       │ local   │ cursor        │ running  │ 4242   │ 2026-05-08T10:00:00.000+00:00│
+│ task-cloud-002       │ cloud   │ cursor-cloud  │ running  │ -      │ 2026-05-08T10:01:00.000+00:00│
+```
 
 Hands-off envelopes still publish for bookkeeping, but spawned remote agents consume prompt via Cursor’s infra — see [`RELEASE_NOTES.md`](RELEASE_NOTES.md) §Highlights.
 
