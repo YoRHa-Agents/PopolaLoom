@@ -52,7 +52,12 @@ from mcp.server.stdio import stdio_server
 from mcp.types import CallToolResult, TextContent, Tool
 
 from popolaloom import __version__
-from popolaloom.mcp.tools import build_tool_list, call_verb
+from popolaloom.mcp.cloud_hitl_tool import (
+    CLOUD_HITL_VERB_NAME,
+    build_extended_handler_map,
+    build_extended_tool_list,
+)
+from popolaloom.mcp.tools import call_verb
 
 __all__ = [
     "Server",
@@ -127,15 +132,20 @@ def build_server(client: httpx.AsyncClient) -> Server[Any, Any]:
         name="popolaloom-mcp",
         version=__version__,
         instructions=(
-            "popolaloom-mcp exposes 7 dispatch verbs to drive popolad "
-            "(meta-orchestrator over local agent CLIs). Use popola_submit "
-            "to dispatch a task; popola_list / popola_status to inspect; "
-            "popola_attach_stream for an event snapshot; popola_cancel "
-            "to terminate. popola_supply_feedback and popola_inject_subtask "
-            "are reserved for v0.3.0 — calling them returns a clear "
-            "'not implemented' error."
+            "popolaloom-mcp exposes the popolad dispatch + cloud-HITL verbs "
+            "to drive popolad (meta-orchestrator over local agent CLIs). Use "
+            "popola_submit to dispatch a task; popola_list / popola_status to "
+            "inspect; popola_attach_stream for an event snapshot; popola_cancel "
+            "to terminate. v0.8.7 adds popolaloom_cloud_hitl_request: a Cursor "
+            "Cloud Agent calls this verb to defer a high-stakes decision to a "
+            "human via Lark and block until they answer (default 30 min, max "
+            "24 h). popola_supply_feedback and popola_inject_subtask are "
+            "reserved for v0.3.0 — calling them returns a clear 'not "
+            "implemented' error."
         ),
     )
+
+    extended_handlers = build_extended_handler_map()
 
     # ``Server.list_tools`` and ``Server.call_tool`` are decorator factories
     # in the mcp SDK; they are not annotated with strict typing, so mypy in
@@ -146,8 +156,14 @@ def build_server(client: httpx.AsyncClient) -> Server[Any, Any]:
 
     @server.list_tools()  # type: ignore[no-untyped-call,untyped-decorator]
     async def list_tools_handler() -> list[Tool]:
-        """Return all 7 verbs (per :data:`TOOL_DEFINITIONS`)."""
-        return build_tool_list()
+        """Return all dispatch verbs + the v0.8.7 cloud-HITL verb (B1 wiring).
+
+        Uses :func:`build_extended_tool_list` so ``popolaloom_cloud_hitl_request``
+        is registered alongside the existing dispatch verbs in a single
+        ``tools/list`` response. Without this, the cloud HITL verb is
+        unreachable from production (per REVIEW.md B1 finding).
+        """
+        return build_extended_tool_list()
 
     @server.call_tool()  # type: ignore[untyped-decorator]
     async def call_tool_handler(
@@ -159,9 +175,19 @@ def build_server(client: httpx.AsyncClient) -> Server[Any, Any]:
         ``isError=True`` flag is propagated to the IDE Agent verbatim
         without being clobbered by ``mcp.server.lowlevel.server`` 's
         default success-wrapping.
+
+        v0.8.7 B1 wiring: the cloud-HITL verb has a different signature
+        (``handler(client, args)``) than the legacy dispatch verbs (which
+        flow through :func:`call_verb`); we route on name first so the
+        production server reaches both code paths.
         """
         logger.info("popolaloom-mcp call_tool: name=%s", name)
         try:
+            if name == CLOUD_HITL_VERB_NAME:
+                handler = extended_handlers.get(name)
+                if handler is None:  # pragma: no cover - defensive
+                    raise KeyError(name)
+                return await handler(client, arguments)
             return await call_verb(name, arguments, client)
         except Exception:
             logger.exception("popolaloom-mcp call_tool unhandled error: name=%s", name)

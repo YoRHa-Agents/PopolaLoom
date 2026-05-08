@@ -1,81 +1,103 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md). Per-version `release-notes-v*.md` files were consolidated into this single file in v0.7.0 (per user feedback v0.6.1#2).
 
-# PopolaLoom v0.8.6 — Cloud Observability + SSE
+# PopolaLoom v0.8.7 — Cloud HITL Production
+
+<!-- updated: 2026-05-08 -->
 
 > Released: 2026-05-08  
-> Theme: Layers a **server-sent-events (SSE) ingest** path on top of v0.8.5's REST poller (`GET https://api.cursor.com/v1/agents/{id}/runs/{run_id}/stream`), so `popola attach --follow` on cloud-runtime tasks surfaces assistant deltas / tool calls / terminal `result` events within ≤ 1 s instead of the prior 2 s poll cycle, while keeping the **poller as the sole writer of `cloud_phase`** (SSE only appends to `EventLog` under the new `cloud.sse.*` namespace). Also adds a `runtime` column in `popola list`, a 16-entry **bilingual error hint catalog** with 10 new `CursorCloudError` subclasses, a manual `workflow_dispatch` cloud-smoke CI workflow, and a CI static-grep guard that blocks any future PR from violating the sole-writer invariant. **No breaking changes** — existing `--cli=cursor-cloud` callers see the new column and richer errors automatically; `--no-stream` is the deterministic escape hatch for SSE-restricted networks.
+> Theme: v0.8.7 wraps the v0.8.5 `cloud_bridge` REST RPC triad in a single MCP tool — `popolaloom_cloud_hitl_request` — that lets a Cursor Cloud Agent defer a high-stakes decision to a human via Lark, then renders the prompt as a versioned card (`cloud_hitl_request_card_v1`) supporting single-approver, two-approver-serial, and timeout state machines. **γ — Self-Hosted Worker stdio MCP** is the first-class deployment mode (per Q-B-1); **β — HTTP MCP backend-proxied** is the backup for teams without a self-hosted pool. The hard contract is **blocking + 30-min default timeout** (configurable via `popolad.toml [hitl.cloud]`) with explicit `error.code: "timeout"` returns and a full audit chain (`cloud_hitl.{requested,answered,failed,transition}` NDJSON events). **No breaking changes** — existing `--cli=cursor-cloud` callers see no behaviour change unless they explicitly invoke the new MCP tool; idempotency dedup (1 h window + sha256 key) and the mis-route defense at the answer boundary close the v0.8.5 cross-tenant gaps without touching any pre-v0.8.7 code paths.
 
 ## Research + scope rationale
 
-Wave 1 produced **3 research artefacts** in `.local/research/v0.8.6_sse/` covering the v0.8.6 design surface end-to-end, then Wave 1.2 synthesised them into a Stage 2 plan:
+Wave 1.1 produced **4 research artefacts** in `.local/research/v0.8.7_hitl/` covering the v0.8.7 design surface end-to-end, then Wave 1.2 synthesised them into a Stage 2 plan + decisions log + security checklist:
 
 | File | Purpose |
 |---|---|
-| [`sse-event-schema.md`](.local/research/v0.8.6_sse/sse-event-schema.md) | Canonical SSE event mapping (8 types) + `Last-Event-ID` resume protocol + `410 stream_expired` deterministic fallback |
-| [`state-source-of-truth.md`](.local/research/v0.8.6_sse/state-source-of-truth.md) | Sole-writer rule for `cloud_phase` (poller writes; SSE appends), 6 cross-task invariants (I-1 → I-6), failure-mode catalog including hydration debt |
-| [`422-error-catalog.md`](.local/research/v0.8.6_sse/422-error-catalog.md) | 16-entry bilingual hint catalog with `(error.code → message regex → HTTP status)` selector precedence and per-entry `cli_exit` codes |
-| [`PLAN.md`](.local/.agent/active/v0.8.6-cloud-sse/PLAN.md) + [`DECISIONS.md`](.local/.agent/active/v0.8.6-cloud-sse/DECISIONS.md) | Stage 2 wave / task table; locked decisions Q-A-1 / Q-A-3 / Q-A-4 / Q-A-8 + L0 resolutions for OQ-4 (`409 agent_busy` retry off) and OQ-6 (`cloud.sse.stream_expired` canonical) |
+| [`long-tool-call-probe.md`](.local/research/v0.8.7_hitl/long-tool-call-probe.md) | Long-tool-call timeout probe protocol; OQ-1 outcome bound for v0.8.7.1 patch if H1 (≤ 30 s hard max) lands |
+| [`mcp-tool-contract.md`](.local/research/v0.8.7_hitl/mcp-tool-contract.md) | `popolaloom_cloud_hitl_request` schema + wire mapping + 6 error codes + idempotency design + acceptance checklist |
+| [`deployment-modes.md`](.local/research/v0.8.7_hitl/deployment-modes.md) | γ + β topology, prerequisites, install steps, lateral-movement checklist (10 items), minimal-connectivity host list |
+| [`lark-card-spec.md`](.local/research/v0.8.7_hitl/lark-card-spec.md) | `cloud_hitl_request_card_v1` template structure, P0 scenarios (S1 / S2 / S3 state machines), versioning policy, security checks |
+| [`PLAN.md`](.local/.agent/active/v0.8.7-cloud-hitl-prod/PLAN.md) + [`DECISIONS.md`](.local/.agent/active/v0.8.7-cloud-hitl-prod/DECISIONS.md) + [`SECURITY_CHECKLIST.md`](.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md) | Stage 2 wave / task table; Q-B-1..Q-B-7 locked decisions + L0 resolutions for OQ-1 / OQ-2; release-gate security review (26 line-items across 6 sections) |
 
-Directive driver: v0.8.5 ship-time `## Risks acknowledged` paragraph that flagged streaming follow-up runs (SSE) and PR-creation ergonomics as stretch / follow-up — v0.8.6 closes the SSE half of that follow-up commitment.
+Directive driver: v0.8.6 release-time roadmap commitment to ship cloud HITL as production-grade after the v0.8.5 transport correction (research note `.local/research/v0.8.5_cloud_agent/03-cloud-hitl-transport-correction.md`); v0.8.7 closes that follow-up by elevating the v0.8.5 REST bridge to an MCP-tool surface that Cursor Cloud Agents can call directly over the γ (Worker stdio) or β (HTTP backend-proxied) transports.
 
 ## Highlights
 
-### Wave 2.1 — foundational
+### Wave 2.1 — foundational (3 parallel slices)
 
-- **`SSEReader` in `src/popolaloom/adapters/cursor_cloud.py`** — chunked SSE consumer that parses 8 event types (`assistant_chunk`, `tool_call`, `tool_result`, `result`, `status_*`, `error`, `keepalive`) from `GET /v1/agents/{id}/runs/{run_id}/stream`, emits the `(task_id, run_id, stream_session_id, sse_id, seq)` idempotency quintuple on every `EventLog` write, sends `Last-Event-ID` on resume, raises `CursorCloudStreamExpiredError` on HTTP 410 then exits without reconnecting (per Q-A-4). The reader **holds no `StateStore` reference** at all — enforced at construction time by mypy + a runtime assert (I-1 contract from `state-source-of-truth.md` §1.2 + §6).
-- **`runtime` column in `popola list`** (default-on; `--no-runtime` to hide) — table renders `task_id, runtime, cli, state, pid, started_at`. The RPC `list_tasks` summary already carried `runtime` since v0.8.5; this slice surfaces it in the table renderer and adds the escape-hatch flag.
-- **16-entry bilingual error catalog + 10 new `CursorCloudError` subclasses** — every catalog row has `hint_en` + `hint_zh` (each ≤ 2 sentences, ≥ 1 `https://...` URL each) and a `cli_exit` code; selector follows precedence `(error.code → message regex → HTTP status)`. New subclasses: `CursorCloudApiKeyRevokedError`, `CursorCloudPlanRequiredError`, `CursorCloudFeatureUnavailableError`, `CursorCloudNotFoundError`, `CursorCloudStreamExpiredError`, `CursorCloudStreamInvalidLastEventIdError`, `RepoAllowlistError`, `GithubAppMissingError`, `GithubAppPermissionError`, `CursorCloudValidationError`, plus `CursorCloudRateLimitError` (429-retryable). Existing `CursorCloudAuthError` / `CursorCloudConflictError` from v0.8.5 are preserved untouched. Per OQ-4 in `DECISIONS.md`, `409 agent_busy` ships `retry: false` in v0.8.6 (queue + notify deferred to v0.8.8).
+- **`popolaloom_cloud_hitl_request` MCP tool** (`src/popolaloom/mcp/cloud_hitl_tool.py`, NEW; 883 lines incl. tests) — single MCP verb registered in `TOOL_DEFINITIONS` that wraps the v0.8.5 cloud bridge REST triad. Maps `tool_call.input → POST /hitl/cloud/request` per `mcp-tool-contract.md` §6.1 (renames `agent_id → cursor_agent_id`, `run_id → cursor_run_id`, `question_text → prompt_body`); inner long-poll loop wraps `GET /hitl/cloud/wait/{hitl_id}?timeout_s=55` (60-s daemon cap minus 5-s slack) until `total_elapsed ≥ timeout_s`; auto-derives `idempotency_key = sha256(task_id|agent_id|run_id|question_text)[:32]` when caller omits it; returns `CallToolResult(isError=True, content=json(error_envelope))` for all 6 `error.code` values per §3.3. The dashboard-registered command is `popolaloom-mcp` (no extra args; v0.8.7's default entry already wires the cloud HITL bridge); the SECURITY L2 env-allowlist (only `PATH`, `POPOLAD_BASE_URL`, `POPOLAD_API_KEY` reach the MCP child) is **operator-managed via the systemd / launchd unit** that supervises `popolaloom-mcp`, so no shell env / git creds / cloud creds leak into the child.
+- **`cloud_hitl_request_card_v1` Lark card renderer** (`src/popolaloom/lark/cloud_hitl_card.py`, NEW; 714 lines incl. tests + security tests) — versioned 4-block card per `lark-card-spec.md` §2.3 (header + B1 verbatim question + B2 truncated context with `[Expand →]` link + B3 metadata footer + A1 action buttons). Reuses `LARK_NOTIFY_PROMPT_TRUNCATE = 200` for B2; B1 (the question) is **never** truncated (questions ≥ 2 000 chars rejected at builder boundary with `ValueError`, per No Silent Failures). `card_metadata` carries the **12 keys per spec §2.4** (the full allowlist `template_version`, `template_id`, `hitl_id`, `task_id`, `cursor_agent_id`, `cursor_run_id`, `idempotency_key`, `expiration_at`, `timeout_seconds`, `responder_policy`, `first_approver_open_id`, `first_approver_at`). State-machine mutators (S1 / S2 / S3) implemented as `mutate_card_for_*` helpers; per OQ-2 in `DECISIONS.md`, mutations use **full-replace via `lark-cli im +update`** for v0.8.7 (latency cost documented; OpenAPI patch deferred to v0.8.8+). Security tests assert `CURSOR_API_KEY` / `LARK_APP_SECRET` are NOT in `json.dumps(card)`.
+- **`cloud_bridge` context alignment + idempotency-key persistence** (`src/popolaloom/hitl/cloud_bridge.py` + `src/popolaloom/daemon/rpc.py` surgical patch + `migrations/007_popola_hitl_metadata.sql`) — `submit_request` accepts `idempotency_key: str | None` keyword (auto-derives via sha256 when None); persists into `popola_hitl.metadata` JSON column. Daemon RPC handler queries `metadata->>'idempotency_key' = ? AND created_at > now() - interval '1 hour'` and short-circuits to return the existing row with `deduped: true`. Mis-route defense: `submit_answer` rejects with HTTP 400 when the inbound `hitl_id` does not match the row's stored `(cursor_agent_id, cursor_run_id)` tuple. SQLite is the **single source of dedup truth** — survives `popolad` restarts (per SECURITY R3).
 
-### Wave 2.2 — integration
+### Wave 2.2 — integration (2 parallel slices)
 
-- **`popola attach --follow` SSE-driven path** (`src/popolaloom/cli/main.py`) — cloud-runtime tasks open an SSE stream alongside the existing `/attach_stream` SSE consumer. On `410 stream_expired` / `httpx.ReadError` / `httpx.ConnectError` the renderer falls back to the poll-driven view without crashing, surfacing a `cloud.sse.stream_expired` event so operators see the transition. `--no-stream` flag forces the legacy poll-only path. Renderer never promotes `cloud_phase` from a `cloud.sse.*` event (see `state-source-of-truth.md` §4 reconciliation).
-- **`cloud_poller.CloudPollLoop` `wake_event` parameter** (`src/popolaloom/daemon/cloud_poller.py`) — optional `threading.Event` replaces the inner `time.sleep` with `wake_event.wait(...); wake_event.clear()`. SSE-side terminal hints wake the poller within ≤ 200 ms instead of after a full poll interval (validates I-6 drift bound). Default `None` preserves v0.8.5 polling cadence — fully backwards-compatible.
-- **`Supervisor._spawn_cloud` cloud bootstrap refactor** (`src/popolaloom/daemon/supervisor.py`) — seeds initial `cloud_phase` via the `TaskHandle` constructor instead of via an out-of-band `state_store.update(..., cloud_phase=...)` call, so the supervisor no longer trips the I-1 sole-writer guard while `CloudPollLoop` remains the canonical writer of every subsequent `cloud_phase` transition.
-- **I-1 sole-writer CI static-grep guard** (`tests/conftest.py`) — session-scoped fixture greps `src/popolaloom/` for the regex `state[_\s]*store\.update\([^)]*cloud_phase\s*=` and asserts the only matching file is `daemon/cloud_poller.py`. Any future PR adding an out-of-band write fails CI with a fingerprinted error referencing `state-source-of-truth.md` §1.2 + §6 I-1.
-- **`docs/known-issues.md`** (new file) + `BL-v0.8.6-1` row in `.local/feedbacks/TRACKER.md` — hydration debt registered as a known limitation per OQ-7 decision (docs-only registration; persistent-cursor + `Last-Event-ID` snapshot work deferred to ≥ v0.8.7).
+- **Timeout config + explicit failed-tool returns + audit-log wiring** (`src/popolaloom/daemon/main.py` `[hitl.cloud]` section + `src/popolaloom/hitl/cloud_bridge.py` extension + audit emission) — `popolad.toml` accepts `[hitl.cloud] timeout_seconds = 1800` (default 30 min), `idempotency_window_s = 3600` (1 h), `max_concurrent_per_run = 1`. Loader clamps `timeout_seconds` to `[60, 86400]` and rejects out-of-range values with a clear error (No Silent Failures). Bridge emits `cloud_hitl.requested` (8 keys), `cloud_hitl.answered` (6 keys), `cloud_hitl.failed` (5 keys), `cloud_hitl.transition` (5 keys) NDJSON events per SECURITY §6 — `failed` event lands **before** the MCP tool returns the error envelope (per invariant I-6).
+- **Q-B-5 misleading-wording cleanup + CI guard** (`docs/known-issues.md` v0.8.7 anti-patterns section + `tests/conftest.py` session-scope grep guard) — `tests/conftest.py::test_misleading_wording_guard` greps `src/popolaloom/`, `docs/`, `README.md`, and `RELEASE_NOTES.md` for the regex `(?i)(public\s+ip|port[- ]?forward|residential\s+NAT|inbound\s+port|VPN\s+tunnel)` and asserts hits **only** appear in `docs/known-issues.md` (the explicit "do NOT do this" callout). The 80-line `## v0.8.7 — Cloud HITL transport (anti-patterns)` section enumerates the 5 forbidden modes + cites `deployment-modes.md` §1 + §4 row D for the supported alternatives.
 
-### Wave 2.3 — CI + docs
+### Wave 2.3 — E2E + docs (3 parallel slices)
 
-- **`.github/workflows/cloud-smoke.yml`** (`workflow_dispatch` only) — runs `pytest -m real_cursor_cloud -k "smoke"` against the live Cursor REST + SSE surface; gated by `if: ${{ secrets.CURSOR_API_KEY != '' }}` so fork PRs and key-less runs log a friendly `"skipping: CURSOR_API_KEY not set"` line instead of a red X. Uses `python-version: "3.11"` to match the repo baseline; secret name matches the existing `CURSOR_API_KEY` convention from v0.8.5.
-- **Docs sync** (T2.3.2 sibling slice) — `docs/USER_GUIDE.md` gains "SSE ingest" + "Cloud error hints" subsections; `README.md` mentions the `runtime` column in the `popola list` example output; `src/popolaloom/skills/popola-loom/SKILL.md` references the new SSE behaviour in its cloud workflow section. All three files carry the `<!-- updated: 2026-05-08 -->` Documentation Protocol marker.
+- **Mock E2E** (`tests/e2e/test_cloud_hitl_mock.py`, NEW) — full happy path (`MCP → bridge → mock Lark notifier → mock human approve → MCP tool returns answer`) using `httpx.MockTransport` for MCP↔popolad and a `_NoopCloudLarkNotifier` for the Lark side; covers timeout, replay-dedup, audit-log assertions across ≥ 4 parametrised cases. Runs in default CI lane (`pytest -m "not real_cloud_hitl and not real_cursor_cloud"`) per Q-B-6.
+- **Real E2E with `real_cloud_hitl` marker** (`tests/real_cloud_hitl/test_e2e.py`, NEW + `tests/real_cloud_hitl/conftest.py` env-skip plumbing + `pyproject.toml` marker registration) — opt-in marker for tests requiring `CURSOR_API_KEY` + `LARK_HITL_TARGET_OPEN_ID` + `POPOLAD_BASE_URL`; `pytest -m real_cloud_hitl` collects the test in any environment but skips when env vars are missing. Default `pytest` (no marker) ignores it. Per Q-B-6, runs only in manual or monthly cadence lane.
+- **USER_GUIDE / README / SKILL split-tier docs (Q-B-2) + CHANGELOG / RELEASE_NOTES** (this slice) — broad-audience tier (`README.md` quickstart + existing USER_GUIDE Cloud chapter from v0.8.6) does NOT mention HITL prerequisites; new Enterprise sub-page in `docs/USER_GUIDE.md §"Cloud HITL (Enterprise / Self-Hosted)"` documents γ install steps, β fallback, the §6 minimal-connectivity host list, the L3 quarterly rotation runbook, the L6 team-follow-ups callout, the L8 operational hygiene callout, and the L10 network access policy recommendation; `popola-loom` Skill gains Workflow 7 (Cloud HITL γ mode 6-step example).
 
 ### Tests
 
-- **~79 new default-lane tests** across the v0.8.6 surface:
-  - **17** in `tests/cloud/test_sse_reader.py` (T2.1.1) — chunked parsing, dedup-on-reconnect, `Last-Event-ID` resume, `410 stream_expired` no-reconnect, `invalid_last_event_id` drop-and-reconnect-once, idempotency quintuple shape, sequence-monotonicity property test (I-3), `__init__`-time assert that no `StateStore` is passed.
-  - **8** in `tests/cli/test_list_runtime_column.py` (T2.1.2) — table render contains `runtime` column, JSON output round-trips the field, `--no-runtime` hides the column, header / row alignment.
-  - **33** in `tests/cloud/test_422_hints.py` (T2.1.3) — selector precedence (16 catalog rows + heuristic 422 fall-back paths + status-only fall-through), every catalog hint contains a `https://...` URL, every catalog subclass resolves in-module, `409 agent_busy` retry-off in v0.8.6 (per OQ-4), legacy envelope shape tolerated, corrupt-JSON body falls back to status.
-  - **14** in `tests/cli/test_attach_sse_fallback.py` (T2.2.1) — happy SSE path, `410 stream_expired` fallback to poll view, `httpx.ReadError` + `httpx.ConnectError` fallback, Ctrl-C clean exit, `--no-stream` flag forces poll-only, never promotes `cloud_phase` from a `cloud.sse.*` event.
-  - **6** in `tests/daemon/test_sse_poller_coordination.py` + **1** I-1 static-grep guard fixture in `tests/conftest.py` (T2.2.2) — `wake_event` fast-wake (≤ 200 ms), I-2 append-only SSE pump, I-4 terminal closes stream within ≤ 250 ms, I-6 drift bound under 2 s poll interval, sole-writer rule fires on a synthetic violator file.
-- **Final verification** after the supervisor refactor: `pytest tests/cli -q` 245/245, `pytest tests/cloud -q` 50/50, `pytest tests/daemon/test_sse_poller_coordination.py -q` 6/6, `pytest tests/conftest.py -q` (I-1 guard) 1/1; full default-lane suite green.
+- **+~130 new default-lane tests** across the v0.8.7 surface:
+  - **14** in `tests/mcp/test_cloud_hitl_tool.py` (T2.1.1; 883-line product+test slice) — happy path, timeout returns explicit `error.code: "timeout"`, daemon-unreachable, lark-unreachable, replay returns `deduped: true`, invalid_context (empty `question_text`), reject-is-not-an-error (per §7 row 5 — `option_id: "reject"` returns success), idempotency-key opacity, env-allowlist guard.
+  - **24 functional + 11 security = 35** in `tests/lark/test_cloud_hitl_card.py` + `tests/lark/test_cloud_hitl_card_security.py` (T2.1.2; 714-line product+test slice) — 3 P0 scenarios (S1 single, S2 serial-two, S3 timeout), `card_metadata` 12-key shape (per spec §2.4 allowlist), B2 truncate to 200 chars, B1 reject-on-overflow, security: `CURSOR_API_KEY` / `LARK_APP_SECRET` not in `json.dumps(card)`, footer-with-origin-note appended.
+  - **17** in `tests/hitl/test_cloud_bridge_context.py` + `tests/hitl/test_cloud_bridge_replay.py` (T2.1.3; +`cloud_bridge.py` extension + migration 007) — persist + lookup happy path, replay-within-window short-circuits, replay-after-1h creates new row, restart-then-replay still short-circuits (R3), mis-routed `hitl_id` rejected, missing context → invalid_context.
+  - **18 timeout + 17 audit = 35** in `tests/hitl/test_timeout.py` + `tests/hitl/test_cloud_audit.py` (T2.2.1; backfilled with `main.py [hitl.cloud]` config + audit emission) — config load happy, config out-of-range rejected, A1 row keys complete, A2 row keys complete (Lark + API channels), A3 row keys complete for all 6 error_kinds (parameterised), A4 transitions emitted for S1/S2/S3 paths.
+  - **1** session-scope conftest guard fixture in `tests/conftest.py` (T2.2.2; paired with the +80-line `docs/known-issues.md` v0.8.7 anti-patterns section) — misleading-wording grep guard per SECURITY M1.
+  - **≥4** in `tests/e2e/test_cloud_hitl_mock.py` (T2.3.1) — full mock E2E happy + timeout + replay + audit chain assertions.
+  - Real E2E scaffolded in `tests/real_cloud_hitl/test_e2e.py` (T2.3.2; runs only under `pytest -m real_cloud_hitl` with the env vars set).
+- **Final verification** (default lane): per-package smoke runs all green; `pytest tests/conftest.py -q` (M1 misleading-wording guard) 1/1.
 
 ## Documentation + Skills
 
-- **`docs/USER_GUIDE.md`** — adds "SSE ingest" subsection (default `attach --follow` SSE behaviour + `--no-stream` escape hatch + the up-to-3 s tolerated divergence note from `state-source-of-truth.md` §2.3) and a "Cloud error hints" subsection citing `RepoAllowlistError` + `CursorCloudPlanRequiredError` bilingual hints verbatim from `422-error-catalog.md` §3.2 (so future drift is caught by a hash diff).
-- **`README.md`** — `popola list` example output gains the `runtime` column without breaking the v0.8.5 quickstart steps; status table gains a v0.8.6 row.
-- **`src/popolaloom/skills/popola-loom/SKILL.md`** — references the new SSE behaviour in its cloud workflow section so agent CLIs know to mention `--no-stream` when documenting cloud usage.
-- **`docs/known-issues.md`** (new) — operator-visible registration of the v0.8.6 cloud-task hydration limitation with symptoms, workaround (`popola attach <task_id>` after restart), design references to `state-source-of-truth.md` §5 / §8, and tracking link to `BL-v0.8.6-1`.
+- **`docs/USER_GUIDE.md`** — adds NEW sub-page `## Cloud HITL (Enterprise / Self-Hosted)` (~ 280 lines) with: γ + β prerequisites tables; reused-verbatim Mermaid topology diagrams from `deployment-modes.md` §2.2 (γ) and §3.2 (β); 6-step γ install steps + 4-step β install steps; decision matrix (γ vs β vs neither); Egress allowlist host table per §6 (`api2.cursor.sh`, `api2direct.cursor.sh`, `cloud-agent-artifacts.s3.us-east-1.amazonaws.com`, `open.larksuite.com` / `open.feishu.cn`, git host, package registries); L3 quarterly rotation runbook (Q1 1/15, Q2 4/15, Q3 7/15, Q4 10/15); L6 team-follow-ups callout box; L8 operational hygiene "do not commit MCP blob" callout + sample pre-commit hook; L9 worker hardening (`runAsNonRoot: true`); L10 "Allowlist only" Cursor Cloud network access policy recommendation; Approver ACL (P1) + S2 anti-self-approval (P2); Replay safety (R1 / R2); `[hitl.cloud]` config section; tool-call return shape (success + timeout); audit log table (4 event classes × required keys).
+- **`README.md`** — Cloud Agent dispatch (v0.8.5+) section gains a single Enterprise/Self-Hosted callout link to the new USER_GUIDE sub-page; quickstart section is unchanged (no HITL prerequisites — covers REST cloud dispatch only per Q-B-2 split-tier).
+- **`src/popolaloom/skills/popola-loom/SKILL.md`** — adds Workflow 7 "Cloud HITL approval via MCP tool (γ mode, v0.8.7+)" with the architecture ASCII diagram + 6-step worked example + key safety constraints (L3 / L6 / L8 / L10) + β differences callout + idempotency / dedup behaviour. Quick reference table gains a row for the `popolaloom_cloud_hitl_request` MCP tool.
+- **`docs/known-issues.md`** — extended in T2.2.2 with the 80-line `## v0.8.7 — Cloud HITL transport (anti-patterns)` section listing the 5 forbidden modes (public IP, port-forward, residential NAT, inbound port, VPN tunnel) + the supported alternatives (γ outbound-only worker / β backend-proxied gateway) + cross-references to `deployment-modes.md` §1 + §4 row D and `SECURITY_CHECKLIST.md` §8 M1.
 
-## Files changed (v0.8.6)
+## Files changed (v0.8.7)
 
 | Slice | Files |
 |---|---|
-| Product | `src/popolaloom/adapters/cursor_cloud.py` (`SSEReader` + `_ERROR_CATALOG` + 10 new exception subclasses; +1141 lines), `src/popolaloom/cli/main.py` (`runtime` column in `list_active` + cloud SSE attach in `attach` / `_attach_streaming` + `--no-stream` flag; +403 lines), `src/popolaloom/daemon/cloud_poller.py` (`wake_event: threading.Event \| None` parameter; +41 lines), `src/popolaloom/daemon/supervisor.py` (I-1-compliant `_spawn_cloud` seeding `cloud_phase` via `TaskHandle` constructor; +29 lines) |
-| Tests | `tests/conftest.py` (I-1 sole-writer static-grep guard fixture + `test_invariant_i1_sole_writer_of_cloud_phase`; +148 lines), `tests/cloud/__init__.py` (NEW), `tests/cloud/test_sse_reader.py` (NEW; 17 tests), `tests/cloud/test_422_hints.py` (NEW; 33 tests, parametrised), `tests/cli/test_list_runtime_column.py` (NEW; 8 tests), `tests/cli/test_attach_sse_fallback.py` (NEW; 14 tests), `tests/daemon/test_sse_poller_coordination.py` (NEW; 6 tests) |
-| Meta | `docs/known-issues.md` (NEW), `.github/workflows/cloud-smoke.yml` (NEW), `docs/USER_GUIDE.md` (T2.3.2 sibling), `README.md` (T2.3.2 sibling), `src/popolaloom/skills/popola-loom/SKILL.md` (T2.3.2 sibling), `.local/feedbacks/TRACKER.md` (`BL-v0.8.6-1` row), `CHANGELOG.md`, `RELEASE_NOTES.md` |
-| Research | `.local/research/v0.8.6_sse/{sse-event-schema.md,state-source-of-truth.md,422-error-catalog.md}` (3 files), `.local/.agent/active/v0.8.6-cloud-sse/{PLAN.md,DECISIONS.md}` (2 files) |
+| Product | `src/popolaloom/mcp/cloud_hitl_tool.py` (NEW; T2.1.1 — 883-line product+test slice), `src/popolaloom/lark/cloud_hitl_card.py` (NEW; T2.1.2 — 714-line product+test slice), `src/popolaloom/hitl/cloud_bridge.py` (T2.1.3 idempotency persist + audit emission + mis-route defense; ~+150 lines), `src/popolaloom/daemon/rpc.py` (T2.1.3 dedup short-circuit; ~+40 lines), `src/popolaloom/daemon/main.py` (T2.2.1 `[hitl.cloud]` config; ~+40 lines), `migrations/007_popola_hitl_metadata.sql` (NEW) |
+| Tests | `tests/mcp/test_cloud_hitl_tool.py` (NEW; 14 tests), `tests/lark/test_cloud_hitl_card.py` (NEW; 24 functional tests), `tests/lark/test_cloud_hitl_card_security.py` (NEW; 11 security tests), `tests/hitl/test_cloud_bridge_context.py` (NEW), `tests/hitl/test_cloud_bridge_replay.py` (NEW; 17 tests across the two files), `tests/hitl/test_timeout.py` (NEW; 18 tests), `tests/hitl/test_cloud_audit.py` (NEW; 17 tests), `tests/conftest.py` (T2.2.2 misleading-wording guard fixture; ~+50 lines), `tests/e2e/test_cloud_hitl_mock.py` (NEW; ≥4 parametrised E2E cases), `tests/real_cloud_hitl/test_e2e.py` (NEW; opt-in marker), `tests/real_cloud_hitl/conftest.py` (NEW), `pyproject.toml` (single-line `real_cloud_hitl` marker registration; T2.3.2) |
+| Meta | `docs/known-issues.md` (T2.2.2 v0.8.7 anti-patterns section; ~+80 lines), `docs/USER_GUIDE.md` (T2.3.3 NEW Enterprise sub-page), `README.md` (T2.3.3 callout link), `src/popolaloom/skills/popola-loom/SKILL.md` (T2.3.3 Workflow 7), `.github/workflows/cloud-hitl-smoke.yml` (NEW; manual `workflow_dispatch` lane), `CHANGELOG.md`, `RELEASE_NOTES.md` |
+| Research | `.local/research/v0.8.7_hitl/{long-tool-call-probe.md, mcp-tool-contract.md, deployment-modes.md, lark-card-spec.md}` (4 files), `.local/.agent/active/v0.8.7-cloud-hitl-prod/{PLAN.md,DECISIONS.md,SECURITY_CHECKLIST.md}` (3 files) |
 
 ## Verification
 
-- Default lane (`real_cursor_cloud` deselected): `pytest tests/ -m "not slow and not real_graph and not e2e and not nightly and not real_cli and not real_lark and not real_cursor_cloud" -q` → green.
+- Default lane (`real_cloud_hitl` + `real_cursor_cloud` deselected): `pytest tests/ -m "not slow and not real_graph and not e2e and not nightly and not real_cli and not real_lark and not real_cursor_cloud and not real_cloud_hitl" -q` → green.
 - Per-package smoke runs:
-  - `pytest tests/cli -q` → 245 passed
-  - `pytest tests/cloud -q` → 50 passed (17 SSE reader + 33 422 hints)
-  - `pytest tests/daemon/test_sse_poller_coordination.py -q` → 6 passed
-  - `pytest tests/conftest.py -q` (I-1 sole-writer guard) → 1 passed
-- Manual cloud-smoke (release engineers only): GitHub Actions UI → `cloud-smoke` workflow → `Run workflow`. Skips silently with `"skipping: CURSOR_API_KEY not set"` log line when the secret is missing; otherwise runs `pytest -m real_cursor_cloud -k "smoke"` against live Cursor REST + SSE.
+  - `pytest tests/mcp/test_cloud_hitl_tool.py -q` → 14 passed (T2.1.1)
+  - `pytest tests/lark/test_cloud_hitl_card.py tests/lark/test_cloud_hitl_card_security.py -q` → 35 passed (T2.1.2; 24 functional + 11 security)
+  - `pytest tests/hitl/test_cloud_bridge_context.py tests/hitl/test_cloud_bridge_replay.py -q` → 17 passed (T2.1.3)
+  - `pytest tests/hitl/test_timeout.py tests/hitl/test_cloud_audit.py -q` → 35 passed (T2.2.1; 18 timeout + 17 audit)
+  - `pytest tests/conftest.py::test_misleading_wording_guard -q` → 1 passed (T2.2.2)
+  - `pytest tests/e2e/test_cloud_hitl_mock.py -q` → ≥4 passed (T2.3.1)
+- Mock E2E (default lane, no real Cloud Agent):
+
+  ```bash
+  pytest tests/e2e/test_cloud_hitl_mock.py -q
+  # → ≥4 parametrised cases green: happy + timeout + replay + audit chain
+  ```
+
+- Real E2E (manual / monthly, requires `CURSOR_API_KEY` + `LARK_HITL_TARGET_OPEN_ID` + `POPOLAD_BASE_URL`):
+
+  ```bash
+  export CURSOR_API_KEY="cr_..."
+  export LARK_HITL_TARGET_OPEN_ID="ou_..."
+  export POPOLAD_BASE_URL="http://127.0.0.1:9999"
+  pytest -m real_cloud_hitl tests/real_cloud_hitl/ -v
+  # → manual click-through on Lark card; round-trip asserted
+  ```
+
+- Manual cloud-HITL-smoke (release engineers only): GitHub Actions UI → `cloud-hitl-smoke` workflow → `Run workflow`. Skips silently with `"skipping: CURSOR_API_KEY or LARK_HITL_TARGET_OPEN_ID not set"` log line when secrets are missing; otherwise runs `pytest -m real_cloud_hitl -k "e2e"` against live `popolad` + Lark.
 - Lint / types: `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean.
-- Packaging: `python -c "import popolaloom; print(popolaloom.__version__)"` → still `0.8.5` *(version bump deferred to Stage 5 release task per program plan)*; `pytest tests/test_smoke.py -q` clean.
+- Packaging: `python -c "import popolaloom; print(popolaloom.__version__)"` → still `0.8.6` *(version bump deferred to Stage 5 release task per program plan)*; `pytest tests/test_smoke.py -q` clean.
 
 ## Status
 
@@ -83,31 +105,49 @@ Directive driver: v0.8.5 ship-time `## Risks acknowledged` paragraph that flagge
 |---|---|
 | Local `--cli=cursor` subprocess path | **unchanged / byte-compatible** |
 | `--cli=cursor-cloud` REST poller lifecycle (v0.8.5) | OK live (`v0.8.5+`) |
-| `popola attach --follow` SSE ingest for cloud tasks (auto-fallback to poll on 410 / network errors) | OK live (`v0.8.6+`) |
-| `--no-stream` poll-only escape hatch on `popola attach` | OK live (`v0.8.6+`) |
-| `runtime` column in `popola list` (default-on; `--no-runtime` to hide) | OK live (`v0.8.6+`) |
-| 16-entry bilingual error hint catalog + 10 new `CursorCloudError` subclasses | OK live (`v0.8.6+`) |
-| `cloud.sse.*` EventLog namespace (coexists with v0.8.5 `cloud.run_status` / `task.*` for one minor cycle) | OK live (`v0.8.6+`) |
-| Sole-writer rule (I-1) — CI static-grep guard in `tests/conftest.py` | OK live (`v0.8.6+`) |
-| `cloud_poller` `wake_event` for SSE → poller terminal-hint coordination | OK live (`v0.8.6+`) |
-| Manual `cloud-smoke` GitHub Actions workflow (`workflow_dispatch`, `CURSOR_API_KEY`-gated) | OK live (`v0.8.6+`) |
-| Cloud task hydration after `popolad` restart | **Documented limitation** (`BL-v0.8.6-1` — docs-only registration; shim ≥ v0.8.7) |
+| `popola attach --follow` SSE ingest for cloud tasks (v0.8.6) | OK live (`v0.8.6+`) |
+| **γ — Worker stdio MCP** (first-class transport for cloud HITL) | OK live (`v0.8.7+`) |
+| **β — HTTP MCP backend-proxied** (backup transport for cloud HITL) | OK live, runtime-verification deferred (`v0.8.7+`; `popola doctor --cloud --mode beta` → `BL-v0.8.7-1` for v0.8.8) |
+| `popolaloom_cloud_hitl_request` MCP tool (single verb, blocking, 30-min default cap) | OK live (`v0.8.7+`) |
+| Lark `cloud_hitl_request_card_v1` (versioned 4-block + S1/S2/S3 state machines) | OK live (`v0.8.7+`) |
+| `[hitl.cloud]` config section in `popolad.toml` (timeout_seconds clamp [60, 86400]) | OK live (`v0.8.7+`) |
+| Idempotency dedup (sha256 key + 1 h SQLite-backed window) | OK live (`v0.8.7+`) |
+| Mis-route defense at `submit_answer` boundary (HITP 400 on cross-run mismatch) | OK live (`v0.8.7+`) |
+| Audit chain (`cloud_hitl.{requested,answered,failed,transition}` NDJSON events) | OK live (`v0.8.7+`) |
+| Mock E2E in default CI lane (`tests/e2e/test_cloud_hitl_mock.py`) | OK live (`v0.8.7+`) |
+| Real E2E behind `real_cloud_hitl` marker (manual / monthly cadence) | OK live (`v0.8.7+`) |
+| Manual `cloud-hitl-smoke` GitHub Actions workflow (`workflow_dispatch`, secret-gated) | OK live (`v0.8.7+`) |
+| Q-B-5 misleading-wording cleanup (CI guard in `tests/conftest.py`) | OK live (`v0.8.7+`) |
 
 ## Upgrade notes
 
-1. **No action required** for existing `--cli=cursor-cloud` callers — `popola attach --follow` automatically opens the SSE stream and falls back to the v0.8.5 poller view on `410 stream_expired` / `httpx.ReadError` / `httpx.ConnectError`, so the upgrade is byte-compatible. Pass **`--no-stream`** to force the legacy poll-only path (deterministic for restricted networks / proxies that block long-lived SSE connections).
-2. **`popola list` adds a `runtime` column** between `task_id` and `cli`. Pass `--no-runtime` to hide it (escape hatch for narrow terminals or scripts that grep specific column positions); `popola list --json` is unchanged because `runtime` was already in the JSON shape since v0.8.5.
-3. **Manual cloud-smoke CI** lives at `.github/workflows/cloud-smoke.yml` and only runs via GitHub Actions UI → `cloud-smoke` → `Run workflow`. Set the `CURSOR_API_KEY` repo secret to enable it; without the secret the job logs a friendly skip line instead of failing red, so it is safe to land on forks.
-4. **After `popolad restart`**, cloud tasks need a fresh `popola attach <task_id>` to resume `cloud.run_status` / `cloud.sse.*` event delivery — the `TaskHandle` row + `event_log.jsonl` history survive but the in-memory `CloudPollLoop` thread + SSE `Last-Event-ID` cursor are lost. See [`docs/known-issues.md`](docs/known-issues.md#v086--cloud-task-hydration-after-daemon-restart) and `BL-v0.8.6-1`.
-5. Continues from **v0.8.5** Cloud Agent integration — `CURSOR_API_KEY` is still mandatory for cloud workloads (HTTP Basic, key-as-username, empty password); local-only operators (`--cli=cursor`) can ignore the entire cloud surface and see no behaviour change.
-6. Continues from **v0.8.4** installer story — `./install.sh` continues to work untouched.
+1. **No action required for existing `--cli=cursor-cloud` callers** — the broad-audience cloud REST dispatch path is unchanged from v0.8.6. The new `popolaloom_cloud_hitl_request` MCP tool is opt-in: cloud agents that don't call it see no behaviour change.
+2. **`popolad.toml` config additions** (optional — defaults are sensible):
+
+   ```toml
+   [hitl.cloud]
+   timeout_seconds      = 1800   # default 30 min; clamped to [60, 86400]; out-of-range rejected
+   idempotency_window_s = 3600   # 1 h; replays inside the window short-circuit
+   max_concurrent_per_run = 1
+   ```
+
+   Existing `[hitl]` section continues to work unchanged; `[hitl.cloud]` is a strict superset.
+3. **Enterprise / Self-Hosted setup for cloud HITL** — see [`docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted`](docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted) for the γ install steps (Cursor Self-Hosted Pool worker + `popolad` + `popolaloom-mcp` + dashboard MCP registration), the β fallback, the egress allowlist, the L3 quarterly secret rotation runbook, and the L6 / L8 / L10 hardening callouts. The new sub-page is gated as Enterprise per Q-B-2 (split-tier docs).
+4. **β real-traffic verification deferred** — `popola doctor --cloud --mode beta` is referenced in `deployment-modes.md` §3.3 but not yet implemented in v0.8.7. γ ships first-class; β adopters verify out-of-band for v0.8.7 (`BL-v0.8.7-1` for v0.8.8).
+5. **Secret hygiene** — every Lark webhook secret rotation is **quarterly** (Q1 1/15, Q2 4/15, Q3 7/15, Q4 10/15) per SECURITY §3 L3. Both γ and β share the same rotation procedure. Treat the MCP config blob (env / headers) as a secret per L8 — do not commit to git or paste into chat. Set Cursor Cloud Agent network access to "Allowlist only" for HITL-handling agents per L10.
+6. **Continues from v0.8.6** SSE / poller observability — `CloudPollLoop` remains the sole writer of `TaskHandle.cloud_phase`; SSE is append-only on `cloud.sse.*`. The new `cloud_hitl.*` audit events are an additional EventLog namespace and do not interact with the v0.8.6 invariants.
+7. **Continues from v0.8.5** Cloud Agent integration — `CURSOR_API_KEY` is still mandatory for cloud workloads; local-only operators (`--cli=cursor`) can ignore the entire cloud surface and see no behaviour change.
 
 ## Known limitations
 
-- **Cloud task hydration after daemon restart** — see [`docs/known-issues.md` §"v0.8.6 — Cloud task hydration after daemon restart"](docs/known-issues.md#v086--cloud-task-hydration-after-daemon-restart). Tracked as `BL-v0.8.6-1` in [`.local/feedbacks/TRACKER.md`](.local/feedbacks/TRACKER.md). Persistent-cursor + SSE `Last-Event-ID` snapshot work deferred to ≥ v0.8.7 per `DECISIONS.md` OQ-7.
+- **Cloud HITL transport anti-patterns** — see [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](docs/known-issues.md#v087--cloud-hitl-transport-anti-patterns). Five configurations (public IP, port-forward, residential NAT, inbound port, VPN tunnel) are explicitly NOT supported for v0.8.7 cloud HITL; the broad-audience `--cli=cursor-cloud` REST path remains fully usable without these — only the human-approval-over-Lark sub-flow has the γ / β prerequisites. CI guard in `tests/conftest.py::test_misleading_wording_guard` enforces zero in-tree drift outside the explicit callout. See also [`.local/research/v0.8.5_cloud_agent/03-cloud-hitl-transport-correction.md`](.local/research/v0.8.5_cloud_agent/03-cloud-hitl-transport-correction.md) for the upstream transport correction context.
+- **Long-tool-call probe deferred** (`OQ-1` from T1.1.1) — the maintainer probe requires `CURSOR_API_KEY` + Worker access not present in the agent env. Per `DECISIONS.md` OQ-1, v0.8.7 ships the **blocking + 30-min cap** default and a `v0.8.7.1` patch will fold in the phased fallback if H1 (≤ 30 s hard max) lands later. The MCP tool contract is forward-compatible: phased mode is a non-breaking superset (same input schema; output adds `phase: "queued" | "answered"`).
+- **β real-traffic verification deferred** — `popola doctor --cloud --mode beta` is documented in `deployment-modes.md` §3.3 but the doctor command extension is tracked as `BL-v0.8.7-1` for v0.8.8. γ ships first-class so v0.8.7 release is not blocked.
+- **`popola doctor --cloud` Lark-secret age warning deferred** (`F1` in `SECURITY_CHECKLIST.md` §11) — the L3 quarterly rotation runbook ships in v0.8.7 (USER_GUIDE Cloud HITL §"Webhook secret rotation"); the in-product `popola doctor --cloud` warning at >100 days lives in v0.8.7.1 patch (or v0.8.8 if it slips). Calendar reminders are the v0.8.7 enforcement mechanism.
+- **Mobile rendering of `Custom…` button modal** (`OQ-3` non-blocking) — Lark mobile may surface `open_input` as a bottom sheet rather than a modal; T2.3.2's manual SMOKE.md trace covers iOS + Android click-through (per SECURITY C6). If rendering breaks, downgrade `Custom…` to a "reply-in-thread" prompt in v0.8.7.1.
 
 ## Branch / PR readiness
 
-Suggested release PR title: **`release: v0.8.6 — Cloud observability + SSE ingest (runtime column + 422 hint catalog + manual cloud-smoke CI)`**.
+Suggested release PR title: **`release: v0.8.7 — Cloud HITL production (MCP tool + Lark card v1 + γ first-class + 30-min default timeout + audit chain)`**.
 
-Branch (current spike): `feature/v0.8.6-cloud-sse` — aligns with Protected Branch Workflow (no direct protected-branch pushes; squash-merge into `main` via PR after Stage 5 release task lands the version bump in `pyproject.toml`).
+Branch (current spike): `feature/v0.8.7-cloud-hitl-prod` — aligns with Protected Branch Workflow (no direct protected-branch pushes; squash-merge into `main` via PR after Stage 5 release task lands the version bump in `pyproject.toml`).

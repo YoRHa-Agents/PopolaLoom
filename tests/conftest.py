@@ -26,6 +26,8 @@ from __future__ import annotations
 import io
 import os
 import re
+import shutil
+import subprocess
 import sys
 import tokenize
 from collections.abc import Callable
@@ -234,5 +236,176 @@ def test_invariant_i1_sole_writer_of_cloud_phase() -> None:
             msg_lines.append(f"      L{line_no}: {offending.strip()}")
     msg_lines.append(
         "See state-source-of-truth.md §1.2 rule 1 + §6 I-1 for the contract."
+    )
+    raise AssertionError("\n".join(msg_lines))
+
+
+# ---------------------------------------------------------------------------
+# v0.8.7 T2.2.2 — Q-B-5 / M1 misleading-wording guard (CI grep fixture)
+# ---------------------------------------------------------------------------
+#
+# Cross-reference: ``deployment-modes.md`` §1 + §4 row D + §5 lateral-
+# movement list; ``mcp-tool-contract.md`` §1 ("the cloud reaches the worker
+# over a long-lived outbound HTTPS — no inbound ports / public IP / VPN
+# required"); ``SECURITY_CHECKLIST.md`` §8 M1; ``PLAN.md`` §4.2 T2.2.2.
+#
+# Cursor Cloud Agents access PopolaLoom HITL via outbound-only worker
+# sessions (γ — Worker stdio MCP) or backend-proxied HTTPS MCP (β — HTTP
+# MCP). The five misleading prerequisites — public IP, port-forward,
+# residential NAT, inbound port, VPN tunnel — are NEVER required and the
+# in-tree documentation set MUST NOT recommend them.
+#
+# Allowed exception: ``docs/known-issues.md`` carries an explicit
+# "do NOT do this" callout (the only place reviewers will see the wording
+# in-tree). The companion CHANGELOG entry — *"doc-only correction: cloud
+# HITL transport story aligned with deployment-modes.md"* — lands later
+# under T2.3.3 (W2.3 of PLAN.md), not in this task; do NOT add the
+# CHANGELOG line here.
+
+# Single ripgrep regex per T2.2.2 spec §Hints. Case-insensitive; matches
+# the five forbidden prerequisites the Q-B-5 cleanup targets.
+_MISLEADING_WORDING_PATTERN: str = (
+    r"(public\s+ip|port[- ]?forward|residential\s+NAT"
+    r"|inbound\s+port|VPN\s+tunnel)"
+)
+
+# Allowlist: paths (POSIX-style, repo-root-relative) where the misleading
+# wording is allowed to appear because it lives as the explicit callout.
+# To extend (e.g., when refactoring), edit only here.
+_MISLEADING_WORDING_ALLOWLIST: frozenset[str] = frozenset(
+    {"docs/known-issues.md"}
+)
+
+# Grep scope: the in-tree paths the guard checks. ``.local/research/`` is
+# intentionally excluded — it is the out-of-tree research-note tree where
+# the upstream Q-B-5 source material lives (and is gitignored).
+_MISLEADING_WORDING_SCOPE: tuple[str, ...] = (
+    "src/popolaloom/",
+    "docs/",
+    "README.md",
+    "RELEASE_NOTES.md",
+    "CHANGELOG.md",
+)
+
+
+def _misleading_wording_repo_root() -> Path:
+    """Return the repository root, derived from this conftest's location."""
+    return Path(__file__).resolve().parents[1]
+
+
+def _misleading_wording_parse_rg(stdout: str) -> dict[str, list[tuple[int, str]]]:
+    """Parse ``rg -n --no-heading`` output into ``{rel_path: [(lineno, line)]}``.
+
+    Output format is one match per line: ``rel/path/file:lineno:content``.
+    The first two ``:`` are the path / lineno separators; everything after
+    the second ``:`` is the matched content (which may itself contain
+    colons, hence ``split(":", 2)``). Lines whose path is in the
+    allow-list are dropped here so the test body stays declarative.
+    """
+    offenders: dict[str, list[tuple[int, str]]] = {}
+    for raw_line in stdout.splitlines():
+        if not raw_line.strip():
+            continue
+        parts = raw_line.split(":", 2)
+        if len(parts) < 3:
+            continue
+        rel_posix, lineno_s, content = parts[0], parts[1], parts[2]
+        try:
+            lineno = int(lineno_s)
+        except ValueError:
+            continue
+        if rel_posix in _MISLEADING_WORDING_ALLOWLIST:
+            continue
+        offenders.setdefault(rel_posix, []).append((lineno, content))
+    return offenders
+
+
+@pytest.fixture(scope="session")
+def cloud_hitl_misleading_wording_guard() -> dict[str, list[tuple[int, str]]]:
+    """Session-scoped: greps once per session, returns offenders.
+
+    Wraps a **single** ``rg`` invocation per the T2.2.2 transparency
+    constraint. ``rg`` exit codes: 0 = matches, 1 = no matches, 2 = error;
+    rc 0 / 1 are both acceptable (only rc ≥ 2 raises so a corrupt CLI
+    install fails loudly per the No-Silent-Failures rule).
+
+    If ``rg`` is not on ``PATH`` we ``pytest.skip`` with an actionable
+    message — the production guard runs in CI where ripgrep is part of
+    the toolchain; local environments may not have it.
+
+    Returns:
+        Mapping of repo-root-relative POSIX path → list of
+        ``(lineno, matched_line)`` tuples for every offender (i.e., every
+        match outside :data:`_MISLEADING_WORDING_ALLOWLIST`).
+    """
+    if shutil.which("rg") is None:
+        pytest.skip(
+            "ripgrep (rg) is not installed; the Q-B-5 / M1 misleading-"
+            "wording guard requires it (see PLAN.md §4.2 T2.2.2). "
+            "Install via `cargo install ripgrep` or `pip install ripgrep`."
+        )
+
+    repo_root = _misleading_wording_repo_root()
+    cmd = [
+        "rg",
+        "-i",
+        "-n",
+        "--no-heading",
+        "--color",
+        "never",
+        _MISLEADING_WORDING_PATTERN,
+        *_MISLEADING_WORDING_SCOPE,
+    ]
+    result = subprocess.run(
+        cmd,
+        cwd=str(repo_root),
+        capture_output=True,
+        text=True,
+        check=False,
+    )
+    if result.returncode not in (0, 1):
+        raise RuntimeError(
+            "Q-B-5 / M1 guard: `rg` invocation failed "
+            f"(rc={result.returncode}). stderr={result.stderr.strip()!r} "
+            f"stdout={result.stdout.strip()!r}"
+        )
+    return _misleading_wording_parse_rg(result.stdout)
+
+
+def test_misleading_wording_guard(
+    cloud_hitl_misleading_wording_guard: dict[str, list[tuple[int, str]]],
+) -> None:
+    """Q-B-5 / M1: misleading transport wording must not leak in-tree.
+
+    Asserts that the misleading prerequisites — public IP, port-forward,
+    residential NAT, inbound port, VPN tunnel — appear **only** in the
+    explicit "do NOT do this" callout under
+    :data:`_MISLEADING_WORDING_ALLOWLIST`. Any other in-tree hit fails CI
+    at PR time with a diagnostic listing the offending file + line.
+
+    Cross-reference: ``deployment-modes.md`` §1 + §4 row D;
+    ``SECURITY_CHECKLIST.md`` §8 M1; ``PLAN.md`` §4.2 T2.2.2.
+    """
+    offenders = cloud_hitl_misleading_wording_guard
+    if not offenders:
+        return
+    msg_lines: list[str] = [
+        "Q-B-5 / M1 misleading-wording guard violated.",
+        "Cloud HITL transport story is γ (Worker stdio MCP) + β (HTTP MCP "
+        "backend-proxied). Public IP / port-forward / residential NAT / "
+        "inbound port / VPN tunnel are NEVER required and MUST NOT be "
+        "documented as prerequisites.",
+        f"  allowlist = {sorted(_MISLEADING_WORDING_ALLOWLIST)}",
+        f"  scope     = {list(_MISLEADING_WORDING_SCOPE)}",
+        "Offending paths (relative to repo root):",
+    ]
+    for rel in sorted(offenders):
+        msg_lines.append(f"  - {rel}:")
+        for lineno, content in offenders[rel]:
+            msg_lines.append(f"      L{lineno}: {content.strip()}")
+    msg_lines.append(
+        "See deployment-modes.md §1 + §4 row D for the canonical wording; "
+        "the only allowed in-tree mention is the explicit callout in "
+        "docs/known-issues.md."
     )
     raise AssertionError("\n".join(msg_lines))

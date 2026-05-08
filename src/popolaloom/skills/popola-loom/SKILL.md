@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.6
+version: 0.8.7
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -9,9 +9,12 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola --help"
 tier: 1
-token_estimate: 3200
+token_estimate: 3300
 last_updated: "2026-05-08"
 ---
+
+<!-- updated: 2026-05-08 -->
+
 
 # PopolaLoom Skill
 
@@ -44,6 +47,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
 | `popola dispatch ... --cli=cursor-cloud` | 派发任务到 Cursor **Cloud Agents** REST（远端跑，不占本机 subprocess） | 见下文 Workflow 6 |
+| Cloud Agent 调 `popolaloom_cloud_hitl_request` MCP 工具 | 云端任务遇高风险决策时 deferer 给真人审批走 Lark（v0.8.7+，Enterprise/γ 模式） | 见下文 Workflow 7 |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
 | `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
 | `popola dispatch --replay <handoff_id>` | 按之前写下的 envelope 重派发（v0.7.3+） | `popola dispatch --replay cursor-fix-bug-foo-py-3a7f9c1d` |
@@ -231,6 +235,93 @@ popola dispatch "implement smoke-test stub in README" \
 **Opt-in quota smoke**：导出 `CURSOR_API_KEY` 后跑 `pytest tests/real_cursor_cloud/ -m real_cursor_cloud`，否则该目录四项 case 仅 **skipped**（见 `pytest` marker `real_cursor_cloud`）。
 
 出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7；v0.8.6 SSE / 422 / state SoT 设计：`.local/research/v0.8.6_sse/{sse-event-schema,state-source-of-truth,422-error-catalog}.md`（local-only research notes）。
+
+### Workflow 7 — Cloud HITL approval via MCP tool (γ mode, v0.8.7+)
+
+<!-- updated: 2026-05-08 -->
+
+> **Tier**：Enterprise / Self-Hosted。本 workflow 让 **Cursor Cloud Agent** 在云端跑任务时，遇到高风险决策（删数据、上线变更、生产部署等）能 **deferer 给真人** — 经 Lark 卡片走人审批，结果回传给 Cloud Agent 继续执行。先决条件、详细架构与安装步骤详见 [`docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted)。
+
+**架构**（γ — Worker stdio MCP 一等公民模式）：
+
+```text
+Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
+                                              │
+                                              │ spawns / pipes stdio
+                                              ▼
+                                        popolaloom-mcp
+                                              │
+                                              │ HTTP RPC (loopback / VPC)
+                                              ▼
+                                          popolad ──▶ popola_hitl (SQLite)
+                                              │
+                                              │ outbound HTTPS
+                                              ▼
+                                      open.larksuite.com (Lark 卡片)
+                                              │
+                                              ▼
+                                          人审批 → 回写 → Cloud Agent 继续
+```
+
+派发 + 审批一条龙，6 步：
+
+1. **先做 Enterprise 准备**（一次性，per worker host）：
+   - 在 Cursor Self-Hosted Pool 装 worker（`curl https://cursor.com/install -fsS | bash` 然后 `agent worker start --pool`）。详见 USER_GUIDE Cloud HITL §"Install steps (γ)"。
+   - 在同 host 装 `popolad` + `popolaloom-mcp`（`pipx install popolaloom`），并 `popolad up` 让 RPC 绑到 `127.0.0.1:<popolad_port>`（**绝不**绑公网接口）。
+   - 在 [Cloud Agents dashboard](https://cursor.com/agents) 注册自定义 MCP server（transport：**Command (stdio)**），命令 `popolaloom-mcp`，args `[]`（v0.8.7 入口默认就是 cloud HITL 桥），env 至少含 `POPOLAD_BASE_URL` + `POPOLAD_API_KEY`（per-tenant scoped）。env 白名单（per SECURITY L2）由 systemd / launchd unit 配 `Environment=` + `EnvironmentFile=` 完成（运维负责），`popolaloom-mcp` 进程本身不再持有 shell / git / 云 creds。
+2. **配 `popolad.toml [hitl.cloud]`**（一次性，可选 — 默认值已经 ok）：
+   ```toml
+   [hitl.cloud]
+   timeout_seconds      = 1800   # 默认 30 min；clamp 到 [60, 86400]
+   idempotency_window_s = 3600   # 1 h 内重复请求短路返回原 hitl_id
+   max_concurrent_per_run = 1
+   ```
+3. **派发一个会用到 HITL 的云端任务**（broad-audience cloud dispatch + 让 cloud agent 知道有 HITL 工具可用）：
+   ```bash
+   export CURSOR_API_KEY="cr_..."
+   export LARK_HITL_TARGET_OPEN_ID="ou_xxx"   # 审批人 / 群 open_id
+   popola dispatch "迁移生产数据库 schema，遇到 destructive 操作请通过 popolaloom_cloud_hitl_request 求人审批" \
+     --cli=cursor-cloud \
+     --cli-flag repo_url=https://github.com/acme/monorepo \
+     --cli-flag starting_ref=main
+   # → cursor-cloud-deadbeef（任务在 Cursor Cloud 上跑）
+   ```
+4. **Cloud Agent 在云端 runtime 调 MCP 工具**（这一步由 Cloud Agent 自己根据 prompt 与场景判断；典型 tool_call shape 如下，agent 的 LLM 自动构造）：
+   ```jsonc
+   {
+     "tool_name": "popolaloom_cloud_hitl_request",
+     "input": {
+       "task_id": "cursor-cloud-deadbeef",
+       "cursor_agent_id": "bc-ad-...",
+       "cursor_run_id": "run-...",
+       "question_text": "Drop staging.users (10M rows)? This is irreversible.",
+       "prompt_body": "About to execute: DROP TABLE staging.users; ... full context ...",
+       "options": ["approve", "reject"],
+       "responder_policy": "single",
+       "timeout_s": 1800
+     }
+   }
+   ```
+   工具内部：（a）走 worker-side `popolaloom-mcp` → `POST /hitl/cloud/request` 到 `popolad`；（b）`popolad` 写 `popola_hitl` 行 + 触发 Lark 卡片 `cloud_hitl_request_card_v1` 推送到 `LARK_HITL_TARGET_OPEN_ID`；（c）`popolaloom-mcp` 内部 long-poll `GET /hitl/cloud/wait/{hitl_id}?timeout_s=55` 一直拉到 30 min 超时为止。
+5. **真人在 Lark 点 Approve / Reject / Custom**（卡片含 verbatim 问题 + 200-字截断 context + Expand 链接 + 三按钮）：
+   - 点 Approve / Reject → `lark/listener.py` 接 button event（γ 模式经 `lark-cli event consume` 长连接，认证由 lark-cli 持有的 bot websocket session 完成 — 无 HMAC 校验在 listener 边界；β 模式才在公网 HTTPS gateway 做 HMAC 校验）→ `POST /hitl/cloud/answer/{hitl_id}` → `bridge.submit_answer`（含 `expected_cursor_*` mis-route 防御）→ `mark_answered`。
+   - 点 Custom → 弹 `open_input` 文本框 → 自由文本回答。
+   - 30 min 内没人响应 → 工具返回 `error.code: "timeout"`（**显式失败**，非默默通过 — per Q-B-3 锁定）。
+6. **Cloud Agent 收到结果继续执行**，或在 timeout 时按自己的策略 retry / fail-loud。在本机用 `popola attach cursor-cloud-deadbeef --follow` 同步看到全过程；用 `~/.popola/events/cursor-cloud-deadbeef.jsonl` 审计 `cloud_hitl.{requested,answered,failed,transition}` 4 类 NDJSON 事件。
+
+**关键安全约束**（不可省）：
+
+- **L3 季度轮换 Lark webhook secret**（Q1 1/15、Q2 4/15、Q3 7/15、Q4 10/15）；γ 与 β 共用同一 secret + 轮换流程。
+- **L6 Team follow-ups**：若组织里多人共用一个 Cloud Agent，**禁用 Team follow-ups** 或仅让服务账号能跟进 — 否则 teammate B 可能 driver agent 用 user A 的 secret 调 HITL 工具。
+- **L8 MCP 配置块视为机密**：dashboard 里 env / headers 加密+读时屏蔽，但**绝不**把 JSON blob commit 进 git 或粘贴到聊天。
+- **L10 Cursor Cloud network access policy**：处理 HITL 的 agent 设为 **"Allowlist only"**，仅放行 [Egress allowlist](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#egress-allowlist) 的 host。
+- **绝不** 用 public IP / port-forward / residential NAT / 入站端口 / VPN 隧道把 `popolad` 暴露给 Cursor Cloud — 仅 γ 的 outbound HTTPS（worker 主动出站）或 β 的 backend-proxied HTTPS（Cursor backend 代理）是合法路径。详见 [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/known-issues.md#v087--cloud-hitl-transport-anti-patterns)。
+
+**β（HTTP MCP backend-proxied 模式）的差异**：把第 1 步换成"在 VPC 里搭一个公网 HTTPS gateway，跑 HMAC 校验 + 转发给 popolad"，并在 dashboard 里改注册 transport=**HTTP** 的 MCP server；其余步骤一致。Β 不需要 Cursor Enterprise 套餐，但需要团队自有 SRE 维护 gateway。完整对照见 USER_GUIDE Cloud HITL §"Decision matrix — γ vs β vs neither"。
+
+**幂等 + 容灾**：同 `(task_id, cursor_agent_id, cursor_run_id, question_text)` 在 1 h 内重复调，后到的请求短路返回原 `hitl_id` + `deduped: true`（不重发卡片，不写新 `popola_hitl` 行）。`popolad` 重启不影响 dedup，因为 SQLite 是唯一真相源（无内存 cache）。
+
+出处：v0.8.7 设计与契约见 `.local/research/v0.8.7_hitl/{deployment-modes,mcp-tool-contract,lark-card-spec,long-tool-call-probe}.md`；安全 gate 见 `.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md`（10 项 lateral-movement + 4 项 secret hygiene + 4 项 idempotency + 4 项 audit + 3 项 approval policy）。
 
 ## Configuration
 

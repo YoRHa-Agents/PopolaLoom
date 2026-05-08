@@ -412,6 +412,38 @@ class LarkListener:
                 option_id = raw_value.get("option_id")
                 if not isinstance(hitl_id, str) or not isinstance(option_id, str):
                     raise ValueError(f"missing keys in dict value: {raw_value}")
+                # M7 / SECURITY R4: dispatch on template_version so a future
+                # v2 card cannot satisfy v1 dedup keys (and vice versa).
+                # Unknown versions are rejected as ``unauthorized`` so the
+                # callback path treats the event the same as a non-allowlist
+                # responder (No Silent Failures). Missing template_version
+                # defaults to ``"v1"`` for backward compat with v0.8.5
+                # cards that pre-date the version stamp.
+                template_version_raw = raw_value.get("template_version", "v1")
+                template_version = (
+                    template_version_raw
+                    if isinstance(template_version_raw, str)
+                    else str(template_version_raw)
+                )
+                if template_version not in SUPPORTED_TEMPLATE_VERSIONS:
+                    self._state.unauthorized += 1
+                    logger.warning(
+                        "card.action.trigger rejected unknown template_version=%r "
+                        "(supported: %s) hitl_id=%s",
+                        template_version,
+                        sorted(SUPPORTED_TEMPLATE_VERSIONS),
+                        hitl_id,
+                    )
+                    if self.callbacks.on_unauthorized is not None:
+                        sender = _extract_sender_open_id(event) or ""
+                        try:
+                            await self.callbacks.on_unauthorized(event, sender)
+                        except Exception:
+                            logger.exception(
+                                "on_unauthorized callback raised on "
+                                "unsupported template_version"
+                            )
+                    return
                 parsed = (hitl_id, option_id)
             else:
                 parsed = extract_action_value(str(raw_value))
@@ -479,6 +511,19 @@ def _lazy_lark_allowed_responders() -> list[str]:
     return lark_allowed_responders()
 
 
+SUPPORTED_TEMPLATE_VERSIONS: frozenset[str] = frozenset({"v1"})
+"""Set of accepted ``card_metadata.template_version`` values (M7 dispatch).
+
+Per ``SECURITY_CHECKLIST.md`` §5 R4 + ``lark-card-spec.md`` §4.3: card
+clicks carrying an unknown ``template_version`` MUST be rejected at
+the listener boundary (an unauthorised callback), so a v0.8.8+ ``v2``
+card cannot replay against a v1 listener and vice-versa. The MVP only
+honours ``"v1"``; expanding this set is the contract for future
+versions (each new card template adds itself here in lockstep with
+its receiver code path).
+"""
+
+
 def parse_card_action(
     event: dict[str, Any],
     *,
@@ -489,6 +534,11 @@ def parse_card_action(
     Drives the renderer-side ``parse_reply`` pipeline; the listener's
     own callbacks-based dispatch (:meth:`LarkListener._handle_card_action`)
     is the runtime path used inside the consume loop.
+
+    v0.8.7 M7 (REVIEW.md): the action value's ``template_version`` is
+    consulted before any other parse step; unknown versions are
+    rejected with ``unauthorized=True`` so a forged / replayed card
+    from a different template generation cannot resolve the row.
     """
     from popolaloom.hitl import HITLReply
     from popolaloom.lark.card_templates import extract_button_value
@@ -499,6 +549,30 @@ def parse_card_action(
     inner = event.get("event", {}) or {}
     action = inner.get("action") if isinstance(inner, dict) else None
     value = action.get("value") if isinstance(action, dict) else None
+
+    # M7 dispatch: reject unknown template_version BEFORE the value is
+    # destructured into hitl_id / option_id so a v2 card cannot ride
+    # the v1 dedup keys (per SECURITY R4 + spec §4.3). Missing values
+    # default to ``"v1"`` for backward compat with v0.8.5 cards that
+    # pre-date the version stamp.
+    template_version = "v1"
+    if isinstance(value, dict):
+        raw_version = value.get("template_version")
+        if isinstance(raw_version, str) and raw_version:
+            template_version = raw_version
+    if template_version not in SUPPORTED_TEMPLATE_VERSIONS:
+        return LarkEventResult(
+            ok=False,
+            sender_open_id=sender,
+            event_id=event_id,
+            unauthorized=True,
+            reason=(
+                f"unsupported template_version {template_version!r}; "
+                f"expected one of {sorted(SUPPORTED_TEMPLATE_VERSIONS)}"
+            ),
+            raw=event,
+        )
+
     hitl_id, option_id = extract_button_value(value if value is not None else {})
     if not hitl_id or not option_id:
         return LarkEventResult(
@@ -600,6 +674,7 @@ __all__ = [
     "POPOLA_FEEDBACK_PATTERN",
     "READY_MARKER",
     "READY_TIMEOUT_S",
+    "SUPPORTED_TEMPLATE_VERSIONS",
     "parse_card_action",
     "parse_message_command",
 ]

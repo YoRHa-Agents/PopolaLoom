@@ -40,11 +40,18 @@ def hitl_store(tmp_path: Path) -> HITLStore:
 BODY_TEMPLATE = {
     "prompt_title": "Approve?",
     "prompt_body": "Continue with deploy.",
+    "cursor_agent_id": "test-agent",
+    "cursor_run_id": "test-run",
     "options": [
         {"id": "yes", "label": "Yes"},
         {"id": "no", "label": "No"},
     ],
 }
+"""v0.8.7 T2.1.3 made ``cursor_agent_id`` / ``cursor_run_id`` required on the
+request side — the daemon RPC ``/hitl/cloud/request`` rejects with
+``invalid_context`` (HTTP 400) when either is missing. The fixture now passes
+synthetic values so the existing v0.8.5 round-trip / event / race tests
+continue to exercise the post-validation happy path."""
 
 
 def _popolad_with_log(
