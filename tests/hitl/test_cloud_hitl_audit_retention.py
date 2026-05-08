@@ -23,14 +23,35 @@ Two cases:
 
 from __future__ import annotations
 
+import re
 import sqlite3
-import subprocess
 from pathlib import Path
-
-import pytest
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
 _MIGRATIONS_DIR = _REPO_ROOT / "migrations"
+_DELETE_PATTERN = re.compile(r"DELETE\s+FROM\s+popola_hitl", re.IGNORECASE)
+
+
+def _scan_for_delete(directory: Path, suffix_glob: str) -> list[tuple[Path, int, str]]:
+    """Return list of (path, line_no, line_content) for every
+    ``DELETE FROM popola_hitl`` hit under ``directory`` matching the
+    suffix glob (e.g. ``*.py`` or ``*.sql``).
+
+    Pure-Python (no ripgrep dependency) so the test runs unchanged on
+    GitHub Actions runners that don't ship ``rg``.
+    """
+    hits: list[tuple[Path, int, str]] = []
+    for path in directory.rglob(suffix_glob):
+        if not path.is_file():
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue
+        for line_no, line in enumerate(text.splitlines(), start=1):
+            if _DELETE_PATTERN.search(line):
+                hits.append((path, line_no, line.rstrip()))
+    return hits
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
@@ -83,55 +104,27 @@ def test_no_delete_from_popola_hitl_in_v0_8_7_code_paths() -> None:
     statement; the only acceptable mutators are the migrations
     themselves (which create / extend the table, never delete) and the
     ``UPDATE`` writes via :meth:`HITLStore.mark_answered`.
+
+    Implementation: pure-Python ``pathlib.rglob`` + ``re`` scan so the
+    test runs unchanged on CI runners that don't ship ripgrep.
     """
-    # We use ripgrep (rg) to scan only the production source path —
-    # tests / docs may legitimately reference ``DELETE FROM popola_hitl``
-    # in comments or audit examples without violating the retention
-    # contract.
     src_root = _REPO_ROOT / "src" / "popolaloom"
     assert src_root.is_dir(), f"missing source tree: {src_root}"
 
-    proc = subprocess.run(
-        [
-            "rg",
-            "--no-heading",
-            "--with-filename",
-            r"DELETE\s+FROM\s+popola_hitl",
-            str(src_root),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
-    )
-    # rg exit code 1 → no matches; 0 → at least one match; 2 → error.
-    if proc.returncode == 2:
-        pytest.skip(f"rg unavailable or errored: {proc.stderr}")
-    matches = proc.stdout.strip()
-    assert proc.returncode == 1 and not matches, (
-        f"L4 regression: production code emits 'DELETE FROM popola_hitl' "
-        f"-- the ≥ 90-day audit retention contract is broken.\n"
-        f"Offending lines:\n{matches}"
+    src_hits = _scan_for_delete(src_root, "*.py")
+    assert not src_hits, (
+        "L4 regression: production code emits 'DELETE FROM popola_hitl' "
+        "-- the ≥ 90-day audit retention contract is broken.\n"
+        "Offending lines:\n"
+        + "\n".join(f"  {p}:{ln}: {line}" for p, ln, line in src_hits)
     )
 
-    # Also scan migrations: the only allowed file is one that
-    # *creates* or extends the table; a migration that DROPs or DELETEs
-    # would be a red flag. We don't reject CREATE / ALTER / INDEX
-    # statements — only DELETE.
-    proc_mig = subprocess.run(
-        [
-            "rg",
-            "--no-heading",
-            "--with-filename",
-            r"DELETE\s+FROM\s+popola_hitl",
-            str(_MIGRATIONS_DIR),
-        ],
-        capture_output=True,
-        text=True,
-        check=False,
+    # Also scan migrations: a migration that DROPs or DELETEs the table's
+    # rows would be a red flag. CREATE / ALTER / INDEX are allowed —
+    # we only reject DELETE.
+    mig_hits = _scan_for_delete(_MIGRATIONS_DIR, "*.sql")
+    assert not mig_hits, (
+        "L4 regression: migration file deletes popola_hitl rows.\n"
+        "Offending lines:\n"
+        + "\n".join(f"  {p}:{ln}: {line}" for p, ln, line in mig_hits)
     )
-    if proc_mig.returncode != 2:
-        matches_mig = proc_mig.stdout.strip()
-        assert proc_mig.returncode == 1 and not matches_mig, (
-            f"L4 regression: migration file deletes popola_hitl rows.\n"
-            f"Offending lines:\n{matches_mig}"
-        )
