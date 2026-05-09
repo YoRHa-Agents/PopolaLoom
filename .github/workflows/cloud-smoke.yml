@@ -11,11 +11,10 @@
 #      schedule. Forks cannot trigger `workflow_dispatch` on the
 #      upstream repo, so they cannot drain the maintainer's quota.
 #   2. Repo secret `CURSOR_API_KEY` is present. When unset (fresh
-#      fork, or before any maintainer adds it), the `smoke` job is
-#      skipped (no red X) and a sibling `notify-skip` job records a
-#      friendly green-check explanation in the workflow run, satisfying
-#      the v0.8.6 PLAN §4.3 T2.3.1 AC (e) "fail-soft, NOT a red X"
-#      requirement.
+#      fork, or before any maintainer adds it), the smoke step prints a
+#      friendly skip message and exits 0. Do NOT use `secrets.*` in a
+#      job-level `if:` expression — GitHub rejects that at workflow
+#      validation time.
 #
 # The `CURSOR_API_KEY` value is consumed only via `env.CURSOR_API_KEY`
 # in the pytest step (no `echo`, no debug print) per the workspace
@@ -40,7 +39,6 @@ jobs:
   smoke:
     name: real_cursor_cloud smoke (-k smoke)
     runs-on: ubuntu-22.04
-    if: ${{ secrets.CURSOR_API_KEY != '' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -61,14 +59,8 @@ jobs:
           CURSOR_API_KEY: ${{ secrets.CURSOR_API_KEY }}
           TESTS_PATH: ${{ inputs.tests_path }}
         run: |
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "skipping: CURSOR_API_KEY not configured (set as repo secret)"
+            exit 0
+          fi
           pytest "$TESTS_PATH" -m real_cursor_cloud -k "smoke" -q --no-header
-
-  notify-skip:
-    name: notify-skip (CURSOR_API_KEY not configured)
-    runs-on: ubuntu-22.04
-    if: ${{ secrets.CURSOR_API_KEY == '' }}
-    steps:
-      - name: Friendly skip message
-        run: |
-          echo "skipping: CURSOR_API_KEY not configured (set as repo secret)"
-          exit 0

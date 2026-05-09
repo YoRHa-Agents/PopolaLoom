@@ -14,6 +14,27 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 <!-- updated: 2026-05-10 -->
 
+## [0.9.4] — 2026-05-10
+
+**Theme**: Actions validation hotfix. v0.9.4 is a strictly additive patch on top of v0.9.3: it keeps the workspace-worker routing release intact and fixes two optional cloud workflows that GitHub marked as workflow-file failures because they referenced `secrets.CURSOR_API_KEY` in job-level `if:` expressions.
+
+### Fixed
+
+- **`cloud-smoke` workflow validation** — moved the missing-`CURSOR_API_KEY` skip check into the bash step so the workflow validates on push and exits green without consuming quota when the secret is absent.
+- **`cloud-fixtures-drift-check` workflow validation** — same fix for the monthly/manual live fixtures drift workflow; missing credentials now write a skip log and `pytest_rc=0` instead of failing workflow parsing.
+
+### Changed
+
+- **Release contract version** — bumped package, docs config, Skill markers, smoke assertions, README, CHANGELOG, and RELEASE_NOTES to `0.9.4`.
+
+### Tests
+
+- Local verification: `python -m pytest tests/cli/test_cloud_worker_cmd.py tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py` → 81 passed, 2 skipped; `pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=popolaloom --cov-report=term-missing --cov-report=xml:coverage-local.xml` → 2790 passed, 25 skipped, 82 deselected, coverage 94.08%; `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean.
+
+### Known limitations
+
+- **PyPI publish still deferred** (Q-D-5 偏离默认; `BL-v0.9.x-PyPI`) — v0.9.4 remains GitHub-Release-only. Install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.4` or `./install.sh install --from=git`.
+
 ## [0.9.3] — 2026-05-10
 
 **Theme**: Workspace-aware self-hosted worker routing. v0.9.3 is a strictly additive patch on the v0.9.x line: it closes `.local/feedbacks/feedback_for_v0.9.1.md` by making `popola cloud worker start` reuse a single workspace worker by default and by adding direct `popola cloud worker dispatch` routing to the matching worker through `popolad`.

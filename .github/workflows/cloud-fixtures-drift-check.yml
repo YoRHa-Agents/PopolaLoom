@@ -23,10 +23,10 @@
 # itself is broken, there is no point spending API quota.
 #
 # Fork safety: forks cannot read the maintainer's `CURSOR_API_KEY`
-# secret, so the `if: ${{ secrets.CURSOR_API_KEY != '' }}` guard
-# short-circuits to a green no-op via the `notify-skip` sibling job
-# (mirrors the v0.8.6 cloud-smoke.yml pattern). No red X on contributor
-# forks.
+# secret, so the live capture step checks the env var inside bash and
+# exits 0 with a friendly skip message when it is unset. Do NOT use
+# `secrets.*` in a job-level `if:` expression — GitHub rejects that at
+# workflow validation time. No red X on contributor forks.
 #
 # Drift surfacing: when the live job fails, an issue is filed via
 # `gh issue create` with the `fixtures-drift` label. The on-call
@@ -51,7 +51,6 @@ jobs:
   drift-check:
     name: capture live API + diff against tests/fixtures/cloud/
     runs-on: ubuntu-22.04
-    if: ${{ secrets.CURSOR_API_KEY != '' }}
     steps:
       - name: Checkout repo
         uses: actions/checkout@v4
@@ -78,6 +77,11 @@ jobs:
         run: |
           set -uo pipefail
           mkdir -p .drift/captured
+          if [ -z "${CURSOR_API_KEY:-}" ]; then
+            echo "skipping: CURSOR_API_KEY not configured (set as repo secret)" | tee .drift/captured/pytest.log
+            echo "pytest_rc=0" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
           # Replay the Tier-4 cloud smoke suite; this hits the real API.
           # The semantic-diff renderer is deferred to v0.9.x — for the
           # W2.1 tracer-bullet we surface non-zero pytest exit as a
@@ -135,13 +139,3 @@ jobs:
       - name: Surface red on the schedule run
         if: ${{ steps.drift.outputs.pytest_rc != '0' }}
         run: exit 1
-
-  notify-skip:
-    name: notify-skip (CURSOR_API_KEY not configured)
-    runs-on: ubuntu-22.04
-    if: ${{ secrets.CURSOR_API_KEY == '' }}
-    steps:
-      - name: Friendly skip message
-        run: |
-          echo "skipping: CURSOR_API_KEY not configured (set as repo secret)"
-          exit 0

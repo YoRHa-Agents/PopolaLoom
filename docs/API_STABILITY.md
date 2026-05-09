@@ -3,8 +3,9 @@
 <!-- updated: 2026-05-10 -->
 
 > **Status**: v0.9.0 GA published the first explicit stable /
-> experimental boundary; v0.9.3 adds workspace-worker singleton dispatch
-> and private-worker routing extras under the same additive v0.9.x contract.
+> experimental boundary; v0.9.4 carries forward the v0.9.3
+> workspace-worker singleton dispatch and private-worker routing extras
+> under the same additive v0.9.x contract.
 > **Lock decision**: **Q-D-7 (Q9-3)** — *"daemon RPC + CLI 列稳定；实验项以
 > `extra` / `__experimental` 标记"* — see row 10 of the *已锁定的全部 11 道决策*
 > table in the program plan and the matching `Q9-3` row in
