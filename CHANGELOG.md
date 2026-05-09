@@ -14,6 +14,42 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 <!-- updated: 2026-05-10 -->
 
+## [0.9.5] — 2026-05-10
+
+**Theme**: Init-time Cursor API key intake. v0.9.5 is a strictly additive patch on top of v0.9.4: it closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) by teaching `popola init` to accept the Cursor Cloud Agents REST API key directly, persist it through the existing `popolaloom.credentials` resolver into the OS keyring, and never ask for it again. The flag composes with every init path (auto-detect, verb subcommand, `--target=cloud-only`, `--interactive`); `--configure-cursor-auth` is correspondingly accepted everywhere too. `--dry-run` skips credential persistence with an explicit one-line message (per the workspace No-Silent-Failures rule for secrets).
+
+### Added
+
+- **`popola init --cursor-api-key VAL`** (NEW; v0.9.5) — non-interactive Cursor API key intake on the init root callback. The literal value is forwarded to [`popolaloom.credentials.store_cursor_api_key`](src/popolaloom/credentials.py) which persists it in the OS keyring (service `popolaloom.cursor`, username `default`). Implies `--configure-cursor-auth`. Mutually exclusive with `--cursor-api-key-file`. Empty / whitespace-only values are rejected with a clear `BadParameter` error.
+- **`popola init --cursor-api-key-file PATH`** (NEW; v0.9.5) — read the first non-empty line of `PATH` (utf-8) and forward to the same persistence path. Missing or empty files are rejected (No Silent Failures).
+- **Helper `_resolve_cursor_api_key_input(*, value, file)`** (NEW; v0.9.5) — typed resolver that strips whitespace, applies the mutex, and surfaces empty/missing errors. Direct unit tests pin every branch.
+- **Helper `_persist_cursor_api_key_noninteractive(raw_key)`** (NEW; v0.9.5) — sibling to the existing interactive `_offer_cursor_credential_setup`. Calls `is_keyring_available()` and prints an actionable hint pointing at `pip install popolaloom[credentials]` plus the `CURSOR_API_KEY` env-var fallback when the backend is missing (best-effort). Wraps `CredentialBackendError` and `ValueError` with explicit messages; the literal API key is never echoed (only the SHA-256 fingerprint).
+- **Helper `_handle_credential_intake_after_install(*, resolved_key, configure_cursor_auth, dry_run)`** (NEW; v0.9.5) — single branch table that auto-detect, verb-subcommand, cloud-only, and the interactive wizard share. Routes resolved values through the non-interactive helper and falls through to the v0.9.2 interactive prompt when only `--configure-cursor-auth` was passed. `--dry-run` short-circuits with the canonical skip message.
+- **`tests/cli/test_init_credential_intake.py`** (NEW; 39 default-lane cases) — covers the new flags on every init path: auto-detect persistence, file-based intake (skips blank lines), mutex of `--cursor-api-key` ⊕ `--cursor-api-key-file`, empty/whitespace inline rejection, missing file rejection, empty file rejection, intake alongside a verb subcommand, intake with `--target=cloud-only`, intake with `--interactive`, `--dry-run` short-circuit (auto-detect and cloud-only), keyring-extra-missing hint path, `--help` text advertises both flags. Plus direct unit tests for `_resolve_cursor_api_key_input`, `_persist_cursor_api_key_noninteractive`, `_handle_credential_intake_after_install`, and a literal pin for `_DRY_RUN_CREDENTIAL_SKIP_MSG`.
+
+### Changed
+
+- **`--configure-cursor-auth` accepted on every init path** (v0.9.5) — closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md). Previously the flag raised `BadParameter` outside of `--target=cloud-only` / `--interactive`; v0.9.5 removes that guard and routes the helper through `_handle_credential_intake_after_install` on auto-detect, verb subcommand (`cursor` / `claude` / `copilot` / `codex` / `local` / `all` via a click `ctx.call_on_close` hook so the helper runs AFTER the verb body returns), `--target=cloud-only`, and `--interactive`. `tests/cli/test_init_configure_cursor_auth.py::test_configure_cursor_auth_on_auto_detect_path_runs_helper` pins the new behaviour with a comment referencing this feedback file.
+- **Release contract version** — bumped package, docs config, Skill markers, both `.popola-loom-version` markers, smoke assertions, README banner, install-popola SKILL install snippet, CHANGELOG, and RELEASE_NOTES to `0.9.5`.
+
+### Tests
+
+- Focused subset: `python -m pytest tests/cli/test_init_credential_intake.py tests/cli/test_init_configure_cursor_auth.py tests/cli/test_init_cmd.py tests/cli/test_init_cmd_edge_cases.py tests/cli/test_init_paths.py tests/cli/test_init_interactive.py tests/cli/test_init_cloud_only.py tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py` → 118 passed, 2 skipped.
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=popolaloom --cov-report=term-missing --cov-report=xml:coverage-local.xml` reproducing the v0.9.4 floor (≥94% coverage); `coverage-local.xml` is deleted afterwards (never committed).
+- `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean; `git diff --check` clean.
+
+### Files
+
+- **NEW**: `tests/cli/test_init_credential_intake.py` (39 cases covering the v0.9.5 flag matrix + helpers).
+- **MOD source / tests**: `src/popolaloom/cli/init_cmd.py` (two new options, three new helpers, removed the v0.9.2 `BadParameter` guard, wired the `ctx.call_on_close` hook for the verb-subcommand path), `tests/cli/test_init_configure_cursor_auth.py` (added `test_configure_cursor_auth_on_auto_detect_path_runs_helper` and a v0.9.5-anchored docstring; existing v0.9.2 cases unchanged).
+- **MOD release contracts**: `pyproject.toml`, `src/popolaloom/__init__.py`, `docs/_config.yml`, `tests/test_smoke.py`, `src/popolaloom/skills/popola-loom/SKILL.md`, `src/popolaloom/skills/install-popola/SKILL.md`, both `.popola-loom-version` markers, `README.md`, `docs/USER_GUIDE.md`, `docs/API_STABILITY.md`, `CHANGELOG.md`, `RELEASE_NOTES.md`.
+
+### Known limitations
+
+- **PyPI publish still deferred** (Q-D-5 偏离默认; `BL-v0.9.x-PyPI`) — v0.9.5 remains GitHub-Release-only. Install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5` or `./install.sh install --from=git`.
+- **Single-tenant keyring slot still applies** — v0.9.5 stores at most one Cursor API key (service `popolaloom.cursor`, username `default`); operators with separate personal vs service-account keys must rely on the `CURSOR_API_KEY` env-var override to switch contexts (unchanged from v0.9.2).
+- **Best-effort when keyring backend is missing** — when `pip install popolaloom[credentials]` was not run, `popola init --cursor-api-key VAL` prints a clear hint pointing at the extra and the env-var fallback, then returns; the install path itself still succeeds (only credential persistence is degraded).
+
 ## [0.9.4] — 2026-05-10
 
 **Theme**: Actions validation hotfix. v0.9.4 is a strictly additive patch on top of v0.9.3: it keeps the workspace-worker routing release intact and fixes two optional cloud workflows that GitHub marked as workflow-file failures because they referenced `secrets.CURSOR_API_KEY` in job-level `if:` expressions.

@@ -3,9 +3,12 @@
 <!-- updated: 2026-05-10 -->
 
 > **Status**: v0.9.0 GA published the first explicit stable /
-> experimental boundary; v0.9.4 carries forward the v0.9.3
-> workspace-worker singleton dispatch and private-worker routing extras
-> under the same additive v0.9.x contract.
+> experimental boundary; v0.9.5 carries forward the v0.9.3
+> workspace-worker singleton dispatch + private-worker routing extras
+> and v0.9.4 Actions validation hotfix under the same additive
+> v0.9.x contract, plus v0.9.5 adds the init-time Cursor API key
+> intake flags (`popola init --cursor-api-key` /
+> `--cursor-api-key-file`; see [§2.5](#25-cursor-api-key-credential-resolver-v092)).
 > **Lock decision**: **Q-D-7 (Q9-3)** — *"daemon RPC + CLI 列稳定；实验项以
 > `extra` / `__experimental` 标记"* — see row 10 of the *已锁定的全部 11 道决策*
 > table in the program plan and the matching `Q9-3` row in
@@ -285,6 +288,18 @@ precedence chain is part of the v0.9.x stable surface:
 - Fingerprint format: first **12 hex chars** of SHA-256 of the
   stripped secret. Stable across the v0.9.x line so operators can
   compare values across `popola auth cursor status` invocations.
+- **v0.9.5 init-time intake flags** — `popola init --cursor-api-key VAL`
+  and `popola init --cursor-api-key-file PATH` are stable additions to
+  the resolver-set side of the surface: both forward their resolved
+  value to `store_cursor_api_key` (slot #3 above) without prompting.
+  Either flag implies `--configure-cursor-auth`; both flags are
+  accepted on every init path (auto-detect, verb subcommand,
+  `--target=cloud-only`, `--interactive`). Mutex of the two flags +
+  empty/missing-file rejection are part of the stable surface
+  (`tests/cli/test_init_credential_intake.py` pins the contract).
+  `--dry-run` short-circuits credential persistence with a clear
+  one-line skip message — secrets are never persisted during a
+  preview (No Silent Failures).
 
 **Out-of-scope (v0.9.x)**: alternative backends (e.g. HashiCorp Vault,
 AWS Secrets Manager, GCP Secret Manager) are not exposed in v0.9.x and

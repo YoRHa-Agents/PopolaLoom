@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.9.4
+version: 0.9.5
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -474,8 +474,8 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 - **Install / Upgrade**:
   ```bash
   ./install.sh install                                       # v0.8.4+ 统一 bash bootstrap（推荐）
-  # 或 v0.9.4 期间（PyPI 未发，Q-D-5 偏离默认）：
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.4
+  # 或 v0.9.5 期间（PyPI 未发，Q-D-5 偏离默认）：
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5
   popola skill upgrade --target=cursor                       # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
   popola init                                                # 兜底：手动 re-run 触发 idempotent install
   ```

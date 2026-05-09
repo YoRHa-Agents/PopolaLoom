@@ -201,19 +201,35 @@ def test_dry_run_does_not_prompt_for_secret(
     assert not (cwd / "popolad.toml").exists()
 
 
-# ── flag misuse rejection ──────────────────────────────────────────────
+# ── flag is now allowed on every init path (v0.9.5 + feedback_for_v0.9.4) ─
 
 
-def test_configure_cursor_auth_without_cloud_only_or_interactive_errors(
+def test_configure_cursor_auth_on_auto_detect_path_runs_helper(
     isolated_home: tuple[Path, Path],
+    fake_backend: _FakeBackend,
     runner: CliRunner,
 ) -> None:
-    """``popola init --configure-cursor-auth`` (no target/interactive) exits ≠0.
+    """``popola init --configure-cursor-auth`` (no target/interactive) now runs the helper.
 
-    The flag is meaningful only paired with cloud-only or interactive
-    (No Silent Failures: never silently no-op a security flag).
+    v0.9.5 (closes ``.local/feedbacks/feedback_for_v0.9.4.md``): the flag
+    is accepted on every init path. Previously this combination raised
+    ``BadParameter`` on the bare auto-detect lane; with the v0.9.5 init-
+    time credential intake the flag triggers
+    :func:`popolaloom.cli.init_cmd._offer_cursor_credential_setup` after
+    the auto-install loop completes. Operator declines the prompt → no
+    secret stored, scaffold still succeeds.
     """
-    result = runner.invoke(init_app, ["--configure-cursor-auth"])
-    assert result.exit_code != 0
-    output = _combined_output(result).lower()
-    assert "configure-cursor-auth" in output or "cloud-only" in output
+    cwd, _ = isolated_home
+    (cwd / ".local").mkdir()  # silences the auto-detect 'local' branch
+    result = runner.invoke(
+        init_app,
+        ["--configure-cursor-auth"],
+        input="n\n",  # declines the keyring prompt
+    )
+    output = _combined_output(result)
+    assert result.exit_code == 0, output
+    assert "Secure Cursor API key storage" in output
+    assert fake_backend.store == {}
+    # Auto-detect still runs to completion: cursor (default fallback)
+    # SKILL.md is on disk.
+    assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
