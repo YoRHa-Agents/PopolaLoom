@@ -30,6 +30,7 @@ behaviour as the developer's macOS host.
 
 from __future__ import annotations
 
+import re
 import types
 from collections.abc import Callable, Iterator
 from pathlib import Path
@@ -40,6 +41,24 @@ from typer.testing import CliRunner
 from popolaloom import credentials as cred_mod
 from popolaloom.cli import init_cmd
 from popolaloom.cli.init_cmd import app as init_app
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+"""Strip ANSI color/format escapes from Typer/Rich-rendered output.
+
+CI runners default to 80-column terminals, where Rich wraps long flag
+names and panel messages across lines and splices ANSI control codes
+in between (e.g. ``mutually \\x1b[31m \\x1b[0m exclusive``). The two
+assertions below collapse output through :func:`_normalize_terminal_text`
+so the substring checks stay robust to wrapping width and decoration.
+"""
+
+
+def _normalize_terminal_text(text: str) -> str:
+    """Strip ANSI escapes + Rich box drawing + collapse whitespace."""
+    cleaned = _ANSI_ESCAPE_RE.sub("", text)
+    for ch in ("│", "╭", "╮", "╰", "╯", "─"):
+        cleaned = cleaned.replace(ch, " ")
+    return " ".join(cleaned.split()).lower()
 
 
 class _FakeBackend:
@@ -242,15 +261,7 @@ def test_cursor_api_key_and_file_are_mutually_exclusive(
         ["--cursor-api-key", "cr_inline", "--cursor-api-key-file", str(keyfile)],
     )
     assert result.exit_code != 0
-    raw = _combined_output(result).lower()
-    # Strip Rich's box-drawing chars + collapse whitespace before the
-    # substring match so the assertion is invariant to Rich's panel
-    # wrapping width and decoration.
-    flat = " ".join(
-        raw.replace("│", " ").replace("╭", " ").replace("╮", " ")
-        .replace("╰", " ").replace("╯", " ").replace("─", " ")
-        .split()
-    )
+    flat = _normalize_terminal_text(_combined_output(result))
     assert "mutually exclusive" in flat
 
 
@@ -801,11 +812,15 @@ def test_init_help_text_advertises_new_credential_intake_flags(
 ) -> None:
     """``popola init --help`` advertises both new v0.9.5 credential intake flags."""
     result = runner.invoke(init_app, ["--help"])
-    out = _combined_output(result)
     assert result.exit_code == 0
-    # Both flags appear; help text mentions the v0.9.5 anchor + intake intent.
-    assert "--cursor-api-key" in out
-    assert "--cursor-api-key-file" in out
+    # Rich wraps long flag tokens across lines on 80-column CI runners
+    # (e.g. ``--cursor-\nA-api-key-file``); strip ANSI + collapse all
+    # whitespace before the substring check so the test stays robust
+    # to terminal-width variation between dev hosts and CI.
+    flat = _normalize_terminal_text(_combined_output(result))
+    flat_no_space = flat.replace(" ", "")
+    assert "--cursor-api-key" in flat_no_space
+    assert "--cursor-api-key-file" in flat_no_space
 
 
 # ── helper _Callable alias used by the spy fixture (typing nicety) ─────
