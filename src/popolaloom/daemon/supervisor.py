@@ -315,11 +315,22 @@ class Supervisor:
                 error_detail="marker payload requires string 'prompt'",
             )
 
+        # v0.9.2: route through the credential resolver so dispatch
+        # honours OS keyring storage in addition to the historical
+        # CURSOR_API_KEY env var. The resolver enforces precedence:
+        # explicit override (the marker payload's `api_key` extra) >
+        # CURSOR_API_KEY env > OS keyring. Returns None when nothing
+        # is configured, which we surface via the existing
+        # error_kind="missing_api_key" failure (No Silent Failures —
+        # the operator hint in the resulting failure event lists all
+        # three precedence slots).
+        from popolaloom.credentials import resolve_cursor_api_key
+
         raw_override = extra.get("api_key")
+        override: str | None = None
         if raw_override is not None and str(raw_override).strip():
-            api_key = str(raw_override).strip()
-        else:
-            api_key = str(os.environ.get("CURSOR_API_KEY", "")).strip()
+            override = str(raw_override).strip()
+        api_key = resolve_cursor_api_key(override=override) or ""
         if not api_key:
             return _fail(error_kind="missing_api_key")
 

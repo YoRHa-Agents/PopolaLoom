@@ -1,14 +1,15 @@
-# PopolaLoom API Stability Boundary — v0.9.0 GA
+# PopolaLoom API Stability Boundary — v0.9.x
 
-<!-- updated: 2026-05-08 -->
+<!-- updated: 2026-05-09 -->
 
-> **Status**: v0.9.0 GA — first release that publishes an explicit stable /
-> experimental boundary.
+> **Status**: v0.9.0 GA published the first explicit stable /
+> experimental boundary; v0.9.1 adds the self-hosted worker handoff CLI
+> surface under the same additive v0.9.x contract.
 > **Lock decision**: **Q-D-7 (Q9-3)** — *"daemon RPC + CLI 列稳定；实验项以
 > `extra` / `__experimental` 标记"* — see row 10 of the *已锁定的全部 11 道决策*
 > table in the program plan and the matching `Q9-3` row in
 > [`decision-matrices-zh.md`](../.local/research/v0.8.5-to-v0.9.0_roadmap/decision-matrices-zh.md).
-> **Last updated**: 2026-05-08
+> **Last updated**: 2026-05-09
 
 This document is the canonical contract for what an operator, integrator,
 or downstream Skill MAY rely on across the v0.9.x line, and what is
@@ -88,7 +89,7 @@ column ordering** are stable.
 Every Typer-registered verb is defined in
 [`src/popolaloom/cli/main.py`](../src/popolaloom/cli/main.py) (root
 commands) plus the sub-apps wired in `_register_subcommand_groups`. The
-v0.9.0 stable CLI surface is:
+v0.9.x stable CLI surface is:
 
 | # | Verb | Stable contract (flag names, defaults, exit codes) | Landed |
 | --- | --- | --- | --- |
@@ -104,6 +105,8 @@ v0.9.0 stable CLI surface is:
 | 10 | `popola handoff` | Sub-app: `inspect` / `archive` / `list`. On-disk envelope tooling. | v0.7.2 |
 | 11 | `popola cloud` | Sub-app namespace. Verb `runs` is **experimental** in v0.9.0 — see [§3.1](#31-popola-cloud-runs-q-c-1). The sub-app shell itself is stable. | v0.8.8 |
 | 12 | `popola relay <task_a>` | `--dry-run`, `--no-confirm`, `--target-repo`, `--confirm-allowlist`, `--message`, `--idempotency-key`, `--json`. Default `mode = "auto"` per Q-C-4 lock. Behaviour gated by `[cloud.relay]` (see [§3.3](#33-cloudrelay-config-schema-q-c-4)). Exit codes: `0`, `1` policy-denied, `2` invalid-args, `75` cloud-API, `77` cloud-auth, `78` feature-unavailable, `100` not-found, `102` conflict. | v0.8.8 |
+| 13 | `popola cloud worker` | Sub-app: `debug` / `start` / `status` / `handoff`. My Machines mode uses upstream `agent login`; `--pool` requires a Cursor service-account API key (resolved per [§2.5](#25-cursor-api-key-credential-resolver-v092)) and exits `77` when missing. `status --json` and `handoff --json` schemas are additive; `handoff.popola_task_id` is always `null` because this lane does not create a popola-tracked task. | v0.9.1 |
+| 14 | `popola auth cursor` | Sub-app: `set` / `status` / `clear`. `set` accepts `--api-key VAL` / `--from-env` / `--validate` / `--json` (mutually-exclusive `--api-key` ⊕ `--from-env`). `status --json` envelope keys are stable: `configured` / `source` / `backend_name` / `fingerprint` / `keyring_available`. `clear` accepts `--yes` / `--json` and is idempotent. The literal API key value is **never** echoed, logged, or returned in any envelope (No Silent Failures). Exit codes: `0` ok / `2` invalid args / `3` keyring backend unavailable / `77` `--validate` round-trip rejected by Cursor. | v0.9.2 |
 
 **Stable-scope rules**:
 
@@ -241,7 +244,7 @@ discoverers and by `popola skill doctor`. Three keys are stable:
 ```yaml
 ---
 name: popola-loom
-version: 0.9.0
+version: 0.9.1
 description: "PopolaLoom — 跨 CLI 元编排器。…"
 ---
 ```
@@ -249,6 +252,57 @@ description: "PopolaLoom — 跨 CLI 元编排器。…"
 > Other keys (`metadata.surfaces`, `metadata.requires`, `tier`,
 > `token_estimate`, `last_updated`) are **best-effort**; they may evolve
 > as Cursor's Skill-discovery format evolves.
+
+### 2.5 Cursor API key credential resolver (v0.9.2+)
+
+Every cloud dispatch / runs / relay / cancel / attach call site routes
+through [`popolaloom.credentials.resolve_cursor_api_key`](../src/popolaloom/credentials.py)
+instead of reading `os.environ["CURSOR_API_KEY"]` directly. The
+precedence chain is part of the v0.9.x stable surface:
+
+| # | Slot | Source | Notes |
+| - | ---- | ------ | ----- |
+| 1 | Explicit override | `resolve_cursor_api_key(override=...)` | Test-only / library-injection hook (`CredentialResolver(override=...)`). Production CLI does NOT expose this — operators use slot 2 or 3. |
+| 2 | Environment variable | `CURSOR_API_KEY` | Highest-precedence operator-facing slot. Whitespace-only values are ignored (treated as unset; No Silent Failures). |
+| 3 | OS keyring | `popolaloom.cursor` / username `default` | Populated by `popola auth cursor set` (or the v0.9.2+ `init --target=cloud-only --configure-cursor-auth` prompt). Backend is the active OS keychain (macOS Keychain, Windows Credential Manager, libsecret on Linux, KWallet, etc.); requires `pip install popolaloom[credentials]`. |
+| 4 | Missing | n/a | Returns `None`; the CLI surfaces a remediation message naming all three slots. |
+
+**Stable contract (v0.9.x)**:
+
+- The resolver is the **only** supported path for reading the API key
+  in PopolaLoom code; new call sites MUST go through it (CI lint
+  pending in v0.9.x). Direct `os.environ.get("CURSOR_API_KEY")` reads
+  in v0.9.x patches are deprecated for new code.
+- The keyring service identifier `popolaloom.cursor` and username slot
+  `default` are stable; changing either would orphan operator-stored
+  secrets.
+- `popolaloom.credentials.REDACTION_PLACEHOLDER` (`<REDACTED:CURSOR_API_KEY>`)
+  is the canonical placeholder — third parties grep for it.
+- `CredentialStatus.to_json_dict()` keys (`configured`, `source`,
+  `backend_name`, `fingerprint`, `keyring_available`) are part of the
+  `popola auth cursor status --json` stable schema.
+- Fingerprint format: first **12 hex chars** of SHA-256 of the
+  stripped secret. Stable across the v0.9.x line so operators can
+  compare values across `popola auth cursor status` invocations.
+
+**Out-of-scope (v0.9.x)**: alternative backends (e.g. HashiCorp Vault,
+AWS Secrets Manager, GCP Secret Manager) are not exposed in v0.9.x and
+remain implementation detail of the resolver if introduced. The
+exception escape hatch is the `override=` kwarg, which is the
+public-API-but-not-CLI-exposed test seam.
+
+**Concrete example** (status JSON envelope shape — pinned by
+[`tests/cli/test_auth_cmd.py`](../tests/cli/test_auth_cmd.py)):
+
+```jsonc
+{
+  "configured": true,
+  "source": "keyring",                  // env / keyring / override / none
+  "backend_name": "macOS Keychain",     // best-effort label
+  "fingerprint": "9c1f3a4b2e8d",        // 12 hex chars of sha256(value)
+  "keyring_available": true
+}
+```
 
 ---
 
@@ -264,7 +318,7 @@ SemVer-stable list above.
 **Why experimental**: The verb shipped late in the v0.8.8 cycle as a
 deviation from default — Q-C-1's locked default was *defer to v0.9*; the
 user opted to ship in v0.8.8 as a deliberate偏离默认 (see
-[v0.8.8 RELEASE_NOTES](../RELEASE_NOTES.md) — `popola cloud runs` —
+[CHANGELOG.md §0.8.8](../CHANGELOG.md) — `popola cloud runs` —
 list cloud-agent run history (Q-C-1 偏离默认)). One additional minor
 of usage is required before its column / pagination contracts are
 locked. The wrapping sub-app `popola cloud` itself is stable
@@ -325,7 +379,7 @@ popola status cursor-fix-bug-3a7f9c1d --verbose --json | jq .verbose
 
 **Why experimental**: Per Q-C-4 the v0.8.8 default was flipped from the
 roadmap default ("require human confirm") to `mode = "auto"` (see
-[v0.8.8 RELEASE_NOTES](../RELEASE_NOTES.md) — Behavior change callout).
+[CHANGELOG.md §0.8.8](../CHANGELOG.md) — Behavior change callout).
 The defaults — `repo_allowlist = []`, `prompt_size_cap_bytes = 16384`,
 `idempotency_window_s = 3600` — may *tighten* in v0.9.x patches if real
 operator data shows they're too permissive. The three locked-true
@@ -368,7 +422,7 @@ upstream SSE schema and may add / rename fields as Cursor evolves.
 NDJSON envelope shape (`{specversion, id, source, type, time, data}`),
 the `cloud.run_started` / `cloud.run_finished` / `cloud.queue_*` /
 `cloud.busy_*` brackets emitted by popolad code (NOT synthesised from
-SSE — see [v0.8.8 RELEASE_NOTES](../RELEASE_NOTES.md) Multi-run section),
+SSE — see [CHANGELOG.md §0.8.8](../CHANGELOG.md) Multi-run section),
 and the dedup quintuple-now-sextuple identity
 `(task_id, run_id, run_index, stream_session_id, sse_id, seq)`.
 
@@ -503,7 +557,8 @@ full historical archive lives in [`CHANGELOG.md`](../CHANGELOG.md).
 | `--cli=cursor-cloud` adapter, cloud HITL bridge (`POST /hitl/cloud/*`) | v0.8.5 | [`CHANGELOG.md` §[0.8.5]](../CHANGELOG.md) — *Cursor Cloud Agent integration shipped as sibling adapter `--cli=cursor-cloud`*. |
 | SSE ingest, `runtime` column in `popola list`, `cloud.sse.*` event namespace, `--no-stream` escape hatch, 16-entry bilingual error catalog, manual cloud-smoke CI lane | v0.8.6 | [`CHANGELOG.md` §[0.8.6]](../CHANGELOG.md) — *Cloud observability + SSE ingest*. |
 | `popolaloom_cloud_hitl_request` MCP tool, `cloud_hitl_request_card_v1` Lark card, `[hitl.cloud]` config, idempotency dedup, mis-route defense at the answer boundary | v0.8.7 | [`CHANGELOG.md` §[0.8.7]](../CHANGELOG.md) — *Cloud HITL production*. |
-| Multi-run support (`POST /v1/agents/{id}/runs`), `cloud.run_started/finished` brackets, `popola status --verbose` cost surface, `[cloud.backoff]` + `[cloud.busy_strategy]` configs, `[cloud.relay]` + `popola relay`, `popola cloud runs` subcommand | v0.8.8 | [`RELEASE_NOTES.md`](../RELEASE_NOTES.md) (current — overwritten per v0.7.0+ policy) — *Multi-run + Cost + Quota + Auto Relay*. |
+| Multi-run support (`POST /v1/agents/{id}/runs`), `cloud.run_started/finished` brackets, `popola status --verbose` cost surface, `[cloud.backoff]` + `[cloud.busy_strategy]` configs, `[cloud.relay]` + `popola relay`, `popola cloud runs` subcommand | v0.8.8 | [`CHANGELOG.md` §[0.8.8]](../CHANGELOG.md) — *Multi-run + Cost + Quota + Auto Relay*. |
+| `popola cloud worker {debug,start,status,handoff}` self-hosted worker handoff | v0.9.1 | [`RELEASE_NOTES.md`](../RELEASE_NOTES.md) (current release) and [`CHANGELOG.md` §[0.9.1]](../CHANGELOG.md) — *Self-hosted worker handoff*. |
 
 ---
 

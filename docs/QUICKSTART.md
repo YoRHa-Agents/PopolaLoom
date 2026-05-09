@@ -8,7 +8,9 @@ translation_url: /zh/QUICKSTART.html
 
 # PopolaLoom — 5-minute Quickstart
 
-> Get from `pip install` to "task dispatched and visible in `popola list`" in five minutes. For the full reference, see [`USER_GUIDE.md`](USER_GUIDE.md).
+<!-- updated: 2026-05-09 -->
+
+> Get from install to "task dispatched and visible in `popola list`" in five minutes. For the full reference, see [`USER_GUIDE.md`](USER_GUIDE.md).
 
 ## Prerequisites
 
@@ -20,17 +22,24 @@ translation_url: /zh/QUICKSTART.html
 ## Step 1 — Install popolaloom
 
 ```bash
-pip install popolaloom
+# Current v0.9.1 release.
+# PyPI promotion is deferred, so use the GitHub tag for the v0.9.x surface.
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1
+# OR from this repo checkout:
+./install.sh install --from=git
+
 # OR from a clone (dev):
 git clone https://github.com/YoRHa-Agents/PopolaLoom.git
 cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.4
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.1
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.8.4"
+popola version                       # → "popolaloom 0.9.1"
 ```
+
+If you intentionally want the latest PyPI-published stable line, `pip install popolaloom` still works, but it currently resolves to the previous v0.8.x line until the `BL-v0.9.x-PyPI` promotion patch lands.
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
 
@@ -120,14 +129,14 @@ The 4 subsystems audited:
 
 ```bash
 bash examples/quickstart.sh
-# [quickstart] Step 0/6: Skill installer dry-run (NEW in v0.5.0)
+# [quickstart] Step 0/6: Skill installer dry-run
 # [quickstart] Step 1/6: starting popolad in POPOLA_HOME=...
 # [quickstart] Step 2/6: dispatching echo task via cursor adapter
 # [quickstart] Step 3/6: confirming task appears in popola list
 # [quickstart] Step 4/6: querying popola status ...
-# [quickstart] Step 5/6: running popola doctor (aggregate health, NEW in v0.5.0)
+# [quickstart] Step 5/6: running popola doctor
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.8.4 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.9.1 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.
@@ -138,6 +147,9 @@ The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pol
 - **Walkthroughs + example outputs**: [`DEMO.md`](DEMO.md)
 - **Latest release notes**: [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
 - **Historical archive (every version)**: [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
+- **Cloud-only bootstrap**: run `./cloud-quickstart.sh` after configuring a Cursor API key (env var OR keyring — see next bullet).
+- **Secure Cursor API key storage (v0.9.2+)**: `pip install 'popolaloom[credentials]'` then `popola auth cursor set` to persist the key in the OS keyring instead of `export`-ing it in every shell. `popola auth cursor status` shows resolver state without revealing the value. See [`USER_GUIDE.md#credentials--secure-storage-v092`](USER_GUIDE.md#credentials--secure-storage-v092).
+- **Self-hosted worker handoff**: use [`USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091`](USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091) when you want this machine registered in Cursor Cloud Agents UI; use `--cli=cursor-cloud` instead when you need a popola-tracked task id.
 - **Want an LLM to install for you?** Open Cursor or Claude Code and say `install popola` — the `install-popola` Skill (v0.7.0+) handles it.
 - **Hands-off envelope（v0.8.0+ NEW）**: Every dispatch persists a Markdown front-matter envelope under `.local/.agent/handoff/<id>.md`; replay any prior dispatch via `popola dispatch --replay <handoff_id>`. See [`USER_GUIDE.md#hands-off-envelope`](USER_GUIDE.html#hands-off-envelope).
 

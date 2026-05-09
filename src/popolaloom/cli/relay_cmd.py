@@ -928,7 +928,14 @@ def relay_command(  # noqa: C901, PLR0912, PLR0913, PLR0915 — the policy gate 
         )
         raise typer.Exit(code=_EXIT_CLOUD_API_ERROR) from exc
 
-    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+    # v0.9.2: route through the credential resolver so relay accepts
+    # OS-keyring-stored credentials in addition to the historical
+    # CURSOR_API_KEY env path. The audit row records "missing_api_key"
+    # uniformly when no slot answers (the audit log never sees the
+    # secret value either way).
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    api_key = resolve_cursor_api_key()
     if not api_key:
         try:
             audit_writer.append(
@@ -949,13 +956,21 @@ def relay_command(  # noqa: C901, PLR0912, PLR0913, PLR0915 — the policy gate 
                     cloud_error={
                         "status_code": None,
                         "error_code": "missing_api_key",
-                        "error_message_first_500": "CURSOR_API_KEY env var unset",
+                        "error_message_first_500": (
+                            "no Cursor API key configured "
+                            "(set CURSOR_API_KEY env or run "
+                            "`popola auth cursor set`)"
+                        ),
                     },
                 )
             )
         except OSError as exc:
             logger.warning("audit write failed (no-api-key path): %s", exc)
-        typer.echo("error: CURSOR_API_KEY env var is unset", err=True)
+        typer.echo(
+            "error: no Cursor API key configured "
+            "(set CURSOR_API_KEY env or run `popola auth cursor set`)",
+            err=True,
+        )
         raise typer.Exit(code=_EXIT_CLOUD_AUTH_ERROR)
 
     cloud_payload = {

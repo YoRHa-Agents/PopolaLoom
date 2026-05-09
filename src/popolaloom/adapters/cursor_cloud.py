@@ -25,7 +25,6 @@ from __future__ import annotations
 import base64
 import json
 import logging
-import os
 import random
 import re
 import threading
@@ -1862,9 +1861,17 @@ class CursorCloudAdapter:
         return [*CLOUD_BUILD_COMMAND_MARKER, encoded]
 
     def is_available(self) -> bool:
-        """True iff :envvar:`CURSOR_API_KEY` is set and non-empty."""
-        key = os.environ.get(_CURSOR_API_KEY_ENV, "")
-        return bool(key.strip())
+        """True iff a Cursor API key is resolvable.
+
+        Resolves through :func:`popolaloom.credentials.resolve_cursor_api_key`
+        so the answer reflects every documented precedence slot
+        (explicit override > env var > OS keyring). Backward-compatible
+        with the historical ``CURSOR_API_KEY`` env-var path —
+        ``resolve_cursor_api_key`` consults the env var as precedence #2.
+        """
+        from popolaloom.credentials import resolve_cursor_api_key
+
+        return resolve_cursor_api_key() is not None
 
 
 def basic_auth_header_value(api_key: str) -> str:
@@ -1874,6 +1881,47 @@ def basic_auth_header_value(api_key: str) -> str:
     """
     token = base64.b64encode(f"{api_key}:".encode()).decode("ascii")
     return f"Basic {token}"
+
+
+def redact_cloud_marker_cmd(cmd: list[str]) -> list[str]:
+    """Return a copy of ``cmd`` with any embedded ``api_key`` value redacted.
+
+    v0.9.2: the cursor-cloud marker payload (built by
+    :meth:`CursorCloudAdapter.build_command`) is a JSON blob that may
+    legitimately contain ``extra.api_key`` (when an operator or test
+    passed ``--cli-flag api_key=...``). Persisting that blob into
+    ``TaskHandle.cmd``, the NDJSON event log, or the ArkTower SQLite
+    row would leak the secret into surfaces ``popola list`` /
+    ``popola status`` / ``popola attach`` happily echo back.
+
+    This helper walks the marker payload and replaces the ``api_key``
+    string with the redaction placeholder, preserving every other key
+    so debug / replay flows keep working. Non-cloud commands and
+    malformed payloads pass through unchanged (No Silent Failures —
+    nothing to redact, no error to raise).
+
+    Returns a fresh list; the input is not mutated.
+    """
+    if len(cmd) < 3 or cmd[:2] != CLOUD_BUILD_COMMAND_MARKER:
+        return list(cmd)
+    raw_payload = cmd[2]
+    if not isinstance(raw_payload, str):
+        return list(cmd)
+    try:
+        payload = json.loads(raw_payload)
+    except (TypeError, ValueError):
+        return list(cmd)
+    if not isinstance(payload, dict):
+        return list(cmd)
+    extra = payload.get("extra")
+    if not isinstance(extra, dict) or "api_key" not in extra:
+        return list(cmd)
+    sanitized_extra = dict(extra)
+    sanitized_extra["api_key"] = "<REDACTED:CURSOR_API_KEY>"
+    sanitized_payload = dict(payload)
+    sanitized_payload["extra"] = sanitized_extra
+    redacted_json = json.dumps(sanitized_payload, sort_keys=True)
+    return [cmd[0], cmd[1], redacted_json]
 
 
 def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:

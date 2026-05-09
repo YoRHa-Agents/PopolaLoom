@@ -92,6 +92,7 @@ def _register_subcommand_groups() -> None:
     subcommand group whose first verb is ``runs`` — list cloud-agent
     run history per ``runs-subcommand-spec.md`` §2.2.
     """
+    from popolaloom.cli.auth_cmd import app as auth_app
     from popolaloom.cli.cloud_cmd import app as cloud_app
     from popolaloom.cli.doctor_cmd import doctor_command
     from popolaloom.cli.eval import app as eval_app
@@ -122,6 +123,11 @@ def _register_subcommand_groups() -> None:
         cloud_app,
         name="cloud",
         help="Cloud-agent (cursor-cloud runtime) introspection verbs.",
+    )
+    app.add_typer(
+        auth_app,
+        name="auth",
+        help="Manage credentials (Cursor API key keyring storage, v0.9.2+).",
     )
     app.command(name="relay")(relay_command)
     app.command(name="doctor")(doctor_command)
@@ -1026,14 +1032,22 @@ def _maybe_spawn_cloud_sse_thread(
         )
         return None
 
-    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+    # v0.9.2: route through the resolver so SSE attach honours OS
+    # keyring storage in addition to the historical env-var path. The
+    # downgrade to poll-only when no slot answers preserves backward
+    # compatibility with the v0.8.6+ stderr one-liner contract.
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    api_key = resolve_cursor_api_key()
     if not api_key:
         logger.warning(
-            "cloud SSE skipped for task_id=%s: CURSOR_API_KEY env var unset",
+            "cloud SSE skipped for task_id=%s: no Cursor API key configured",
             task_id,
         )
         typer.echo(
-            "[cloud sse] CURSOR_API_KEY not set; using poll-only view",
+            "[cloud sse] no Cursor API key configured "
+            "(set CURSOR_API_KEY env or run `popola auth cursor set`); "
+            "using poll-only view",
             err=True,
         )
         return None
