@@ -2,7 +2,8 @@
 
 Hermetic — every test monkeypatches the three indirection points in
 :mod:`popolaloom.cli.cloud_worker_cmd` (``_resolve_agent_binary``,
-``_run_subprocess``, ``_fetch_management_endpoint``) so no real
+``_run_subprocess``, ``_fetch_management_endpoint`` and process detection)
+so no real
 subprocess is spawned and no real network IO occurs.
 
 Coverage summary (mirrors v0.9.1 plan §"Coverage targets"):
@@ -18,6 +19,8 @@ Coverage summary (mirrors v0.9.1 plan §"Coverage targets"):
 - ``handoff`` emits both Markdown and JSON envelopes, requires either
   ``--worker-id`` or ``--worker-url``, and notes that no popola task id
   is created.
+- ``dispatch`` POSTs a ``cursor-cloud`` task to ``popolad`` by default,
+  with ``--print-only`` / ``--dry-run`` preserving preview-only output.
 - Helper unit coverage for ``_validate_management_addr`` /
   ``_validate_label`` / ``_parse_worker_metrics`` /
   ``_format_quoted_argv`` so each pure helper has its own failure
@@ -75,6 +78,11 @@ def fake_agent_binary(monkeypatch: pytest.MonkeyPatch) -> str:
     fake_path = "/usr/local/bin/agent-test"
     monkeypatch.setattr(
         cloud_worker_cmd, "_resolve_agent_binary", lambda: fake_path
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [],
     )
     return fake_path
 
@@ -206,6 +214,62 @@ def test_format_quoted_argv_quotes_spaces() -> None:
         ["agent", "worker", "start", "--name", "popolaloom devpath"]
     )
     assert "'popolaloom devpath'" in rendered
+
+
+def test_default_worker_name_includes_repo_and_stable_hash(tmp_path: Path) -> None:
+    """Generated worker names are deterministic and workspace-aware."""
+    workspace = tmp_path / "Popola Loom!"
+    rendered = cloud_worker_cmd._default_worker_name(workspace)
+    rendered_again = cloud_worker_cmd._default_worker_name(workspace)
+    assert rendered == rendered_again
+    assert rendered.startswith("popolaloom-Popola-Loom-")
+    assert len(rendered.rsplit("-", 1)[-1]) == 8
+
+
+def test_parse_worker_start_cmdline_extracts_metadata(tmp_path: Path) -> None:
+    """``agent worker start`` cmdlines expose worker dir, name, and management addr."""
+    argv = [
+        "/usr/local/bin/cursor-agent",
+        "worker",
+        "start",
+        f"--worker-dir={tmp_path}",
+        "--name",
+        "popolaloom-PopolaLoom-deadbeef",
+        "--management-addr=127.0.0.1:39231",
+    ]
+    parsed = cloud_worker_cmd._parse_worker_start_cmdline(1234, argv)
+    assert parsed is not None
+    assert parsed.pid == 1234
+    assert parsed.worker_dir == tmp_path.resolve()
+    assert parsed.name == "popolaloom-PopolaLoom-deadbeef"
+    assert parsed.management_addr == "127.0.0.1:39231"
+
+
+def test_detect_running_workers_matches_resolved_worker_dir(tmp_path: Path) -> None:
+    """The procfs scanner matches normalized ``--worker-dir`` values."""
+    worker_dir = tmp_path / "repo"
+    worker_dir.mkdir()
+    proc_root = tmp_path / "proc"
+    (proc_root / "100").mkdir(parents=True)
+    (proc_root / "200").mkdir()
+    (proc_root / "abc").mkdir()
+    (proc_root / "100" / "cmdline").write_bytes(
+        b"agent\0worker\0start\0--worker-dir\0"
+        + str(worker_dir).encode()
+        + b"\0--name\0popolaloom-repo-12345678\0"
+    )
+    (proc_root / "200" / "cmdline").write_bytes(
+        b"agent\0worker\0debug\0--worker-dir\0"
+        + str(worker_dir).encode()
+        + b"\0"
+    )
+    matches = cloud_worker_cmd._detect_running_workers_for_dir(
+        worker_dir,
+        proc_root=proc_root,
+    )
+    assert len(matches) == 1
+    assert matches[0].pid == 100
+    assert matches[0].name == "popolaloom-repo-12345678"
 
 
 def test_extract_worker_id_from_url_fragment_form() -> None:
@@ -455,6 +519,39 @@ def test_worker_start_dry_run_does_not_spawn(
     assert "dryrun-test" in out
 
 
+def test_worker_start_without_name_uses_workspace_default(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Omitting ``--name`` passes the generated workspace-aware name upstream."""
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: captured.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    argv = captured[0]
+    name_idx = argv.index("--name")
+    assert argv[name_idx + 1].startswith(
+        f"popolaloom-{isolated_home.name}-"
+    )
+
+
 def test_worker_start_pool_without_api_key_exits_77(
     runner: CliRunner,
     isolated_home: Path,
@@ -486,6 +583,96 @@ def test_worker_start_pool_without_api_key_exits_77(
     assert spawned == []
     out = _combined_output(result)
     assert "service-account API key" in out
+
+
+def test_worker_start_reuses_existing_workspace_worker(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default ``start`` exits 0 without spawning when the workspace worker exists."""
+    spawned: list[Any] = []
+    worker = cloud_worker_cmd.LocalWorkerProcess(
+        pid=4242,
+        worker_dir=isolated_home.resolve(),
+        name="popolaloom-PopolaLoom-deadbeef",
+        management_addr="127.0.0.1:39231",
+        argv=("agent", "worker", "start"),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [worker],
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert spawned == []
+    out = _combined_output(result)
+    assert "Reusing existing Cursor self-hosted worker" in out
+    assert "pid=4242" in out
+    assert "name=popolaloom-PopolaLoom-deadbeef" in out
+
+
+def test_worker_start_allow_duplicate_bypasses_reuse(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--allow-duplicate`` preserves an explicit second-start escape hatch."""
+    captured: list[list[str]] = []
+    worker = cloud_worker_cmd.LocalWorkerProcess(
+        pid=4242,
+        worker_dir=isolated_home.resolve(),
+        name="existing",
+        management_addr=None,
+        argv=("agent", "worker", "start"),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [worker],
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: captured.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--name",
+            "second-worker",
+            "--allow-duplicate",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert len(captured) == 1
+    assert "second-worker" in captured[0]
 
 
 def test_worker_start_invalid_management_addr_exits_2(
@@ -553,6 +740,331 @@ def test_worker_start_my_machines_runs_subprocess(
     argv = captured[0]
     assert "--pool" not in argv
     assert "env=dev" in argv
+
+
+def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Default dispatch POSTs a cursor-cloud body targeting the worker name."""
+    worker = cloud_worker_cmd.LocalWorkerProcess(
+        pid=4242,
+        worker_dir=isolated_home.resolve(),
+        name="popolaloom-PopolaLoom-deadbeef",
+        management_addr="127.0.0.1:39231",
+        argv=("agent", "worker", "start"),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [worker],
+    )
+    captured: list[dict[str, Any]] = []
+
+    def fake_post(body: dict[str, Any]) -> httpx.Response:
+        captured.append(body)
+        return httpx.Response(200, json={"task_id": "cursor-cloud-123"})
+
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        fake_post,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            "--repo-url",
+            "https://github.com/acme/repo",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert _combined_output(result).strip() == "cursor-cloud-123"
+    assert captured == [
+        {
+            "cli": "cursor-cloud",
+            "prompt": "fix the tests",
+            "cwd": str(isolated_home.resolve()),
+            "extra": {
+                "worker_name": "popolaloom-PopolaLoom-deadbeef",
+                "repo_url": "https://github.com/acme/repo",
+                "starting_ref": "main",
+                "model": "composer-2",
+            },
+        }
+    ]
+
+
+def test_worker_dispatch_daemon_down_exits_nonzero(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Connection failure names ``popolad`` and exits non-zero."""
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [],
+    )
+
+    def boom(_body: dict[str, Any]) -> httpx.Response:
+        raise httpx.ConnectError("connection refused")
+
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        boom,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            "--pr-url",
+            "https://github.com/acme/repo/pull/1",
+        ],
+    )
+    assert result.exit_code == cloud_worker_cmd._EXIT_UNREACHABLE
+    out = _combined_output(result)
+    assert "popolad not running" in out
+
+
+def test_worker_dispatch_json_prints_daemon_payload(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--json`` prints the daemon response payload for direct dispatch."""
+    worker = cloud_worker_cmd.LocalWorkerProcess(
+        pid=4242,
+        worker_dir=isolated_home.resolve(),
+        name="popolaloom-json-worker",
+        management_addr=None,
+        argv=("agent", "worker", "start"),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [worker],
+    )
+
+    def fake_post(_body: dict[str, Any]) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={"task_id": "cursor-cloud-json", "state": "queued"},
+        )
+
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        fake_post,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            "--repo-url",
+            "https://github.com/acme/repo",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert json.loads(_combined_output(result)) == {
+        "task_id": "cursor-cloud-json",
+        "state": "queued",
+    }
+
+
+def test_worker_dispatch_print_only_does_not_call_daemon(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``--print-only`` preserves side-effect-free command preview mode."""
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [],
+    )
+
+    def fail_if_called(_body: dict[str, Any]) -> httpx.Response:
+        raise AssertionError("print-only must not POST to popolad")
+
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        fail_if_called,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            "--pr-url",
+            "https://github.com/acme/repo/pull/1",
+            "--print-only",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    out = _combined_output(result)
+    assert "No running worker found" in out
+    assert "popola dispatch" in out
+    assert "--cli=cursor-cloud" in out
+    assert "pr_url=https://github.com/acme/repo/pull/1" in out
+    assert "starting_ref=main" in out
+
+
+def test_worker_dispatch_print_only_json_uses_generated_name_when_no_worker(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """JSON preview still exposes deterministic fallback routing."""
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_detect_running_workers_for_dir",
+        lambda worker_dir: [],
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            "--pr-url",
+            "https://github.com/acme/repo/pull/1",
+            "--print-only",
+            "--json",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    payload = json.loads(_combined_output(result))
+    assert payload["worker"]["found"] is False
+    assert payload["worker"]["name"].startswith(
+        f"popolaloom-{isolated_home.name}-"
+    )
+    assert "pr_url=https://github.com/acme/repo/pull/1" in payload["command"]
+
+
+@pytest.mark.parametrize(
+    "response, expected",
+    [
+        (httpx.Response(404, json={"detail": "missing adapter"}), "unknown cli"),
+        (httpx.Response(400, json={"detail": "bad extra"}), "dispatch failed"),
+        (httpx.Response(503, text="upstream unavailable"), "unexpected status 503"),
+        (httpx.Response(200, json={"state": "queued"}), "missing task_id"),
+        (httpx.Response(200, json=["not", "an", "object"]), "must be a JSON object"),
+    ],
+)
+def test_dispatch_to_popolad_error_responses_are_explicit(
+    response: httpx.Response,
+    expected: str,
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """Non-happy daemon responses fail loudly with actionable messages."""
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        lambda body: response,
+    )
+
+    with pytest.raises(typer.Exit) as exc_info:
+        cloud_worker_cmd._dispatch_to_popolad(
+            {"cli": "cursor-cloud", "prompt": "x", "extra": {}}
+        )
+
+    assert exc_info.value.exit_code == cloud_worker_cmd._EXIT_UNREACHABLE
+    assert expected in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "args, expected",
+    [
+        (
+            [
+                "--repo-url",
+                "https://github.com/acme/repo",
+                "--pr-url",
+                "https://github.com/acme/repo/pull/1",
+            ],
+            "pass --repo-url OR --pr-url",
+        ),
+        ([], "pass either --repo-url or --pr-url"),
+        (
+            ["--repo-url", "https://github.com/acme/repo", "--starting-ref", ""],
+            "--starting-ref must be non-empty",
+        ),
+        (
+            ["--repo-url", "https://github.com/acme/repo", "--model", ""],
+            "--model must be non-empty",
+        ),
+    ],
+)
+def test_worker_dispatch_rejects_invalid_args(
+    runner: CliRunner,
+    isolated_home: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    args: list[str],
+    expected: str,
+) -> None:
+    """Argument validation fails before daemon dispatch."""
+    called: list[dict[str, Any]] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_post_popolad_dispatch_request",
+        lambda body: called.append(body) or httpx.Response(200, json={"task_id": "x"}),
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "dispatch",
+            "fix the tests",
+            "--worker-dir",
+            str(isolated_home),
+            *args,
+        ],
+    )
+
+    assert result.exit_code == cloud_worker_cmd._EXIT_INVALID_ARGS
+    assert expected in _combined_output(result)
+    assert called == []
 
 
 # ---------------------------------------------------------------------------
@@ -979,12 +1491,12 @@ def test_worker_subapp_registered_under_cloud(runner: CliRunner) -> None:
     assert "worker" in _combined_output(result)
 
 
-def test_worker_help_text_lists_four_verbs(runner: CliRunner) -> None:
-    """``popola cloud worker --help`` exposes debug / start / status / handoff."""
+def test_worker_help_text_lists_worker_verbs(runner: CliRunner) -> None:
+    """``popola cloud worker --help`` exposes every worker verb."""
     from popolaloom.cli.main import app as root_app
 
     result = runner.invoke(root_app, ["cloud", "worker", "--help"])
     assert result.exit_code == 0, _combined_output(result)
     out = _combined_output(result)
-    for verb in ("debug", "start", "status", "handoff"):
+    for verb in ("debug", "start", "status", "handoff", "dispatch"):
         assert verb in out, f"missing `{verb}` verb in:\n{out}"

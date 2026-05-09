@@ -1037,6 +1037,8 @@ class CloudCursorClient:
         skip_reviewer_request: bool = False,
         pr_url: str | None = None,
         env_vars: dict[str, str] | None = None,
+        use_private_worker: bool = False,
+        labels: dict[str, str] | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """POST ``/v1/agents`` — launch a cloud agent; returns parsed JSON body."""
@@ -1065,6 +1067,12 @@ class CloudCursorClient:
 
         if env_vars:
             payload["envVars"] = dict(env_vars)
+
+        if use_private_worker:
+            payload["usePrivateWorker"] = True
+
+        if labels:
+            payload["labels"] = dict(labels)
 
         return self._request_json(
             "POST",
@@ -1844,6 +1852,12 @@ class CursorCloudAdapter:
         - ``skip_reviewer_request`` (``bool``, default ``False``)
         - ``pr_url`` (``str``, optional) — PR URL (``repos[0].prUrl``)
         - ``env_vars`` (``dict[str, str]``, optional)
+        - ``use_private_worker`` (``bool``, default ``False``) — request Cursor
+          self-hosted / local worker routing (REST ``usePrivateWorker``)
+        - ``labels`` (``dict[str, str]``, optional) — worker routing labels
+        - ``worker_name`` / ``machine_name`` / ``pool_name`` (``str``, optional)
+          — convenience aliases merged into labels as ``worker`` / ``machine`` /
+          ``pool`` and imply ``use_private_worker=true``
         - ``timeout_s`` (``float``, default ``60.0``)
         - ``api_key`` (``str``, optional) — overrides :envvar:`CURSOR_API_KEY`
 
@@ -1981,6 +1995,65 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("cursor-cloud: env_vars must be dict[str, str] only")
             env_vars = dict(ev)
 
+    use_private_worker_explicit = "use_private_worker" in extra
+    if use_private_worker_explicit:
+        raw_use_private_worker = extra["use_private_worker"]
+        if not isinstance(raw_use_private_worker, bool):
+            raise ValueError(
+                "cursor-cloud: use_private_worker must be bool, "
+                f"got {type(raw_use_private_worker).__name__}"
+            )
+        use_private_worker = raw_use_private_worker
+    else:
+        use_private_worker = False
+
+    labels: dict[str, str] = {}
+    if "labels" in extra:
+        raw_labels = extra["labels"]
+        if raw_labels is not None:
+            if not isinstance(raw_labels, dict):
+                raise ValueError(
+                    "cursor-cloud: labels must be dict[str, str], "
+                    f"got {type(raw_labels).__name__}"
+                )
+            if not all(
+                isinstance(k, str) and isinstance(v, str)
+                for k, v in raw_labels.items()
+            ):
+                raise ValueError("cursor-cloud: labels must be dict[str, str] only")
+            labels = dict(raw_labels)
+
+    convenience_labels = {
+        "worker_name": "worker",
+        "machine_name": "machine",
+        "pool_name": "pool",
+    }
+    routing_requested = bool(labels)
+    for extra_key, label_key in convenience_labels.items():
+        if extra_key not in extra:
+            continue
+        raw_value = extra[extra_key]
+        if not isinstance(raw_value, str) or not raw_value.strip():
+            raise ValueError(f"cursor-cloud: {extra_key} must be a non-empty str")
+        value = raw_value.strip()
+        routing_requested = True
+        if label_key in labels and labels[label_key] != value:
+            raise ValueError(
+                "cursor-cloud: "
+                f"{extra_key}={value!r} conflicts with labels[{label_key!r}]="
+                f"{labels[label_key]!r}"
+            )
+        labels[label_key] = value
+
+    if routing_requested:
+        if use_private_worker_explicit and use_private_worker is False:
+            raise ValueError(
+                "cursor-cloud: use_private_worker=false cannot be combined with "
+                "labels, worker_name, machine_name, or pool_name; self-hosted "
+                "worker routing requires use_private_worker=true"
+            )
+        use_private_worker = True
+
     if "timeout_s" in extra:
         ts = extra["timeout_s"]
         if not isinstance(ts, (int, float)):
@@ -2007,6 +2080,7 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         "skip_reviewer_request": skip_reviewer_request,
         "starting_ref": starting_ref,
         "timeout_s": timeout_s,
+        "use_private_worker": use_private_worker,
         "work_on_current_branch": work_on_current_branch,
     }
     if repo_url is not None:
@@ -2015,6 +2089,8 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         out["pr_url"] = pr_url
     if env_vars is not None:
         out["env_vars"] = env_vars
+    if labels:
+        out["labels"] = labels
     if api_key is not None:
         out["api_key"] = api_key
     return out

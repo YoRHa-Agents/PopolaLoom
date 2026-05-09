@@ -96,6 +96,75 @@ def test_normalize_cloud_extra_env_vars_values_must_be_str() -> None:
         )
 
 
+def test_normalize_cloud_extra_accepts_private_worker_convenience_labels() -> None:
+    out = _normalize_cloud_extra(
+        {
+            "repo_url": "https://github.com/o/r",
+            "worker_name": "ci-worker-1",
+            "pool_name": "popolaloom",
+        }
+    )
+    assert out["use_private_worker"] is True
+    assert out["labels"] == {"worker": "ci-worker-1", "pool": "popolaloom"}
+
+
+def test_build_command_merges_private_worker_labels_via_adapter() -> None:
+    adapter = CursorCloudAdapter()
+    marker = adapter.build_command(
+        "txt",
+        extra={
+            "repo_url": "https://github.com/o/r",
+            "labels": {"team": "infra"},
+            "machine_name": "devbox-7",
+        },
+    )
+    payload = json.loads(marker[2])
+    assert payload["extra"]["use_private_worker"] is True
+    assert payload["extra"]["labels"] == {
+        "team": "infra",
+        "machine": "devbox-7",
+    }
+
+
+def test_normalize_cloud_extra_rejects_private_worker_label_conflict() -> None:
+    with pytest.raises(ValueError, match="worker_name.*conflicts"):
+        _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "labels": {"worker": "explicit-worker"},
+                "worker_name": "other-worker",
+            }
+        )
+
+
+def test_normalize_cloud_extra_rejects_private_worker_disabled_with_labels() -> None:
+    with pytest.raises(ValueError, match="use_private_worker=false"):
+        _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "use_private_worker": False,
+                "labels": {"pool": "popolaloom"},
+            }
+        )
+
+
+@pytest.mark.parametrize(
+    "extra, match",
+    [
+        ({"use_private_worker": "yes"}, "use_private_worker must be bool"),
+        ({"labels": "pool=popolaloom"}, "labels must be dict"),
+        ({"labels": {"pool": 123}}, "labels must be dict\\[str, str\\] only"),
+        ({"worker_name": ""}, "worker_name must be a non-empty str"),
+    ],
+)
+def test_normalize_cloud_extra_rejects_private_worker_wrong_types(
+    extra: dict[str, object],
+    match: str,
+) -> None:
+    with pytest.raises(ValueError, match=match):
+        _normalize_cloud_extra({"repo_url": "https://github.com/o/r", **extra})
+
+
 def test_normalize_cloud_extra_timeout_s_must_be_numeric() -> None:
     with pytest.raises(ValueError, match="timeout_s must be int or float"):
         _normalize_cloud_extra({"repo_url": "https://github.com/o/r", "timeout_s": "60"})
@@ -119,6 +188,7 @@ def test_normalize_cloud_extra_optional_out_fields() -> None:
     assert "pr_url" not in repo_only
     assert "env_vars" not in repo_only
     assert "api_key" not in repo_only
+    assert repo_only["use_private_worker"] is False
 
     pr_only = _normalize_cloud_extra({"pr_url": "https://github.com/o/r/pull/1"})
     assert "pr_url" in pr_only

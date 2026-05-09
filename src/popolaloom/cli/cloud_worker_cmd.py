@@ -2,7 +2,8 @@
 
 Self-hosted Cursor worker handoff helpers — wraps the upstream ``agent
 worker`` CLI verbs (``debug`` / ``start``) and adds two PopolaLoom-only
-verbs (``status`` / ``handoff``) so operators on this machine can:
+verbs (``status`` / ``handoff``) plus a workspace-aware dispatch helper so
+operators on this machine can:
 
 1. ``popola cloud worker debug`` — preflight diagnostics that pass
    through to ``agent worker debug``.
@@ -16,19 +17,27 @@ verbs (``status`` / ``handoff``) so operators on this machine can:
    Agents handoff (URL + prompt) for the My Machines / dashboard flow,
    explicitly noting that no PopolaLoom task id is created until a real
    REST dispatch happens.
+5. ``popola cloud worker dispatch`` — directly POST to ``popolad`` with
+   ``cli=cursor-cloud`` extras that route to the current workspace worker
+   by ``worker_name`` (``--print-only`` / ``--dry-run`` keeps the preview
+   behavior).
 
 Design boundary (per v0.9.1 plan §"Design constraints"):
 
-- This command group is **not** a Cloud Agent dispatcher. ``agent
-  worker start`` registers this machine for browser-driven (or
-  trigger-surface-driven) Cloud Agent runs; the actual run is created
-  via the Cursor web UI / Slack / GitHub trigger / REST.
+- ``agent worker start`` registers this machine for browser-driven (or
+  trigger-surface-driven) Cloud Agent runs. ``worker dispatch`` is the
+  PopolaLoom-tracked REST path: it contacts ``popolad`` and asks the
+  ``cursor-cloud`` adapter to route to the detected workspace worker.
 - Pool mode requires a **service-account API key** (Enterprise);
   PopolaLoom refuses to launch a pool worker when ``CURSOR_API_KEY`` is
   unset (No Silent Failures).  Shared / "My Machines" workers happily
   inherit the user's browser-based ``agent login`` session.
 - All failure paths exit non-zero with a stderr message naming the
   exact missing prerequisite — never fall back to a different mode.
+- ``start`` is workspace-reuse-first: the default worker name includes
+  the repo/workspace name + stable path hash, and a running worker with
+  the same resolved ``--worker-dir`` is reused unless
+  ``--allow-duplicate`` is passed.
 
 The module's three indirection points (``_resolve_agent_binary``,
 ``_run_subprocess``, ``_fetch_management_endpoint``) are factored so
@@ -41,11 +50,15 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
+from collections.abc import Iterator
+from dataclasses import dataclass
+from hashlib import sha256
 from pathlib import Path
-from typing import Any, NoReturn
+from typing import Any, NoReturn, cast
 
 import httpx
 import typer
@@ -84,6 +97,12 @@ _DEFAULT_AGENT_BINARIES: tuple[str, ...] = ("agent", "cursor-agent")
 release of cursor-agent installs both names symlinked at the same path;
 older installs may only ship one or the other.  We accept either."""
 
+_WORKER_CMD_BASENAMES: frozenset[str] = frozenset({"agent", "cursor-agent"})
+"""Upstream worker binary basenames recognised by the /proc cmdline scanner."""
+
+_DEFAULT_PROC_ROOT: Path = Path("/proc")
+"""Linux procfs root used for duplicate-worker detection; injectable in tests."""
+
 _DEFAULT_HEALTH_TIMEOUT_S: float = 3.0
 """Per-request timeout when reading ``/healthz`` / ``/readyz`` /
 ``/metrics``.  The endpoints are loopback so latency is trivial; the
@@ -108,6 +127,17 @@ app = typer.Typer(
 # ── helpers (pure / monkey-patchable) ─────────────────────────────────────
 
 
+@dataclass(frozen=True, slots=True)
+class LocalWorkerProcess:
+    """Metadata extracted from a running local Cursor worker process."""
+
+    pid: int
+    worker_dir: Path
+    name: str | None
+    management_addr: str | None
+    argv: tuple[str, ...]
+
+
 def _resolve_agent_binary() -> str:
     """Return the absolute path to the ``agent`` (or ``cursor-agent``) CLI.
 
@@ -128,6 +158,26 @@ def _resolve_agent_binary() -> str:
         err=True,
     )
     raise typer.Exit(code=_EXIT_MISSING_AGENT_BINARY)
+
+
+def _resolve_worker_dir(worker_dir: Path) -> Path:
+    """Return the normalized absolute worker directory path."""
+    return worker_dir.expanduser().resolve(strict=False)
+
+
+def _sanitize_worker_name_component(value: str) -> str:
+    """Return an ASCII-safe worker-name component."""
+    ascii_value = value.encode("ascii", errors="ignore").decode("ascii")
+    sanitized = re.sub(r"[^A-Za-z0-9_.-]+", "-", ascii_value).strip("-._")
+    return sanitized or "workspace"
+
+
+def _default_worker_name(worker_dir: Path) -> str:
+    """Return a deterministic workspace-aware worker name for ``worker_dir``."""
+    resolved = _resolve_worker_dir(worker_dir)
+    repo_name = _sanitize_worker_name_component(resolved.name)
+    digest = sha256(str(resolved).encode("utf-8")).hexdigest()[:8]
+    return f"popolaloom-{repo_name}-{digest}"
 
 
 def _validate_management_addr(addr: str) -> tuple[str, int]:
@@ -195,6 +245,94 @@ def _validate_label(label: str) -> tuple[str, str]:
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
     return (key, value)
+
+
+def _extract_flag_value(argv: list[str], flag: str) -> str | None:
+    """Extract ``--flag value`` or ``--flag=value`` from ``argv``."""
+    for idx, token in enumerate(argv):
+        if token == flag:
+            if idx + 1 < len(argv):
+                return argv[idx + 1]
+            return None
+        prefix = f"{flag}="
+        if token.startswith(prefix):
+            return token[len(prefix) :]
+    return None
+
+
+def _parse_worker_start_cmdline(
+    pid: int,
+    argv: list[str],
+) -> LocalWorkerProcess | None:
+    """Parse a procfs cmdline into worker metadata when it is a worker start."""
+    if len(argv) < 3:
+        return None
+    executable = Path(argv[0]).name
+    if executable not in _WORKER_CMD_BASENAMES:
+        return None
+    if argv[1:3] != ["worker", "start"]:
+        return None
+    worker_dir_raw = _extract_flag_value(argv, "--worker-dir")
+    if worker_dir_raw is None:
+        return None
+    return LocalWorkerProcess(
+        pid=pid,
+        worker_dir=_resolve_worker_dir(Path(worker_dir_raw)),
+        name=_extract_flag_value(argv, "--name"),
+        management_addr=_extract_flag_value(argv, "--management-addr"),
+        argv=tuple(argv),
+    )
+
+
+def _iter_proc_cmdlines(
+    proc_root: Path = _DEFAULT_PROC_ROOT,
+) -> Iterator[tuple[int, list[str]]]:
+    """Yield ``(pid, argv)`` from Linux procfs; fail open when unavailable."""
+    try:
+        entries = list(proc_root.iterdir())
+    except OSError as exc:
+        logger.debug("worker detection: cannot read %s: %s", proc_root, exc)
+        return
+
+    for entry in entries:
+        if not entry.name.isdigit():
+            continue
+        cmdline_path = entry / "cmdline"
+        try:
+            raw = cmdline_path.read_bytes()
+        except OSError as exc:
+            logger.debug(
+                "worker detection: cannot read %s: %s",
+                cmdline_path,
+                exc,
+            )
+            continue
+        if not raw:
+            continue
+        argv = [
+            chunk.decode("utf-8", errors="replace")
+            for chunk in raw.split(b"\0")
+            if chunk
+        ]
+        if argv:
+            yield int(entry.name), argv
+
+
+def _detect_running_workers_for_dir(
+    worker_dir: Path,
+    *,
+    proc_root: Path = _DEFAULT_PROC_ROOT,
+) -> list[LocalWorkerProcess]:
+    """Return running local worker processes whose ``--worker-dir`` matches."""
+    target = _resolve_worker_dir(worker_dir)
+    matches: list[LocalWorkerProcess] = []
+    for pid, argv in _iter_proc_cmdlines(proc_root):
+        parsed = _parse_worker_start_cmdline(pid, argv)
+        if parsed is None:
+            continue
+        if parsed.worker_dir == target:
+            matches.append(parsed)
+    return matches
 
 
 def _build_debug_argv(
@@ -383,6 +521,149 @@ def _format_quoted_argv(argv: list[str]) -> str:
     return " ".join(shlex.quote(token) for token in argv)
 
 
+def _format_worker_reuse_message(worker: LocalWorkerProcess) -> str:
+    """Human-readable duplicate-worker reuse message."""
+    parts = [f"pid={worker.pid}"]
+    if worker.name:
+        parts.append(f"name={worker.name}")
+    if worker.management_addr:
+        parts.append(f"management_addr={worker.management_addr}")
+    parts.append(f"worker_dir={worker.worker_dir}")
+    return (
+        "Reusing existing Cursor self-hosted worker for this workspace; "
+        + ", ".join(parts)
+    )
+
+
+def _popolad_socket_path() -> Path:
+    """Resolve the local ``popolad`` UDS path without importing ``cli.main``."""
+    home = os.environ.get("POPOLA_HOME")
+    base = Path(home).expanduser().resolve() if home else Path.home() / ".popola"
+    return base / "popolad.sock"
+
+
+def _make_popolad_sync_client(socket_path: Path | None = None) -> httpx.Client:
+    """Construct a synchronous client for ``popolad``'s Unix socket."""
+    sock = socket_path or _popolad_socket_path()
+    transport = httpx.HTTPTransport(uds=str(sock))
+    return httpx.Client(
+        transport=transport,
+        base_url="http://popolad",
+        timeout=httpx.Timeout(connect=5.0, read=None, write=10.0, pool=10.0),
+    )
+
+
+def _post_popolad_dispatch_request(body: dict[str, Any]) -> httpx.Response:
+    """POST a dispatch body to ``popolad``; separated for hermetic tests."""
+    with _make_popolad_sync_client() as client:
+        return client.post("/dispatch", json=body)
+
+
+def _render_popolad_connect_error(exc: httpx.HTTPError) -> NoReturn:
+    """Print the friendly daemon-down message and exit non-zero."""
+    typer.echo(
+        "error: popolad not running, run `popola popolad start` to start it",
+        err=True,
+    )
+    logger.debug("popolad dispatch connect error: %r", exc)
+    raise typer.Exit(code=_EXIT_UNREACHABLE)
+
+
+def _dispatch_to_popolad(body: dict[str, Any]) -> dict[str, Any]:
+    """Send a dispatch request to ``popolad`` and return its JSON payload."""
+    try:
+        response = _post_popolad_dispatch_request(body)
+    except httpx.ConnectError as exc:
+        _render_popolad_connect_error(exc)
+
+    if response.status_code == 404:
+        typer.echo(
+            f"error: unknown cli={body.get('cli')!r}: {response.json().get('detail', '')}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+    if response.status_code == 400:
+        typer.echo(
+            f"error: dispatch failed: {response.json().get('detail', '')}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+    if response.status_code != 200:
+        typer.echo(
+            f"error: dispatch unexpected status {response.status_code}: {response.text}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+
+    payload_raw = response.json()
+    if not isinstance(payload_raw, dict):
+        typer.echo("error: dispatch response must be a JSON object", err=True)
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+    payload = cast(dict[str, Any], payload_raw)
+    if "task_id" not in payload:
+        typer.echo("error: dispatch response missing task_id", err=True)
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+    return payload
+
+
+def _build_workspace_worker_dispatch_body(
+    *,
+    prompt: str,
+    worker_dir: Path,
+    worker_name: str,
+    repo_url: str | None,
+    pr_url: str | None,
+    starting_ref: str,
+    model: str,
+) -> dict[str, Any]:
+    """Build the direct ``popolad`` dispatch body for ``cursor-cloud``."""
+    extra: dict[str, Any] = {
+        "worker_name": worker_name,
+        "starting_ref": starting_ref,
+        "model": model,
+    }
+    if repo_url is not None:
+        extra["repo_url"] = repo_url
+    if pr_url is not None:
+        extra["pr_url"] = pr_url
+    return {
+        "cli": "cursor-cloud",
+        "prompt": prompt,
+        "cwd": str(_resolve_worker_dir(worker_dir)),
+        "extra": extra,
+    }
+
+
+def _build_workspace_worker_dispatch_argv(
+    *,
+    prompt: str,
+    worker_dir: Path,
+    worker_name: str,
+    repo_url: str | None,
+    pr_url: str | None,
+    starting_ref: str,
+    model: str,
+) -> list[str]:
+    """Build the suggested ``popola dispatch --cli=cursor-cloud`` argv."""
+    argv = [
+        "popola",
+        "dispatch",
+        prompt,
+        "--cli=cursor-cloud",
+        "--cwd",
+        str(_resolve_worker_dir(worker_dir)),
+        "--cli-flag",
+        f"worker_name={worker_name}",
+    ]
+    if repo_url is not None:
+        argv.extend(["--cli-flag", f"repo_url={repo_url}"])
+    if pr_url is not None:
+        argv.extend(["--cli-flag", f"pr_url={pr_url}"])
+    argv.extend(["--cli-flag", f"starting_ref={starting_ref}"])
+    argv.extend(["--cli-flag", f"model={model}"])
+    return argv
+
+
 # ── debug verb ───────────────────────────────────────────────────────────
 
 
@@ -397,7 +678,7 @@ def worker_debug_cmd(
     name: str | None = typer.Option(  # noqa: B008
         None,
         "--name",
-        help="Custom display name for the worker (defaults to the machine hostname).",
+        help="Custom display name for the debug probe (defaults to upstream behaviour).",
     ),
     pool: bool = typer.Option(  # noqa: B008
         False,
@@ -455,7 +736,10 @@ def worker_start_cmd(
     name: str | None = typer.Option(  # noqa: B008
         None,
         "--name",
-        help="Custom display name for the worker (defaults to the machine hostname).",
+        help=(
+            "Custom display name for the worker. Defaults to a deterministic "
+            "workspace-aware name like popolaloom-<repo>-<hash>."
+        ),
     ),
     pool: bool = typer.Option(  # noqa: B008
         False,
@@ -497,6 +781,14 @@ def worker_start_cmd(
         "--dry-run",
         help="Print the exact `agent worker start` argv that would run, then exit.",
     ),
+    allow_duplicate: bool = typer.Option(  # noqa: B008
+        False,
+        "--allow-duplicate",
+        help=(
+            "Start another worker even when one already serves the same "
+            "--worker-dir. Default: reuse the existing workspace worker."
+        ),
+    ),
 ) -> None:
     """Start a Cursor self-hosted worker process (foreground).
 
@@ -513,21 +805,30 @@ def worker_start_cmd(
     ``--management-addr`` to confirm the outbound connection to Cursor's
     cloud is live.
     """
-    if pool and not _has_resolvable_api_key():
-        _fail_pool_requires_api_key()
-
     if management_addr is not None:
         # Validate early (fail fast before subprocess spawn) but pass
         # the original string through to ``agent worker start`` so the
         # upstream CLI sees the verbatim form the user typed.
         _validate_management_addr(management_addr)
 
-    binary = _resolve_agent_binary()
+    resolved_worker_dir = _resolve_worker_dir(worker_dir)
+    effective_name = name or _default_worker_name(resolved_worker_dir)
     labels_kv = [_validate_label(item) for item in label]
+
+    if not dry_run and not allow_duplicate:
+        running = _detect_running_workers_for_dir(resolved_worker_dir)
+        if running:
+            typer.echo(_format_worker_reuse_message(running[0]))
+            raise typer.Exit(code=_EXIT_OK)
+
+    if pool and not _has_resolvable_api_key():
+        _fail_pool_requires_api_key()
+
+    binary = _resolve_agent_binary()
     argv = _build_start_argv(
         binary=binary,
-        worker_dir=worker_dir,
-        name=name,
+        worker_dir=resolved_worker_dir,
+        name=effective_name,
         pool=pool,
         pool_name=pool_name,
         idle_release_timeout=idle_release_timeout,
@@ -542,6 +843,146 @@ def worker_start_cmd(
 
     rc = _spawn_worker_subprocess(argv, pool=pool)
     raise typer.Exit(code=rc)
+
+
+# ── dispatch verb ────────────────────────────────────────────────────────
+
+
+@app.command(name="dispatch")
+def worker_dispatch_cmd(
+    prompt: str = typer.Argument(
+        ...,
+        help="Prompt string to dispatch through `popolad`.",
+    ),
+    worker_dir: Path = typer.Option(  # noqa: B008
+        Path.cwd,
+        "--worker-dir",
+        "-w",
+        help="Directory/workspace whose existing worker should be targeted.",
+    ),
+    repo_url: str | None = typer.Option(  # noqa: B008
+        None,
+        "--repo-url",
+        help="GitHub repository URL for `cursor-cloud` dispatch.",
+    ),
+    pr_url: str | None = typer.Option(  # noqa: B008
+        None,
+        "--pr-url",
+        help="GitHub PR URL for `cursor-cloud` dispatch (alternative to --repo-url).",
+    ),
+    starting_ref: str = typer.Option(  # noqa: B008
+        "main",
+        "--starting-ref",
+        help="Starting ref forwarded to `cursor-cloud`.",
+    ),
+    model: str = typer.Option(  # noqa: B008
+        "composer-2",
+        "--model",
+        help="Cursor cloud model id forwarded via --cli-flag model=...",
+    ),
+    print_only: bool = typer.Option(  # noqa: B008
+        False,
+        "--print-only",
+        "--dry-run",
+        help=(
+            "Preview the equivalent `popola dispatch --cli=cursor-cloud` command "
+            "without contacting popolad."
+        ),
+    ),
+    json_out: bool = typer.Option(  # noqa: B008
+        False,
+        "--json",
+        help="Emit machine-readable JSON instead of the plain task_id / preview text.",
+    ),
+) -> None:
+    """Dispatch to the workspace worker through ``popolad``.
+
+    By default this detects the already-running worker for ``--worker-dir``
+    when present, then POSTs a ``cli=cursor-cloud`` dispatch to ``popolad``
+    with ``worker_name`` and repo/PR routing extras.  ``--print-only`` (or
+    ``--dry-run``) preserves the old side-effect-free command preview.
+    """
+    if repo_url is not None and pr_url is not None:
+        typer.echo("error: pass --repo-url OR --pr-url, not both", err=True)
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if repo_url is None and pr_url is None:
+        typer.echo("error: pass either --repo-url or --pr-url", err=True)
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if not starting_ref.strip():
+        typer.echo("error: --starting-ref must be non-empty", err=True)
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if not model.strip():
+        typer.echo("error: --model must be non-empty", err=True)
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    resolved_worker_dir = _resolve_worker_dir(worker_dir)
+    running = _detect_running_workers_for_dir(resolved_worker_dir)
+    worker = running[0] if running else None
+    worker_name = (
+        worker.name
+        if worker is not None and worker.name
+        else _default_worker_name(resolved_worker_dir)
+    )
+    dispatch_body = _build_workspace_worker_dispatch_body(
+        prompt=prompt,
+        worker_dir=resolved_worker_dir,
+        worker_name=worker_name,
+        repo_url=repo_url,
+        pr_url=pr_url,
+        starting_ref=starting_ref.strip(),
+        model=model.strip(),
+    )
+    argv = _build_workspace_worker_dispatch_argv(
+        prompt=prompt,
+        worker_dir=resolved_worker_dir,
+        worker_name=worker_name,
+        repo_url=repo_url,
+        pr_url=pr_url,
+        starting_ref=starting_ref.strip(),
+        model=model.strip(),
+    )
+
+    payload = {
+        "command": _format_quoted_argv(argv),
+        "worker": {
+            "found": worker is not None,
+            "pid": worker.pid if worker is not None else None,
+            "name": worker_name,
+            "management_addr": worker.management_addr if worker is not None else None,
+            "worker_dir": str(resolved_worker_dir),
+        },
+    }
+    if print_only and json_out:
+        typer.echo(json.dumps(payload, indent=2, sort_keys=True))
+        return
+
+    if print_only:
+        if worker is not None:
+            typer.echo(_format_worker_reuse_message(worker))
+        else:
+            typer.echo(
+                "No running worker found for this workspace; routing will target "
+                f"deterministic worker_name={worker_name}. Start a matching worker "
+                "with `popola cloud worker start` if it is not already running."
+            )
+        typer.echo("")
+        typer.echo("# Run this to route the task to the workspace worker:")
+        typer.echo(payload["command"])
+        return
+
+    if worker is None and not json_out:
+        typer.echo(
+            "No running worker found for this workspace; routing will target "
+            f"deterministic worker_name={worker_name}. Start a matching worker "
+            "with `popola cloud worker start` if it is not already running.",
+            err=True,
+        )
+
+    response_payload = _dispatch_to_popolad(dispatch_body)
+    if json_out:
+        typer.echo(json.dumps(response_payload, ensure_ascii=False))
+    else:
+        typer.echo(response_payload["task_id"])
 
 
 def _has_resolvable_api_key() -> bool:

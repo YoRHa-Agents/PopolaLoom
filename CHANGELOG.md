@@ -10,9 +10,38 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for v0.9.x patches.)
+(intentionally empty — accumulating for the next v0.9.x patch.)
 
 <!-- updated: 2026-05-10 -->
+
+## [0.9.3] — 2026-05-10
+
+**Theme**: Workspace-aware self-hosted worker routing. v0.9.3 is a strictly additive patch on the v0.9.x line: it closes `.local/feedbacks/feedback_for_v0.9.1.md` by making `popola cloud worker start` reuse a single workspace worker by default and by adding direct `popola cloud worker dispatch` routing to the matching worker through `popolad`.
+
+### Added
+
+- **Cursor Cloud REST private-worker routing extras** — `cursor-cloud` dispatch now accepts `use_private_worker`, `labels`, `worker_name`, `machine_name`, and `pool_name` in `--cli-flag` extras. Convenience keys merge into labels and automatically request private-worker routing; contradictory `use_private_worker=false` plus routing labels fails loudly.
+- **`popola cloud worker dispatch`** — convenience wrapper that targets the workspace worker by name through the existing daemon `/dispatch` path with `cli=cursor-cloud`; `--print-only` / `--dry-run` previews the equivalent dispatch command without touching the daemon.
+
+### Changed
+
+- **Workspace worker singleton behavior** — `popola cloud worker start` now derives a deterministic `popolaloom-<repo>-<hash>` worker name when `--name` is omitted and reuses the running worker for the resolved `--worker-dir` unless `--allow-duplicate` is explicitly passed.
+- **Docs / Skill release surface** — README, API stability notes, Skill frontmatter, and release notes now describe the v0.9.3 workspace-worker routing contract.
+
+### Tests
+
+- Added / updated focused tests for cursor-cloud routing extras, worker singleton detection, direct worker dispatch, and `--print-only` preview mode.
+- Release-prep verification for this entry: `python -m pytest tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py` → 14 passed, 2 skipped; `git diff --check` → pass. Full default lane remains to be completed by the parent release run.
+
+### Files
+
+- **MOD source / tests**: `src/popolaloom/adapters/cursor_cloud.py`, `src/popolaloom/cli/cloud_worker_cmd.py`, `src/popolaloom/daemon/supervisor.py`, `src/popolaloom/cli/main.py`, `tests/adapters/test_cursor_cloud.py`, `tests/adapters/test_cursor_cloud_coverage.py`, `tests/cli/test_cloud_worker_cmd.py`, `tests/daemon/test_supervisor_cloud_branch.py`.
+- **MOD release contracts**: `pyproject.toml`, `src/popolaloom/__init__.py`, `docs/_config.yml`, `tests/test_smoke.py`, `src/popolaloom/skills/popola-loom/SKILL.md`, `src/popolaloom/skills/install-popola/SKILL.md`, both `.popola-loom-version` markers, `README.md`, `docs/API_STABILITY.md`, `CHANGELOG.md`, `RELEASE_NOTES.md`.
+
+### Known limitations
+
+- **PyPI publish still deferred** (Q-D-5 偏离默认; `BL-v0.9.x-PyPI`) — v0.9.3 remains GitHub-Release-only. Install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.3` or `./install.sh install --from=git`.
+- **Routing depends on Cursor's private-worker semantics** — PopolaLoom passes the stable routing extras through to Cursor REST, but final worker selection remains owned by Cursor Cloud Agents.
 
 ## [0.9.2] — 2026-05-10
 

@@ -368,6 +368,33 @@ class Supervisor:
             else:
                 env_vars_param = dict(ev)
 
+        use_private_worker_param = extra.get("use_private_worker", False)
+        if not isinstance(use_private_worker_param, bool):
+            return _fail(
+                error_kind="marker_decode_error",
+                error_detail="extra.use_private_worker must be bool",
+            )
+
+        labels_param: dict[str, str] | None = None
+        if "labels" in extra:
+            labels_raw = extra.get("labels")
+            if labels_raw is None:
+                labels_param = None
+            elif not isinstance(labels_raw, dict):
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail="extra.labels must be object or null",
+                )
+            elif not all(
+                isinstance(k, str) and isinstance(v, str) for k, v in labels_raw.items()
+            ):
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail="extra.labels must be dict[str, str]",
+                )
+            else:
+                labels_param = dict(labels_raw)
+
         timeout_s_param: float | None = None
         if extra.get("timeout_s") is not None:
             try:
@@ -391,6 +418,8 @@ class Supervisor:
                 skip_reviewer_request=bool(extra.get("skip_reviewer_request", False)),
                 pr_url=pr_url,
                 env_vars=env_vars_param,
+                use_private_worker=use_private_worker_param,
+                labels=labels_param,
                 timeout_s=timeout_s_param,
             )
         except ValueError as exc:
