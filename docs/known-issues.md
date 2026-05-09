@@ -14,6 +14,101 @@ addressed in future versions* — file an issue under
 [`.local/feedbacks/`](../.local/feedbacks/) if you hit one and the
 listed workaround does not unblock you.
 
+## v0.9.0 — `popola init --target=cloud-only` scaffold expectations (Q-D-4 偏离默认)
+
+<!-- updated: 2026-05-09 -->
+
+**Limitation.** `popola init --target=cloud-only` (Q-D-4 偏离默认; first
+shipped in v0.9.0 GA) writes a deliberately minimal 3-file project
+scaffold — `popolad.toml` + `.env.example` + `Makefile` at the project
+root — and is intentionally **disjoint** from the IDE-skill install
+paths walked by `popola init [<ide>]` / `popola init all`. It does NOT
+write `~/.cursor/skills/popola-loom/SKILL.md`, `~/.claude/skills/popola-loom/SKILL.md`,
+`<repo>/.local/`, or any other surface; the scaffold's only purpose is
+the cloud-dispatch project skeleton. Operators expecting cloud-only
+mode to also register Skills per-IDE will not find them — that path
+remains the explicit `popola init <ide>` verbs (or `popola init all`).
+
+**Symptoms.**
+
+- After `popola init --target=cloud-only`, host agents (Cursor / Claude /
+  Codex / Copilot) do NOT auto-load the canonical `popola-loom` Skill —
+  Skill discovery requires a separate `popola init <verb>` invocation.
+- A second invocation in the same directory prints `SKIP <path>
+  (already exists)` for each of the 3 files; pass `--force` to
+  overwrite operator edits (or run `popola init --target=cloud-only
+  --dry-run` first to preview).
+
+**Workaround (compose with IDE skill installs when needed).**
+
+A project that started as `--target=cloud-only` can later add per-IDE
+Skill installs by running `popola init <verb>` separately (the file
+paths are disjoint, so the two scaffolds compose cleanly):
+
+```bash
+popola init --target=cloud-only       # 3-file project scaffold
+popola init cursor --global           # Cursor Skill at ~/.cursor/skills/popola-loom/
+popola init all --global              # every detected IDE
+```
+
+**Design references.**
+
+- [`docs/USER_GUIDE.md` — `popola init --target=cloud-only`](USER_GUIDE.md#popola-init---targetcloud-only-v090) — the full walkthrough.
+- [`cloud-quickstart.sh`](../cloud-quickstart.sh) — copy-paste-ready bash bootstrap that wraps `popola init --target=cloud-only` → daemon start → first cloud dispatch.
+- [`src/popolaloom/skills/install-popola/SKILL.md`](../src/popolaloom/skills/install-popola/SKILL.md) §"Cloud-only project init (v0.9.0 GA)" — operator-facing install fragment.
+- DECISIONS.md OQ-1 (in `.local/.agent/active/v0.9.0-ga/DECISIONS.md`; local-only research note) — the v0.9.0 reconciliation that the cloud-only scaffold is deliberately project-only and does NOT install per-IDE Skills.
+
+**Tracking.** No backlog row — this is the spec-locked behaviour for
+v0.9.0 GA per Q-D-4 偏离默认; future minors may revisit if operator
+feedback warrants a hybrid `--target=cloud-only --skill=cursor` shape.
+
+## v0.9.0 — install canonical-path during PyPI deferral (Q-D-5 偏离默认)
+
+<!-- updated: 2026-05-09 -->
+
+**Limitation.** v0.9.0 GA is GitHub-Release-only; PyPI publish is
+deferred to a v0.9.x patch (`BL-v0.9.x-PyPI` in
+`.local/feedbacks/TRACKER.md`). The `./install.sh install` script
+currently defaults to `--from=pypi` (per its v0.8.4 stable surface),
+so `./install.sh install` AND `pip install popolaloom` (no `git+`)
+both resolve to the **previous v0.8.x stable line** until the v0.9.x
+PyPI patch lands.
+
+**Symptoms.**
+
+- `./install.sh install` (default flags) succeeds but `popola version`
+  prints `popolaloom 0.8.x` instead of `popolaloom 0.9.0`.
+- `pip install popolaloom` (no `git+`) resolves to the latest PyPI
+  release, which is currently v0.8.x.
+- `./install.sh install --from=git --version=v0.9.0` is rejected with
+  the validation error `--version=X.Y.Z requires --from=pypi`.
+
+**Workaround (v0.9.0-specific install).**
+
+Use one of the two v0.9.0-canonical install paths:
+
+```bash
+# Option A — canonical, tag-pinned (always works for v0.9.0):
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
+
+# Option B — repo-root unified installer with --from=git (auto-tracks
+# main; equivalent to v0.9.0 immediately post-tag):
+./install.sh install --from=git
+```
+
+The PyPI promotion patch (`BL-v0.9.x-PyPI`) will land a follow-on
+RELEASE_NOTES top-of-file callout + CHANGELOG `### Added` entry; once
+published, both `pip install popolaloom` and `./install.sh install`
+(default) will resolve to v0.9.x normally.
+
+**Design references.**
+
+- [`README.md` §Install](../README.md#install) — the v0.9.0 install canonical-path callout + alternate paths.
+- [`RELEASE_NOTES.md`](../RELEASE_NOTES.md) — top-of-file Q-D-5 偏离默认 callout (v0.9.0 GA).
+- [`docs/MIGRATION_v07_to_v09.md` §TL;DR](MIGRATION_v07_to_v09.md#tldr) — operator-facing v0.7.x → v0.9.0 install path.
+
+**Tracking.** Backlog row `BL-v0.9.x-PyPI` (`.local/feedbacks/TRACKER.md`) covers the PyPI promotion patch; an `install.sh` rewire to default to `--from=git` (or to lift the `--version` ⇒ `--from=pypi` guard) is tracked as a Stage-5 follow-up under `BL-v0.9.x-install-sh-rewire`.
+
 ## v0.8.6 — Cloud task hydration after daemon restart
 
 <!-- updated: 2026-05-08 -->

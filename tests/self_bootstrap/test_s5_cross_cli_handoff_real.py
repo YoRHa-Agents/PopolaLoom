@@ -3,6 +3,11 @@
 v0.3.0 real version replacing
 :file:`tests/self_bootstrap/test_s5_cross_cli_handoff_mock.py`.
 
+v0.9.0 (BL-v0.9.0-1) — the relay primitive now emits a canonical
+:class:`popolaloom.handoff.HandoffEnvelope` instead of the legacy
+v0.3.0 ``RelayHandoffEnvelope`` (Q-D-3 lock); the parent linkage field
+is ``parent_task_id`` (was ``source_task_id`` on the legacy schema).
+
 Differences from the mock:
 
 - Uses the **F2 real** ``POST /relay`` RPC primitive (instead of the
@@ -146,7 +151,7 @@ def test_s5_real_three_hop_relay_chain(tmp_path: Path) -> None:
         assert "COMPLETED" in str(final_claude.get("state", "")).upper()
         assert relay_to_claude["handoff_envelope"]["source_cli"] == "cursor"
         assert relay_to_claude["handoff_envelope"]["target_cli"] == "claude"
-        assert relay_to_claude["handoff_envelope"]["source_task_id"] == cursor_id
+        assert relay_to_claude["handoff_envelope"]["parent_task_id"] == cursor_id
 
         # Hop 3: relay claude → codex (real RPC).
         relay_to_codex = _post_relay(
@@ -172,6 +177,7 @@ def test_s5_real_three_hop_relay_chain(tmp_path: Path) -> None:
             assert log.exists(), f"missing event log for {tid}"
 
         # The handoff_envelope chain is the canonical proof — each
-        # child carries its parent's id forward through ``source_task_id``.
-        assert relay_to_claude["handoff_envelope"]["source_task_id"] == cursor_id
-        assert relay_to_codex["handoff_envelope"]["source_task_id"] == claude_id
+        # child carries its parent's id forward through ``parent_task_id``
+        # (v0.9.0 BL-v0.9.0-1; v0.7.3+ HandoffEnvelope schema).
+        assert relay_to_claude["handoff_envelope"]["parent_task_id"] == cursor_id
+        assert relay_to_codex["handoff_envelope"]["parent_task_id"] == claude_id

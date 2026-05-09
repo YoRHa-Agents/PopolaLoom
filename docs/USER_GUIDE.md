@@ -6,9 +6,13 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.8.5)
+# PopolaLoom — User Guide (v0.9.0 GA)
 
-> Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md).
+<!-- updated: 2026-05-09 -->
+
+> **Generally Available since v0.9.0 (2026-05-08).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.0 specifically install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0`** (canonical, tag-pinned) **or `./install.sh install --from=git`** (alternate, auto-tracks main) — PyPI publish is deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The `./install.sh install` default uses `--from=pypi` and currently resolves to the prior v0.8.x stable line.
+
+> Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
 ## Table of Contents
 
@@ -387,6 +391,8 @@ Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapt
 
 ## Cloud Agent dispatch (v0.8.5+)
 
+> **v0.9.0 GA**: This section's CLI verb (`popola dispatch --cli=cursor-cloud`) and its flag spellings are part of the v0.9.x stable surface — see [API_STABILITY §2.1](API_STABILITY.md#21-cli-commands-and-flags). For a copy-paste-ready bootstrap, run [`./cloud-quickstart.sh`](../cloud-quickstart.sh).
+
 ### Prerequisites
 
 1. **Daemon** — identical to other adapters: `popola popolad start` (Unix socket RPC).
@@ -492,6 +498,65 @@ Two representative bilingual hints (verbatim from the catalog so future drift is
 
 The other 14 entries cover `401 unauthorized`, `401 api_key_not_found`, `403 role_forbidden`, `403 feature_unavailable`, `404 agent_not_found`/`run_not_found`, `409 agent_busy` / `agent_archived` / `run_not_cancellable`, `410 stream_expired`, `400/422 validation_error`, two more 422 GitHub-App categories, `429 rate_limit_exceeded` (deferred to v0.8.8), and `5xx internal_error` / `upstream_error`. The full text + retry/backoff matrix lives in the [research note (local-only)](../.local/research/v0.8.6_sse/422-error-catalog.md) §3 and is reproduced into the Python `_ERROR_CATALOG` constant verbatim.
 
+### `popola init --target=cloud-only` (v0.9.0+)
+
+<!-- updated: 2026-05-09 -->
+
+> **Install prerequisite (v0.9.0 GA)** — `popola` must be on PATH before this scaffold can run. For v0.9.0 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0` (canonical, tag-pinned) OR `./install.sh install --from=git` (alternate). The default `./install.sh install` and `pip install popolaloom` paths currently resolve to the prior v0.8.x stable line until the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
+
+
+`popola init --target=cloud-only` is the v0.9.0 W2.4 scaffold profile that drops a **minimal, cloud-dispatch-only project skeleton** — three files at the project root, no IDE skill installs, no `.local/` workspace, no local CLI shims, no local-tier HITL stubs. It is the right starting point when:
+
+- The team operates **exclusively** through Cursor Cloud Agents (no laptops running `cursor-agent` / `claude` / `codex` subprocess CLIs locally) and only needs the daemon's REST surface to dispatch + monitor cloud runs.
+- A CI / runbook needs a deterministic project layout it can stamp into a fresh checkout (e.g. a "create cloud dispatch project" job in a platform team's templating pipeline).
+- The default `--target=full` profile would create surface (e.g. `.local/`) the team has policy reasons to keep out of the repo.
+
+The default `--target=full` profile (or no `--target` at all) preserves the existing 14-row verb + 8-modifier matrix byte-for-byte (auto-detect IDEs, scaffold `.local/`, install SKILL.md per detected IDE) — Q-D-4 偏离默认 ships cloud-only **alongside** that surface, never in place of it.
+
+#### What the scaffold creates
+
+```text
+<project_root>/
+├── popolad.toml         # cloud-only daemon config: [hitl.cloud], [cloud.backoff],
+│                        # [cloud.busy_strategy], [cloud.relay] — NO bare [hitl]
+├── .env.example         # CURSOR_API_KEY env var (empty) + commented optional overrides
+└── Makefile             # dispatch / status / attach / relay shortcuts
+```
+
+The cloud-only `popolad.toml` carries exactly four sections — `[hitl.cloud]`, `[cloud.backoff]`, `[cloud.busy_strategy]`, `[cloud.relay]` — and intentionally omits the local-tier `[hitl]` block (that block is what wires the daemon's local Lark / MCP listeners; cloud-only mode never registers them). The `.env.example` carries a single REQUIRED variable (`CURSOR_API_KEY`) and three OPTIONAL overrides commented out (`POPOLA_HOME`, `CURSOR_API_BASE`, `POPOLA_HANDOFF_DIR`). The `Makefile` exposes four targets: `make dispatch PROMPT="..."` (the canonical entrypoint), `make status TASK_ID=...`, `make attach TASK_ID=...`, and `make relay TASK_ID=...` — each shells out to the corresponding `popola` subcommand with `--cli=cursor-cloud` baked in for `dispatch`.
+
+#### Walkthrough — fresh project, first cloud dispatch
+
+```bash
+mkdir my-cloud-project && cd my-cloud-project
+popola init --target=cloud-only
+#   popola init — target: cloud-only
+#     scaffolding cloud-only project skeleton (no local CLI shims, no local HITL stubs)
+#     OK   ./popolad.toml
+#     OK   ./.env.example
+#     OK   ./Makefile
+
+cp .env.example .env
+# Edit .env, set: CURSOR_API_KEY=cr_...    (from https://cursor.com/dashboard → API Keys)
+
+set -a && . ./.env && set +a            # export the env to the current shell
+popola popolad start                    # boot the daemon (Unix socket RPC)
+
+popola dispatch --cli=cursor-cloud --prompt "Plan database migration scaffolding"
+# → cursor-cloud-deadbeef                (the dispatched task id; copy for status / attach)
+
+popola attach cursor-cloud-deadbeef --follow    # SSE-by-default for runtime=cloud
+# Or via the Makefile shortcut:
+make dispatch PROMPT="Plan database migration scaffolding"
+make attach   TASK_ID=cursor-cloud-deadbeef
+```
+
+#### Idempotency + `--force`
+
+A second `popola init --target=cloud-only` invocation in the same directory prints `SKIP <path> (already exists; use --force to overwrite)` for each of the three files and preserves any operator edits — the same idempotency contract every other init verb already satisfies. Pass `--force` to overwrite the canonical content on top of any operator-modified copy: `popola init --target=cloud-only --force`. `--dry-run` is also honoured (`popola init --target=cloud-only --dry-run` prints `DRY <path>` for each entry without touching disk).
+
+`--target=cloud-only` is mutually exclusive with the verb subcommands (`cursor` / `claude` / `copilot` / `codex` / `local` / `all`), with `--list`, and with `--interactive` — combining them surfaces a `BadParameter` error explaining the conflict (No Silent Failures). To extend a cloud-only project with one of those verbs later, run `popola init <verb>` separately; the cloud-only files are disjoint from the IDE skill install paths so the two scaffolds compose cleanly when needed.
+
 Canonical design references:
 
 - `.local/research/v0.8.5_cloud_agent/research.md`
@@ -506,6 +571,8 @@ Canonical design references:
 <!-- updated: 2026-05-08 -->
 
 > **Tier**: Enterprise / Self-Hosted. This sub-page documents the **private HITL tier** that v0.8.7 ships behind γ (Worker stdio MCP, first-class) or β (HTTP MCP, backend-proxied). **The broad-audience `popola dispatch ... --cli=cursor-cloud` REST path documented above remains fully usable without any of the prerequisites below** — only the human-approval-over-Lark sub-flow has the γ / β gating per Q-B-2 (split-tier docs). If you have neither a self-hosted worker option nor a public HTTPS gateway, skip to [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](known-issues.md#v087--cloud-hitl-transport-anti-patterns) for the supported alternatives — do **not** attempt residential NAT / port-forward.
+
+> **v0.9.0 GA stability**: The daemon RPC triad (`POST /hitl/cloud/{request,wait,answer}`) and the [hitl.cloud] config schema are part of the v0.9.x stable surface — see [API_STABILITY §2.2](API_STABILITY.md#22-daemon-rpc-endpoints). The `popolaloom_cloud_hitl_request` MCP tool name is stable; arg / return shapes follow the same SemVer additive rules.
 
 ### Why this is a separate tier
 
@@ -889,6 +956,8 @@ The `failed` event is emitted **before** the MCP tool returns the error envelope
 
 <!-- updated: 2026-05-08 -->
 
+> **v0.9.0 GA stability**: The sextuple identity envelope shape is stable; specific `cloud.sse.*` event sub-types remain **experimental** in v0.9.0 — see [API_STABILITY §3.4](API_STABILITY.md#34-sse-event-sub-types-cloudsse). The `cloud.run_started` / `cloud.run_finished` brackets emitted by popolad code (NOT synthesised from SSE) are stable.
+
 v0.8.8 adds **multi-run support** to the `--cli=cursor-cloud` runtime: a single Cursor cloud agent (durable `agent.id`, `bc-*` prefix) may host N sequential follow-up runs created via `POST /v1/agents/{id}/runs`. Each run owns its own lifecycle (`CREATING → RUNNING → terminal`) and its own SSE channel `/v1/agents/{id}/runs/{run_id}/stream` — per Cursor's official wording, *"the stream is scoped to the requested run and does not replay prior runs"*. The PopolaLoom EventLog NDJSON file under `~/.popola/events/<task_id>.jsonl` is therefore the **only** durable source of cross-run history; once the per-run SSE retention window elapses (`X-Cursor-Stream-Retention-Seconds` header), the upstream stream returns `410 stream_expired` and the daemon reads terminal state via `GET /v1/agents/{id}/runs/{run_id}` instead of retrying the stream.
 
 The contract is **strictly sequential**: per Cursor's API, *"Only one run can be active per agent. Calling this while another run is `CREATING` or `RUNNING` returns `409 agent_busy`. Wait for the existing run to terminate, or cancel it."* v0.8.8 honors this with the new async-queue `[cloud.busy_strategy]` (see [Quota-aware retry](#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088) below) — the daemon enqueues the follow-up dispatch behind the active run rather than failing fast, then re-issues the request when the existing run reaches a terminal phase. Parallel runs within one agent are explicitly out of scope (forbidden by upstream).
@@ -958,6 +1027,8 @@ For wire-level details (full sextuple semantics, six test invariants I-7..I-12, 
 ## Cost transparency — `status --verbose` (v0.8.8+)
 
 <!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA stability**: The `--verbose` flag *itself* is stable; the 10-key `verbose` block is **experimental** in v0.9.0 — see [API_STABILITY §3.2](API_STABILITY.md#32-cost-surface-fields-in-popola-status-verbose-q-c-2). The shape will evolve as Cursor publishes authoritative cost / token fields.
 
 v0.8.8 ships a **`popola status <task_id> --verbose`** flag that surfaces a curated set of cost-adjacent fields for cloud-runtime tasks. Per the locked v0.8.8 design decision **Q-C-2** (`decision-matrices-zh.md`), the cost block is **`--verbose`-only** — default `popola status` output is unchanged.
 
@@ -1030,6 +1101,8 @@ For the full 13-field catalog (F1..F13: documented stable, SDK-only deferred, Ad
 ## Cross-PR relay — `popola relay` (v0.8.8+)
 
 <!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA stability**: `popola relay` verb name + the 7 documented flags + exit codes are stable. The `[cloud.relay]` config schema's section name + key spellings + the three loader-locked booleans are stable; **default values** are experimental and may tighten in v0.9.x patches with a CHANGELOG note (Q-C-4 mitigation review) — see [API_STABILITY §3.3](API_STABILITY.md#33-cloudrelay-config-schema-q-c-4).
 
 > **⚠️ Q-C-4 deviation callout — relay defaults to AUTO**
 >
@@ -1198,6 +1271,8 @@ For wire-level details (full backoff algorithm with jitter, `Retry-After` parser
 ## `popola cloud runs` — list cloud-agent run history (v0.8.8+)
 
 <!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA stability**: The wrapping `popola cloud` sub-app is stable; the `runs` verb itself is **experimental** in v0.9.0 — its 6-column rendered table layout, the `--include-events` slow-path JSON shape, and the cross-verb 404 → exit `4` disposition (vs `popola dispatch --cli=cursor-cloud` 404 → exit `100`) may evolve in v0.9.x minors. See [API_STABILITY §3.1](API_STABILITY.md#31-popola-cloud-runs-q-c-1).
 
 > **Q-C-1 deviation note**: the locked decision in `decision-matrices-zh.md` was to defer this subcommand to v0.9.0 (default `"status` displays `cursor_run_id` / `latest`; document the API for power users") — v0.8.8 ships the **偏离默认 path** so users can enumerate, paginate, and inspect every run of a cloud agent without leaving the CLI. `popola list` stays single-row-per-task (no multi-run sprawl) and `popola cloud runs` is the dedicated history viewer.
 
@@ -1408,7 +1483,7 @@ The env-channel always wins over caller-provided base_env keys with the same nam
 
 `popolaloom.handoff.FeedbackEnvelope` mirrors the dispatch envelope's design choices for HITL answers (the user's typed reply to a `LangGraph.interrupt()` prompt). Filename pattern: `<task_id>-fb-<8hex>.md` (the `-fb-` infix marks feedback files distinct from dispatch envelopes in the same active dir). Schema fields: `feedback_id`, `task_id`, `hitl_id`, `answer` (body), `reason`, `tags`, `responder`, `channel` (which HITL channel — `cli`/`lark`/`ide`/`mcp`/`web` — submitted the reply).
 
-v0.7.3 ships the writer + schema; the live `popola feedback ...` CLI flow does NOT yet auto-persist (avoiding daemon-side coordination risk). Callers can manually call `write_feedback(env)` from custom scripts. v0.8.x patches will add `popola feedback ... --persist` to wire it into the live HITL flow.
+v0.7.3 ships the writer + schema; the live `popola feedback ...` CLI flow does NOT yet auto-persist (avoiding daemon-side coordination risk). Callers can manually call `write_feedback(env)` from custom scripts. A future v0.9.x minor will add `popola feedback ... --persist` to wire it into the live HITL flow.
 
 ### Legacy `RelayHandoffEnvelope` bridge (v0.7.3+)
 

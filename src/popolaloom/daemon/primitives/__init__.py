@@ -39,11 +39,7 @@ from popolaloom.daemon.primitives.federate import (
     federate,
     tally_votes,
 )
-from popolaloom.daemon.primitives.relay import (
-    RelayHandoffEnvelope,
-    relay,
-    to_handoff_envelope,
-)
+from popolaloom.daemon.primitives.relay import relay
 from popolaloom.daemon.primitives.supervise import (
     OnCompleteCallback,
     OnFailCallback,
@@ -61,7 +57,6 @@ __all__ = [
     "MIN_FEDERATE_CLIS",
     "OnCompleteCallback",
     "OnFailCallback",
-    "RelayHandoffEnvelope",
     "SubscriptionHandle",
     "SuperviseRegistry",
     "VoteOutcome",
@@ -72,5 +67,4 @@ __all__ = [
     "reset_default_registry",
     "supervise",
     "tally_votes",
-    "to_handoff_envelope",
 ]

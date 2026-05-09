@@ -810,9 +810,10 @@ TOOL_DEFINITIONS: tuple[ToolDefinition, ...] = (
     ToolDefinition(
         name="popola_relay",
         description=(
-            "Cross-CLI handoff (v0.3.0 F2). Spawns a child task on "
-            "``target_cli`` carrying a ``RelayHandoffEnvelope`` payload "
-            "from the source task. Returns the new child_task_id."
+            "Cross-CLI handoff (v0.3.0 F2; v0.9.0 native HandoffEnvelope). "
+            "Spawns a child task on ``target_cli`` carrying a "
+            "``HandoffEnvelope`` payload from the source task. Returns "
+            "the new child_task_id."
         ),
         input_schema={
             "type": "object",
