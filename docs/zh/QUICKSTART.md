@@ -22,11 +22,12 @@ translation_url: /QUICKSTART.html
 ## Step 1 — 安装
 
 ```bash
-# 当前 v0.9.1 release。PyPI promotion 仍在后续 v0.9.x patch 中，
-# 需要 v0.9.x surface 时请使用 GitHub tag。
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1
-# 或在仓库根目录使用统一安装脚本：
-./install.sh install --from=git
+# 当前 v0.9.6 release。v0.9.6 closes feedback_for_v0.9.4 第 2-5 行：
+# ./install.sh install 默认不再走 PyPI（之前在不带 popolaloom 的中国 pip 镜像上会 404）。
+# PyPI promotion 仍在后续 v0.9.x patch（BL-v0.9.x-PyPI），目前请用 GitHub 路径：
+./install.sh install                                              # 推荐（v0.9.6 默认 --from=git，跟随 main）
+./install.sh install --ref=v0.9.6                                 # tag-pinned（v0.9.6 canonical 配方）
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6 # 手动 fallback（pip 直接 tag-pinned）
 
 # 或从源码安装开发版
 git clone https://github.com/YoRHa-Agents/PopolaLoom.git
@@ -34,12 +35,12 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # 验证
-python -c "import popolaloom; print(popolaloom.__version__)"   # -> 0.9.1
+python -c "import popolaloom; print(popolaloom.__version__)"   # -> 0.9.6
 which popola
-popola version                                                 # -> "popolaloom 0.9.1"
+popola version                                                 # -> "popolaloom 0.9.6"
 ```
 
-如果你明确只需要 PyPI 上最新的已发布稳定线，`pip install popolaloom` 仍可使用；但在 `BL-v0.9.x-PyPI` promotion patch 落地前，它当前解析到上一条 v0.8.x 线。
+如果你明确只需要 PyPI 上最新的已发布稳定线，`pip install popolaloom` 仍可使用；但在 `BL-v0.9.x-PyPI` promotion patch 落地前，它当前解析到上一条 v0.8.x 线。`BL-v0.9.x-PyPI` 落地后再用 `./install.sh install --from=pypi --version=0.9.x` 走 PyPI 路径；`./install.sh install` 默认会继续走 GitHub URL（v0.9.6 已锁定）。
 
 如果安装后提示 `popola: command not found`，通常是 shell 没有包含 `~/.local/bin`：
 
@@ -118,7 +119,7 @@ popola doctor --json
 
 ```bash
 bash examples/quickstart.sh
-# [quickstart] all 6 steps PASS — popolaloom v0.9.1 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.9.6 ready
 ```
 
 脚本默认使用临时 `$POPOLA_HOME`，不会污染真实的 `~/.popola`。

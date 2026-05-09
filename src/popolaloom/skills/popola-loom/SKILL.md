@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.9.5
+version: 0.9.6
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -470,16 +470,17 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 
 ## Version + upgrade
 
-- **Current**: v0.9.3 patch（2026-05-10，**stable since v0.9.0**）— Skill 前缀 (`name`/`version`/`description`) 进 v0.9.x SemVer-stable 锁；body 内容（含本 Workflow 编号）显式标 out-of-scope（[API_STABILITY §7](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#7-out-of-scope)）。`popola init` (Stage S2/S3 起) 自动写本 SKILL.md 到 `~/.cursor/skills/popola-loom/SKILL.md`、`~/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage 5 release task 在每次 minor 把 `__version__` 与本 frontmatter 同步 bump（`tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` 卡死 lockstep）。
+- **Current**: v0.9.6 patch（2026-05-10，**stable since v0.9.0**）— Skill 前缀 (`name`/`version`/`description`) 进 v0.9.x SemVer-stable 锁；body 内容（含本 Workflow 编号）显式标 out-of-scope（[API_STABILITY §7](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#7-out-of-scope)）。`popola init` (Stage S2/S3 起) 自动写本 SKILL.md 到 `~/.cursor/skills/popola-loom/SKILL.md`、`~/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage 5 release task 在每次 minor 把 `__version__` 与本 frontmatter 同步 bump（`tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` 卡死 lockstep）。
 - **Install / Upgrade**:
   ```bash
-  ./install.sh install                                       # v0.8.4+ 统一 bash bootstrap（推荐）
-  # 或 v0.9.5 期间（PyPI 未发，Q-D-5 偏离默认）：
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5
-  popola skill upgrade --target=cursor                       # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
-  popola init                                                # 兜底：手动 re-run 触发 idempotent install
+  ./install.sh install                # v0.9.6 起 default --from=git（canonical, tracks main）
+  ./install.sh install --ref=v0.9.6   # tag-pinned 等价于 git+...@v0.9.6
+  # 手动 fallback（PyPI 未发，Q-D-5 偏离默认 / BL-v0.9.x-PyPI）：
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6
+  popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
+  popola init                            # 兜底：idempotent re-run
   ```
-  > v0.9.3 是 GitHub Release-only；v0.9.x 之后某个 patch 会 promote 到 PyPI（`BL-v0.9.x-PyPI`）。届时 `pip install popolaloom`（不带 `git+`）会直接装到 v0.9.x。
+  > v0.9.6 GitHub Release-only。`./install.sh install` 默认改走 `--from=git`，不再因 PyPI 镜像 404 而失败（`.local/feedbacks/feedback_for_v0.9.4.md` 第 2-5 行）。当 v0.9.x promote 到 PyPI（`BL-v0.9.x-PyPI`）后，`--from=pypi --version=0.9.x` 是 opt-in。
 - **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
 - **Drift detection (v0.5.0+ Stage S4)**: `popola doctor` 走 5 项审计（Skill / Daemon / Lark-cli / ArkTower / IDE config），任一 ✗ 退 1，全 ✓ 退 0；脚本可信赖此 exit code。
 - **Idempotency**: 所有 `popola init <verb>` 二次执行打印 `SKIP <path> (already installed)` 不覆盖；要强制刷新走 `popola skill upgrade`。
