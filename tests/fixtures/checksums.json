@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "generated_at": "2026-05-08T16:20:45Z",
+  "fixtures": {
+    "cloud/agents/create_agent_v0.json": {
+      "sha256": "92e535fc5e387a41e3e38df254e125f49c8e507d4e2946d3751646d4c8a96481",
+      "size_bytes": 568
+    },
+    "cloud/agents/get_agent_v0.json": {
+      "sha256": "e97173042a7783cfb121886955f40da7ccf7edf99c45e4926d400795fc886b14",
+      "size_bytes": 423
+    },
+    "cloud/agents/list_runs_v0.json": {
+      "sha256": "ac82a558339bb4e2a372797ef0ee892067b1146909306c9d3575a3ba7a8819b0",
+      "size_bytes": 567
+    },
+    "cloud/errors/401_unauthorized_v0.json": {
+      "sha256": "ad823394ce9025c1da1d2ee8b9982f6047c1ee84eddf5a39e033f651b6ee65b8",
+      "size_bytes": 420
+    },
+    "cloud/errors/422_repo_allowlist_v0.json": {
+      "sha256": "c496b6f02c5b069837558acf1df6cfd30323893f67a8f5b3a96df80bd5762c1a",
+      "size_bytes": 530
+    },
+    "cloud/runs/get_run_v0.json": {
+      "sha256": "83973958316d7cce1c5cf9da67ef3e315b0519cf382c43934796beb9b8d43335",
+      "size_bytes": 508
+    },
+    "cloud/runs/stream_assistant_v0.txt": {
+      "sha256": "4f2856d36efd8db7830aab42da8358f697a6185f275691ccc529385b12861e0b",
+      "size_bytes": 97
+    }
+  }
+}

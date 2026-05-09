@@ -291,6 +291,11 @@ _MISLEADING_WORDING_ALLOWLIST: frozenset[str] = frozenset(
         # text on overwrite; allowlist for safety (the file is regenerated
         # per release per v0.7.0+ policy).
         "RELEASE_NOTES.md",
+        # v0.9.0 GA: migration guide legitimately documents v0.8.x anti-patterns
+        # in the upgrade notes (e.g., "Residential / port-forward / public-IP
+        # setups are unsupported" — cautionary text pointing back to
+        # known-issues.md per the v0.8.7 transport correction).
+        "docs/MIGRATION_v07_to_v09.md",
     }
 )
 

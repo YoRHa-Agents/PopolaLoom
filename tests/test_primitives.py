@@ -9,11 +9,14 @@ Test coverage:
 - supervise: register + on_complete callback, unsubscribe idempotency,
   multiple parents on same child
 - federate: 3-CLI dispatch, majority vote computation, unanimous strict mode
+
+v0.9.0 (BL-v0.9.0-1, Q-D-3) — the legacy v0.3.0 ``RelayHandoffEnvelope``
+Pydantic model is removed; relay tests now exercise the canonical
+:class:`popolaloom.handoff.HandoffEnvelope`.
 """
 
 from __future__ import annotations
 
-import json
 from pathlib import Path
 from typing import Any
 
@@ -24,13 +27,13 @@ from popolaloom.daemon import Popolad
 from popolaloom.daemon.primitives import (
     FederateConfig,
     FederateResult,
-    RelayHandoffEnvelope,
     SuperviseRegistry,
     federate,
     relay,
     tally_votes,
 )
 from popolaloom.daemon.primitives.federate import VoteOutcome
+from popolaloom.handoff import HandoffEnvelope
 
 # ── helpers / fixtures ───────────────────────────────────────────────────
 
@@ -74,26 +77,80 @@ def test_relay_dispatches_child_with_parent_task_id_link(popolad: Popolad) -> No
     assert child_handle.cli == "claude"
 
 
-def test_relay_handoff_envelope_validates_with_extra_forbid() -> None:
-    """RelayHandoffEnvelope is strict on unknown fields (No Silent Failures)."""
-    valid = RelayHandoffEnvelope(
+def test_relay_builds_handoff_envelope_with_relay_payload() -> None:
+    """relay's helper builds a v0.7.1+ HandoffEnvelope mirroring the v0.7.3 bridge mapping."""
+    from popolaloom.daemon.primitives.relay import _build_handoff_envelope
+
+    envelope = _build_handoff_envelope(
         source_cli="cursor",
         target_cli="claude",
-        source_task_id="cursor-abc",
-        payload={"x": 1},
-        reason="r",
+        source_task_id="cursor-23e74ec18917",
+        payload={"diff": "abc", "kind": "review"},
+        reason="cross-CLI code review",
         constraints={"timeout": 1800},
+        prompt="[relay from cursor-23e74ec18917] cross-CLI code review",
+    )
+
+    assert isinstance(envelope, HandoffEnvelope)
+    assert envelope.source_cli == "cursor"
+    assert envelope.target_cli == "claude"
+    assert envelope.parent_task_id == "cursor-23e74ec18917"
+    assert envelope.reason == "cross-CLI code review"
+    assert envelope.constraints == {"timeout": 1800}
+    assert envelope.adapter_extra == {
+        "_relay_payload": {"diff": "abc", "kind": "review"}
+    }
+    assert "relay" in envelope.tags
+    assert envelope.prompt == (
+        "[relay from cursor-23e74ec18917] cross-CLI code review"
+    )
+
+
+def test_relay_builds_handoff_envelope_empty_payload_yields_empty_extra() -> None:
+    """Empty payload omits the ``_relay_payload`` key (matches v0.7.3 bridge)."""
+    from popolaloom.daemon.primitives.relay import _build_handoff_envelope
+
+    envelope = _build_handoff_envelope(
+        source_cli="cursor",
+        target_cli="claude",
+        source_task_id="cursor-empty",
+        payload={},
+        reason="empty payload relay",
+        constraints={},
+        prompt="[relay from cursor-empty] empty payload relay",
+    )
+
+    assert envelope.adapter_extra == {}
+
+
+def test_relay_handoff_envelope_validates_with_extra_forbid() -> None:
+    """HandoffEnvelope is strict on unknown fields (No Silent Failures)."""
+    from datetime import UTC, datetime
+
+    valid = HandoffEnvelope(
+        handoff_id="claude-relay-deadbeef",
+        created_at=datetime.now(UTC),
+        source_cli="cursor",
+        target_cli="claude",
+        parent_task_id="cursor-abc",
+        prompt="[relay from cursor-abc] r",
+        adapter_extra={"_relay_payload": {"x": 1}},
+        constraints={"timeout": 1800},
+        reason="r",
+        tags=["relay"],
     )
     assert valid.target_cli == "claude"
 
     with pytest.raises(ValidationError):
-        RelayHandoffEnvelope(
+        HandoffEnvelope(
+            handoff_id="claude-relay-deadbeef",
+            created_at=datetime.now(UTC),
             source_cli="cursor",
             target_cli="claude",
-            source_task_id="cursor-abc",
-            payload={},
+            parent_task_id="cursor-abc",
+            prompt="[relay from cursor-abc] r",
             reason="r",
-            unknown_field="x",
+            unknown_field="x",  # type: ignore[call-arg]
         )
 
 
@@ -109,15 +166,30 @@ def test_relay_unknown_source_raises_value_error(popolad: Popolad) -> None:
         )
 
 
-def test_relay_handoff_envelope_fixture_loads() -> None:
-    """Fixture file matches RelayHandoffEnvelope schema (round-trips OK)."""
-    fixture_path = Path(__file__).parent / "fixtures" / "handoff_envelope.json"
-    data = json.loads(fixture_path.read_text(encoding="utf-8"))
-    envelope = RelayHandoffEnvelope.model_validate(data)
-    assert envelope.source_cli == "cursor"
-    assert envelope.target_cli == "claude"
-    assert envelope.payload["next_step"] == "review"
-    assert envelope.constraints["timeout"] == 1800
+def test_relay_blank_target_cli_raises_value_error(popolad: Popolad) -> None:
+    """relay() with blank target_cli raises ValueError (No Silent Failures)."""
+    parent_task_id = popolad.dispatch_task(cli="cursor", prompt="parent step")
+    with pytest.raises(ValueError, match="target_cli"):
+        relay(
+            popolad,
+            source_task_id=parent_task_id,
+            target_cli="",
+            payload={},
+            reason="ok",
+        )
+
+
+def test_relay_blank_reason_raises_value_error(popolad: Popolad) -> None:
+    """relay() with blank reason raises ValueError (No Silent Failures)."""
+    parent_task_id = popolad.dispatch_task(cli="cursor", prompt="parent step")
+    with pytest.raises(ValueError, match="reason"):
+        relay(
+            popolad,
+            source_task_id=parent_task_id,
+            target_cli="claude",
+            payload={},
+            reason="",
+        )
 
 
 # ── F2.3 — supervise ─────────────────────────────────────────────────────

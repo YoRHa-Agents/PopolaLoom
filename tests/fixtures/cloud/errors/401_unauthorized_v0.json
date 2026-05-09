@@ -1,0 +1,11 @@
+{
+  "__comment": "Any /v1/* 401 Unauthorized; minimal valid shape; v0.9.0 W2.1 seed (not a live capture).",
+  "__captured_at": "2026-05-08T00:00:00Z",
+  "__source": "fixture-only seed (PopolaLoom v0.9.0 Stage 2 W2.1)",
+  "__error_catalog_entry": "UnauthorizedError",
+  "error": {
+    "code": "unauthorized",
+    "message": "Invalid or expired API key.",
+    "hint_url": "https://cursor.com/docs/cloud-agents/auth"
+  }
+}

@@ -1,5 +1,13 @@
 """Default-lane docs lint for the v0.8.8 Q-C-4 RELEASE_NOTES callout (M4 mitigation).
 
+**v0.9.0 GA NOTE**: ``RELEASE_NOTES.md`` is overwritten per release per
+the v0.7.0+ policy, so the v0.8.8-anchored Q-C-4 callout no longer lives
+in the current RELEASE_NOTES (v0.9.0 GA). The Q-C-4 偏离默认 behavior
+change is now documented in ``docs/MIGRATION_v07_to_v09.md`` (T1.1.2);
+these tests SKIP automatically when the v0.8.8 H1 is not present.
+The historical record lives in ``CHANGELOG.md`` ``## [0.8.8]`` entry.
+
+
 These tests enforce the locked structure of the M4 callout in
 ``RELEASE_NOTES.md`` per
 ``.local/research/v0.8.8_multi_run/relay-auto-safety.md`` §6 + the
@@ -78,16 +86,22 @@ def _v088_block_bounds(text: str) -> tuple[int, int]:
     """Locate the v0.8.8 block inside RELEASE_NOTES.md and return [start, end).
 
     The block starts at the v0.8.8 ``# `` H1 heading and ends at either
-    the end of the file or the next ``# `` H1 heading (RELEASE_NOTES is
-    overwritten per release per the v0.7.0+ policy, so in practice there
-    is exactly ONE H1 — ``# PopolaLoom v0.8.8 — ...``).
+    the end of the file or the next ``# `` H1 heading.
+
+    **v0.9.0 GA**: the v0.7.0+ overwrite policy means RELEASE_NOTES.md
+    holds ONLY the current release's content. When v0.8.8 H1 is absent
+    (i.e., we're past v0.8.8), this function calls ``pytest.skip`` —
+    the M4 callout's historical record lives in CHANGELOG ``[0.8.8]``
+    and the behavior-change documentation moved to
+    ``docs/MIGRATION_v07_to_v09.md``.
     """
     h1 = _V088_H1_RE.search(text)
     if h1 is None:
-        pytest.fail(
-            "RELEASE_NOTES.md missing the v0.8.8 H1 heading "
-            "(expected '# PopolaLoom v0.8.8 ...'); the M4 callout cannot be "
-            "located without anchoring on the version block."
+        pytest.skip(
+            "RELEASE_NOTES.md is past v0.8.8 (overwrite policy per "
+            "v0.7.0+); Q-C-4 callout history is in CHANGELOG [0.8.8] + "
+            "MIGRATION_v07_to_v09.md. Test re-activates if a future "
+            "release reverts to v0.8.8."
         )
     start = h1.start()
     # Find the next H1 (if any) — a NEXT release would land its own H1

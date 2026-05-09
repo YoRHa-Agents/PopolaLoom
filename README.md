@@ -1,8 +1,10 @@
 # PopolaLoom
 
-> **v0.8.5** — Same local-first weave as earlier releases plus **Cursor Cloud Agents** wiring via **`--cli=cursor-cloud`** (REST + httpx, Option α research). Tasks can run on Cursor’s cloud surface (`https://cursor.com/dashboard/cloud-agents`) instead of (`or in parallel with`) a local subprocess. **Requires non-empty `CURSOR_API_KEY` for cloud**. The stable hands-off envelope (`popolaloom.handoff`) persists every dispatch as a `cat`-friendly Markdown envelope under `.local/.agent/handoff/<id>.md`, injects it into the spawned sub-CLI's environment where applicable (local adapters), and makes replay deterministic via `popola dispatch --replay <id>`.
+<!-- updated: 2026-05-09 -->
 
-[![Status](https://img.shields.io/badge/status-pre--alpha-orange.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
+> **v0.9.0 GA (2026-05-08)** — First Generally Available release. Stable surface is locked under SemVer per [`docs/API_STABILITY.md`](docs/API_STABILITY.md); upgrades from v0.7.x walk through [`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md). Cumulative cloud surface — `--cli=cursor-cloud` REST dispatch (v0.8.5), SSE attach + 422 catalog (v0.8.6), Cloud HITL γ MCP tool (v0.8.7), multi-run + cost + auto-relay (v0.8.8) — all promoted to stable; new in v0.9.0: `popola init --target=cloud-only` (Q-D-4 偏离默认), fixtures hash-lock + scheduled drift workflow, coverage gate `≥94%` codified in `pyproject.toml`. **GitHub Release-only** — for v0.9.0 GA install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0` (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](RELEASE_NOTES.md)). The `./install.sh` bootstrap defaults to PyPI and tracks the **latest published stable** (currently v0.8.x until the v0.9.x PyPI patch lands); use the `git+` form above for v0.9.0 specifically, or `./install.sh install --from=git` to install the latest `main` (post-tag = v0.9.0).
+
+[![Status](https://img.shields.io/badge/status-GA-brightgreen.svg)](#status) [![Coverage](https://img.shields.io/badge/coverage-94%25%2B-brightgreen.svg)](#status) [![License](https://img.shields.io/badge/license-MIT-blue.svg)](#license) [![Python](https://img.shields.io/badge/python-3.11%2B-blue.svg)](https://www.python.org/)
 
 ## What is PopolaLoom?
 
@@ -22,8 +24,17 @@ It is the multi-task / multi-CLI sibling of [DevolaFlow](https://github.com/YoRH
 
 ## 5-minute Quickstart
 
+<!-- updated: 2026-05-09 -->
+
 ```bash
-pip install popolaloom
+# v0.9.0 GA install — Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER.
+# The `pip install git+...@v0.9.0` form is the canonical v0.9.0 recipe (always works,
+# tag-pinned). `./install.sh install` defaults to PyPI and currently delivers the
+# previous v0.8.x line until the v0.9.x PyPI patch lands.
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
+# OR (auto-tracks main; post-tag = v0.9.0):
+./install.sh install --from=git
+
 popola init                          # auto-detect Cursor / Claude / Codex / Copilot
 popola popolad start                 # boot the UDS daemon
 popola dispatch "echo hello popola" --cli=cursor
@@ -32,13 +43,20 @@ popola attach <task_id> --follow     # tail SSE event stream
 popola doctor                        # 4-subsystem health check
 ```
 
-Or run the automated 6-step smoke (now includes `popola init --dry-run` at Step 0):
+Or run the automated 6-step local-CLI smoke (now includes `popola init --dry-run` at Step 0):
 
 ```bash
 bash examples/quickstart.sh
 ```
 
-For the long version with explanations, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
+For cloud-only teams (no local CLIs) the v0.9.0 GA copy-paste-ready cloud-agent walkthrough is shipped at the repo root:
+
+```bash
+export CURSOR_API_KEY="cr_..."          # required for cloud dispatch
+./cloud-quickstart.sh                   # init --target=cloud-only → daemon → dispatch → attach → cloud runs
+```
+
+For the long version with explanations, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md). For v0.7.x → v0.9.0 upgraders: [`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md). For the v0.9.x SemVer contract: [`docs/API_STABILITY.md`](docs/API_STABILITY.md).
 
 ## CLI verbs at a glance
 
@@ -82,7 +100,7 @@ Supported KEYs per adapter: see [`docs/USER_GUIDE.md#adapter-passthrough`](docs/
 
 ### Cloud Agent dispatch (v0.8.5+)
 
-<!-- updated: 2026-05-08 -->
+<!-- updated: 2026-05-09 -->
 
 PopolaLoom now speaks Cursor’s Background Agent REST alongside the historical local CLIs:
 
@@ -141,7 +159,7 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 
 ## Status
 
-**v0.8.5 — Cursor Cloud Agents + daemon poller + cloud HITL bridge.** Ships the sibling **`cursor-cloud` adapter**, non-terminal **`QUEUED` / `STARTING`** states with enriched `popola status` telemetry (agent + run identifiers + Cursor phase mapping), deterministic REST cancellations, Lark-friendly `/hitl/cloud/*` bridging, Tier-4+ opt-in **`real_cursor_cloud`** smoke tests, and exhaustive documentation bumps (see Decision matrix `.local/research/v0.8.5_cloud_agent/00-decision-matrix-zh.md` §7). **Unified install tooling from v0.8.4 remains unchanged** (`install.sh` / `popola skill uninstall`).
+**v0.9.0 GA — first Generally Available release (2026-05-08).** All cumulative v0.8.x cloud surface is promoted to stable under the SemVer contract in [`docs/API_STABILITY.md`](docs/API_STABILITY.md). v0.9.x patches ship no user-observable changes; v0.9.x minors may add new flags / fields / endpoints (additive only); breaking changes are deferred to v0.10.0 with a 1-minor `DeprecationWarning` cycle first. v0.7.x → v0.9.0 migration: [`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md). New in v0.9.0: `popola init --target=cloud-only` (Q-D-4 偏离默认), `tests/fixtures/` SHA-256 hash-lock + scheduled monthly drift-check workflow (Q-D-2), `--cov-fail-under=94` codified in `pyproject.toml` (Q-D-6), and the v0.8.x deprecation-shim sweep (Q-D-3 — see [MIGRATION §Breaking changes](docs/MIGRATION_v07_to_v09.md#v090--ga-deprecation-removals-pr-pending)). **For v0.9.0 GA: install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0`** — PyPI publish is deferred to a v0.9.x patch per Q-D-5 偏离默认 (see `BL-v0.9.x-PyPI` in TRACKER). `./install.sh install` defaults to PyPI and currently delivers the prior v0.8.x stable line until the v0.9.x PyPI patch promotes; pass `--from=git` to install latest `main` (post-tag = v0.9.0).
 
 | Capability | Status |
 |---|---|
@@ -172,7 +190,12 @@ The envelope is the **single source of truth** for dispatch payloads (E3 interna
 | **v0.8.4**: `popola skill uninstall --target=<...>` Typer verb | OK live |
 | **v0.8.5**: `--cli=cursor-cloud` + daemon cloud poller + `/hitl/cloud/*` RPC + `CURSOR_API_KEY` | OK live (`cursor` local path unchanged) |
 | **v0.8.5**: Tier-4+ `pytest -m real_cursor_cloud` quartet (skipped unless env var opt-in) | OK live |
-| 1729 default-lane tests / 94%+ coverage | OK live |
+| **v0.8.6**: SSE ingest, `runtime` column in `popola list`, 16-entry bilingual error catalog | OK live |
+| **v0.8.7**: `popolaloom_cloud_hitl_request` MCP tool + `cloud_hitl_request_card_v1` Lark card + `[hitl.cloud]` config | OK live (γ first-class) |
+| **v0.8.8**: Multi-run sextuple identity + `popola cloud runs` + `popola status --verbose` cost + `[cloud.backoff]` / `[cloud.busy_strategy]` + `popola relay` (auto-default + 5 mitigations) | OK live |
+| **v0.9.0 GA**: API stability boundary ([`docs/API_STABILITY.md`](docs/API_STABILITY.md)) + v0.7.x → v0.9.0 migration guide ([`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md)) | OK live |
+| **v0.9.0 GA**: `popola init --target=cloud-only` (Q-D-4 偏离默认) + `cloud-quickstart.sh` + `tests/fixtures/` SHA-256 hash-lock + scheduled drift workflow + `--cov-fail-under=94` codified | OK live |
+| 2325+ default-lane tests / 94%+ coverage (codified in `pyproject.toml`) | OK live |
 
 ## Architecture (TL;DR)
 
@@ -191,15 +214,29 @@ See [`docs/DEMO.md`](docs/DEMO.md) for example outputs and full session walkthro
 
 ## Install
 
-### One-line install (v0.8.4+)
+### v0.9.0 GA — canonical install (pip git+url; Q-D-5 偏离默认)
+
+> **v0.9.0 GA recipe** — PyPI publish is deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER). The canonical, tag-pinned recipe for v0.9.0 specifically is the `pip install git+url` form below. The `./install.sh install` bash bootstrap defaults to PyPI (`--from=pypi`) and currently resolves to the **previous v0.8.x stable line** — that path will become v0.9.x once the PyPI patch lands. Both shapes are also documented in [`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md#tldr) for v0.7.x upgraders.
 
 ```bash
+# Canonical v0.9.0 GA install (always-works, tag-pinned):
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
+
+# Alternate (auto-tracks main; equivalent to v0.9.0 immediately post-tag):
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
+  | bash -s -- install --from=git
+```
+
+### One-line install (v0.8.4+; tracks latest published stable)
+
+```bash
+# Latest published stable (currently v0.8.x; resolves to v0.9.x once BL-v0.9.x-PyPI lands)
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
 # or, with options:
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash -s -- install --scope=global --target=all
 ```
 
-The unified `install.sh` (v0.8.4+) wraps `pip install` + `popola skill install` + `popola popolad start` + `popola doctor` in a single shell command. Options: `--scope=global|project`, `--target=cursor|claude|codex|copilot|all`, `--from=pypi|git|<path>`, `--version=X.Y.Z`, `--no-skills`, `--no-daemon`, `--dry-run`. Run `./install.sh --help` for the full matrix; the script is idempotent and safe to re-run for upgrades.
+The unified `install.sh` (v0.8.4+) wraps `pip install` + `popola skill install` + `popola popolad start` + `popola doctor` in a single shell command. Options: `--scope=global|project`, `--target=cursor|claude|codex|copilot|all`, `--from=pypi|git|<path>`, `--version=X.Y.Z`, `--no-skills`, `--no-daemon`, `--dry-run`. Run `./install.sh --help` for the full matrix; the script is idempotent and safe to re-run for upgrades. **For v0.9.0 specifically use `pip install git+...@v0.9.0` or `./install.sh install --from=git`** — `--version=` requires `--from=pypi` (which currently delivers v0.8.x until the v0.9.x PyPI patch).
 
 ### Update / Uninstall
 
@@ -212,17 +249,36 @@ The unified `install.sh` (v0.8.4+) wraps `pip install` + `popola skill install` 
 ### Manual install (alternative)
 
 ```bash
-pip install popolaloom
+# v0.9.0 GA canonical path — install directly from the GitHub Release tag.
+# Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER.
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
+
 # OR from a clone (development):
+git clone https://github.com/YoRHa-Agents/PopolaLoom.git && cd PopolaLoom
 pip install -e ".[dev]"
 ```
+
+> Once v0.9.x publishes to PyPI (`BL-v0.9.x-PyPI`), `pip install popolaloom` will work directly. **For v0.9.0 GA users, use the git URL above** — `pip install popolaloom` (no `git+`) currently resolves to the previous v0.8.x line.
+
+### Cloud-only install (v0.9.0+)
+
+For teams running exclusively on Cursor Cloud Agents (no local CLIs), use the cloud-only scaffold + the bundled cloud quickstart:
+
+```bash
+mkdir my-cloud-project && cd my-cloud-project
+popola init --target=cloud-only
+# OR run the copy-paste-ready quickstart shipped at repo root:
+./cloud-quickstart.sh                     # idempotent; checks CURSOR_API_KEY + popola on PATH
+```
+
+See [USER_GUIDE — `popola init --target=cloud-only`](docs/USER_GUIDE.md#popola-init---targetcloud-only-v090) for the 3-file scaffold (`popolad.toml` / `.env.example` / `Makefile`), and [`cloud-quickstart.sh`](cloud-quickstart.sh) for the full dispatch → attach → cloud runs walkthrough.
 
 Verify the install:
 
 ```bash
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.8.5
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.0
 which popola                                                    # → /usr/local/bin/popola (or similar)
-popola version                                                  # → "popolaloom 0.8.5"
+popola version                                                  # → "popolaloom 0.9.0"
 ```
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Quick fix:
@@ -242,6 +298,20 @@ popola init all --global     # explicit: install for every IDE at user-home scop
 For step-by-step install with troubleshooting, see [`docs/QUICKSTART.md`](docs/QUICKSTART.md). For an LLM-driven install workflow, ask any host agent (Cursor / Claude / Codex / Copilot) `install popola` — the `install-popola` Skill (v0.7.0+; see `src/popolaloom/skills/install-popola/SKILL.md`) walks them through it.
 
 > **Packaging note**: PopolaLoom vendors the ArkTower subset required for task persistence, so a wheel install does not need a sibling ArkTower checkout. If ArkTower later becomes a normal package dependency, [`VENDORING.md`](VENDORING.md) documents how to retire the vendored copy.
+
+## v0.9.0 GA highlights
+
+<!-- updated: 2026-05-09 -->
+
+v0.9.0 is the **first Generally Available release**. It freezes the cumulative v0.8.x cloud surface as a stable SemVer contract, codifies test infrastructure for v0.9.x patches, and ships one new operator-visible feature:
+
+- **API stability boundary** — [`docs/API_STABILITY.md`](docs/API_STABILITY.md) defines what is **stable** (12 CLI verbs + 16 daemon RPC paths + 5 `popolaloom.*` Python symbols + 3 Skill front-matter keys) vs **experimental** (`popola cloud runs` table layout, `--verbose` cost block, `[cloud.relay]` defaults, `cloud.sse.*` sub-types, `_*`-prefixed internals). v0.9.x patches ship no user-observable changes; v0.9.x minors may add new flags / fields / endpoints; breaking changes deferred to v0.10.0 with a 1-minor `DeprecationWarning` cycle first. v0.7.x → v0.9.0 migration recipes: [`docs/MIGRATION_v07_to_v09.md`](docs/MIGRATION_v07_to_v09.md).
+- **`popola init --target=cloud-only`** (Q-D-4 偏离默认) — minimal cloud-dispatch-only project skeleton (3 files: `popolad.toml` / `.env.example` / `Makefile`), no IDE skill installs, no `.local/` workspace. The right starting point for teams running exclusively on Cursor Cloud Agents; the default `--target=full` profile is preserved byte-for-byte. See [USER_GUIDE](docs/USER_GUIDE.md#popola-init---targetcloud-only-v090) and the copy-paste-ready [`cloud-quickstart.sh`](cloud-quickstart.sh).
+- **Fixtures freeze + drift detection** — `tests/fixtures/` hash-locked via SHA-256 manifest (`tests/fixtures/checksums.json`); a scheduled monthly workflow (`.github/workflows/cloud-fixtures-drift-check.yml`, also `workflow_dispatch`) replays the Tier-4 `tests/real_*` suites against live Cursor REST + SSE and opens a `fixtures-drift` issue with a unified diff if the captured shape drifts. PR runs only verify the cheap SHA-256 lock — no live API quota burned by default.
+- **Coverage gate codified** — `pyproject.toml` pins `--cov-fail-under=94` (Q-D-6 lock); regressions auto-red the default lane.
+- **v0.8.x deprecation sweep** — legacy `RelayHandoffEnvelope`, `POST /relay` (v0.3.0 envelope body), `to_handoff_envelope` migration helper, `cloud.run_status` event sub-type, and the static `_ERROR_CATALOG["rate_limit"]["backoff"]` block are all **removed in v0.9.0** (Q-D-3); see [MIGRATION §Breaking changes](docs/MIGRATION_v07_to_v09.md#v090--ga-deprecation-removals-pr-pending) for the operator-side replacement matrix.
+
+> **Q-D-5 偏离默认 install note** — v0.9.0 is GitHub Release-only; PyPI publish is deferred to a v0.9.x patch (`BL-v0.9.x-PyPI` in `.local/feedbacks/TRACKER.md`). For v0.9.0 specifically install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0` (or `./install.sh install --from=git`). The `./install.sh install` default uses `--from=pypi` and currently resolves to the prior v0.8.x stable line; that surface will return v0.9.x only after the v0.9.x PyPI patch lands.
 
 ## v0.8.8 highlights
 

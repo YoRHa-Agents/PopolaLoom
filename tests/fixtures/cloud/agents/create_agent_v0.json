@@ -1,0 +1,16 @@
+{
+  "__comment": "POST /v1/agents 200 OK; minimal valid shape; v0.9.0 W2.1 seed (not a live capture).",
+  "__captured_at": "2026-05-08T00:00:00Z",
+  "__source": "fixture-only seed (PopolaLoom v0.9.0 Stage 2 W2.1); regen via scripts/regen_fixtures_from_live.py once it lands",
+  "agent": {
+    "id": "bc-fixture-201",
+    "url": "https://cursor.com/agents/bc-fixture-201",
+    "model": { "id": "composer-2" },
+    "createdAt": "2026-05-08T00:00:00Z"
+  },
+  "run": {
+    "id": "run-fixture-201-1",
+    "status": "creating",
+    "createdAt": "2026-05-08T00:00:00Z"
+  }
+}

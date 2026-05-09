@@ -1,0 +1,4 @@
+event: assistant
+data: {"role":"assistant","delta":"Reading project structure..."}
+id: msg-0001
+

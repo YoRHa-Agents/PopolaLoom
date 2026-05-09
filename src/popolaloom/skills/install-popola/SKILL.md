@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.8.8
+version: 0.9.0
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -10,7 +10,7 @@ metadata:
   cliHelp: "popola init --help"
 tier: 1
 token_estimate: 1900
-last_updated: "2026-05-08"
+last_updated: "2026-05-09"
 triggers:
   - "install popola"
   - "install popola-loom"
@@ -60,6 +60,27 @@ The canonical `popola-loom/SKILL.md` (loaded after install) assumes `popola` is 
 
 If you will drive **Cursor Background / Cloud Agents** through PopolaLoom (`--cli=cursor-cloud`), provision a **`CURSOR_API_KEY`** alongside your shell profile **before** invoking `popola dispatch`. This is unrelated to ordinary local `cursor-agent` binaries — omit the key entirely if you only use `--cli=cursor|claude|codex|kimi|copilot` subprocess adapters.
 
+### Cloud-only project init (v0.9.0 GA)
+
+For teams that operate **exclusively** through Cursor Cloud Agents (no local `cursor-agent` / `claude` / `codex` subprocess CLIs needed), v0.9.0 GA ships a `popola init --target=cloud-only` profile that drops a minimal 3-file project scaffold — `popolad.toml` + `.env.example` + `Makefile` — with **no IDE skill installs** and **no `.local/` workspace surface**. Use this AFTER Step 1 (pip install) instead of Step 2 (`popola init`):
+
+```bash
+mkdir my-cloud-project && cd my-cloud-project
+popola init --target=cloud-only
+#   OK   ./popolad.toml
+#   OK   ./.env.example
+#   OK   ./Makefile
+
+cp .env.example .env
+# Edit .env, set CURSOR_API_KEY=cr_...    (from https://cursor.com/dashboard → API Keys)
+
+set -a && . ./.env && set +a            # export the env to the current shell
+popola popolad start
+popola dispatch --cli=cursor-cloud --prompt "Plan database migration scaffolding"
+```
+
+The scaffold is **disjoint** from the IDE skill install paths (`~/.cursor/skills/popola-loom/...` etc.), so a project that started as `--target=cloud-only` can later add per-IDE Skill installs by re-running `popola init <verb>` (Step 2 above) without conflicts. Idempotent on re-run; pass `--force` to overwrite operator edits. See [`docs/USER_GUIDE.md#popola-init---targetcloud-only-v090`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#popola-init---targetcloud-only-v090) for the full walkthrough and the [`cloud-quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/cloud-quickstart.sh) bash bootstrap that wraps it end-to-end.
+
 ## Pre-flight checks (run first, in order)
 
 ```bash
@@ -103,12 +124,14 @@ If the one-line bootstrap fails (e.g. corporate firewall blocks `raw.githubuserc
 ### Step 1 — pip install (one of these)
 
 ```bash
-pip install popolaloom                                          # PyPI (when published)
-pip install -e .                                                # from a clone (dev workflow)
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git  # latest main
+# v0.9.0 GA (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER):
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0   # canonical v0.9.0 install (tag-pinned)
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git      # latest main (post-tag = v0.9.0)
+pip install -e .                                                    # from a clone (dev workflow)
+pip install popolaloom                                              # PyPI (currently v0.8.x; v0.9.x once BL-v0.9.x-PyPI lands)
 ```
 
-If the user is on a corporate network that blocks PyPI, the `pip install git+...` form usually still works (HTTPS to github.com is whitelisted in most environments).
+If the user is on a corporate network that blocks PyPI, the `pip install git+...` forms usually still work (HTTPS to github.com is whitelisted in most environments). **Note (v0.9.0 GA)**: `pip install popolaloom` (no `git+`) currently resolves to the prior v0.8.x stable line; for v0.9.0 specifically use the tag-pinned `git+...@v0.9.0` form.
 
 ### Step 2 — register the Skill into every IDE you use
 

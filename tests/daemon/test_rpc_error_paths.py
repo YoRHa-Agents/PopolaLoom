@@ -323,7 +323,13 @@ async def test_relay_runtime_error_returns_400(
 async def test_relay_happy_returns_envelope(
     asgi_client: httpx.AsyncClient,
 ) -> None:
-    """``POST /relay`` happy path: dispatch parent first, then relay → 200 + envelope."""
+    """``POST /relay`` happy path: dispatch parent first, then relay → 200 + envelope.
+
+    v0.9.0 (BL-v0.9.0-1) — the response now carries a canonical
+    :class:`HandoffEnvelope` (not the legacy v0.3.0
+    ``RelayHandoffEnvelope``); ``parent_task_id`` replaces the old
+    ``source_task_id`` field.
+    """
     r_parent = await asgi_client.post(
         "/dispatch",
         json={"cli": "echo_rpc_err", "prompt": "parent"},
@@ -342,9 +348,11 @@ async def test_relay_happy_returns_envelope(
     body = r.json()
     assert "child_task_id" in body
     envelope = body["handoff_envelope"]
-    assert envelope["source_task_id"] == parent_tid
+    assert envelope["parent_task_id"] == parent_tid
     assert envelope["target_cli"] == "echo_rpc_err"
     assert envelope["source_cli"] == "echo_rpc_err"
+    assert envelope["reason"] == "needs help"
+    assert "relay" in envelope["tags"]
 
 
 # ── 5. POST /supervise — happy + ValueError + callback fire ──────────────

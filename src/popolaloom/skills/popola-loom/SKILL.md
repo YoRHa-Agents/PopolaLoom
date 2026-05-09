@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.8
+version: 0.9.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -17,6 +17,8 @@ last_updated: "2026-05-08"
 
 
 # PopolaLoom Skill
+
+> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
 
 ## What is PopolaLoom?
 
@@ -190,9 +192,11 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
    popola eval show --json
    ```
 
-### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+)
+### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+; **stable since v0.9.0**)
 
 <!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA**：本 Workflow 涉及的 CLI verb (`popola dispatch --cli=cursor-cloud`) + `--cli-flag` keys + `popola list` `runtime` 列 + `popola attach --no-stream` flag 全部进 v0.9.x stable surface。仅 `cloud.sse.*` 子事件类型 payload shape 仍 experimental（[API_STABILITY §3.4](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#34-sse-event-sub-types-cloudsse)）。需要纯云端项目脚手架走 `popola init --target=cloud-only`（v0.9.0+，Q-D-4 偏离默认）；要 copy-paste-ready 上手脚本走 [`cloud-quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/cloud-quickstart.sh)。
 
 云端 Background Agent：**不走本机 subprocess**，而是用 httpx 调 Cursor Cloud Agents REST（`CloudCursorClient`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()` + **cloud poller** 线程对齐状态事件。
 
@@ -359,9 +363,11 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
 
 **5 项缓解（M1..M5）的快速记忆**（详见 [USER_GUIDE Cross-PR relay](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088)）：(1) **repo_allowlist 默认 `[]` 阻断一切**；(2) `0o600` append-only audit log，crash 也留 `dispatch_inflight` 行；(3) detect-secrets 预扫 6 种 shape（AWS/GitHub PAT/Stripe/JWT/Slack/high-entropy），命中即 exit 1 + `…<last4>` 脱敏；(4) RELEASE_NOTES 顶部 callout（M4 lint 强制）；(5) `tests/cli/test_relay_safety.py` 在默认 CI 走道里跑。要恢复 v0.8.7 「人工确认」默认行为：在 `popolad.toml` 设 `[cloud.relay] mode = "confirm"`。
 
-### Workflow 9 — `popola cloud runs` 列出云端 run 历史（v0.8.8+）
+### Workflow 9 — `popola cloud runs` 列出云端 run 历史（v0.8.8+；**experimental in v0.9.0**）
 
 <!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA**：`popola cloud` 子 app 本身 stable，`runs` verb 在 v0.9.0 仍标 **experimental**：6 列默认表格布局、`--include-events` slow-path JSON shape、跨 verb 404→exit `4`（vs `popola dispatch --cli=cursor-cloud` 的 100）可能在 v0.9.x minor 调整（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)；CHANGELOG 会显式记 column / shape 变更）。
 
 `popola cloud runs <task_id>` 包装 Cursor `GET /v1/agents/{id}/runs`，按 newest-first 列出该 cloud agent 的全部 run（含手工通过 `https://cursor.com/agents` 浏览器追加的）；`popola list` 仍保持 single-row-per-task。完整 dispatch → wait → cloud runs 一条龙：
 
@@ -438,13 +444,17 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 
 ## Version + upgrade
 
-- **Current**: 0.4.1 — `popola init` (Stage S2/S3 of the v0.5.0 milestone, available on `feature/v0.5.0-skill-install`) 自动安装本 SKILL.md 到 `<scope>/.cursor/skills/popola-loom/SKILL.md`、`<scope>/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage S5 of v0.5.0 bumps `__version__` (and this frontmatter) to 0.5.0 in lockstep.
-- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
-- **Upgrade**:
+- **Current**: v0.9.0 GA（2026-05-08，**stable since v0.9.0**）— Skill 前缀 (`name`/`version`/`description`) 进 v0.9.x SemVer-stable 锁；body 内容（含本 Workflow 编号）显式标 out-of-scope（[API_STABILITY §7](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#7-out-of-scope)）。`popola init` (Stage S2/S3 起) 自动写本 SKILL.md 到 `~/.cursor/skills/popola-loom/SKILL.md`、`~/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage 5 release task 在每次 minor 把 `__version__` 与本 frontmatter 同步 bump（`tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` 卡死 lockstep）。
+- **Install / Upgrade**:
   ```bash
-  pip install --upgrade popolaloom
-  popola skill upgrade --target=cursor   # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
-  popola init                             # 兜底：手动 re-run 触发 idempotent install
+  ./install.sh install                                       # v0.8.4+ 统一 bash bootstrap（推荐）
+  # 或 v0.9.0 GA 期间（PyPI 未发，Q-D-5 偏离默认）：
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
+  popola skill upgrade --target=cursor                       # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
+  popola init                                                # 兜底：手动 re-run 触发 idempotent install
   ```
+  > v0.9.0 是 GitHub Release-only；v0.9.x 之后某个 patch 会 promote 到 PyPI（`BL-v0.9.x-PyPI`）。届时 `pip install popolaloom`（不带 `git+`）会直接装到 v0.9.x。
+- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
 - **Drift detection (v0.5.0+ Stage S4)**: `popola doctor` 走 5 项审计（Skill / Daemon / Lark-cli / ArkTower / IDE config），任一 ✗ 退 1，全 ✓ 退 0；脚本可信赖此 exit code。
 - **Idempotency**: 所有 `popola init <verb>` 二次执行打印 `SKIP <path> (already installed)` 不覆盖；要强制刷新走 `popola skill upgrade`。
+- **v0.7.x → v0.9.0 升级**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)（4 条 spec-locked recipes：A audit `TaskState` predicates；B fix `popola list` shell parsers；C port `POST /hitl/cloud/request` callers；D preserve v0.8.7 `popola relay` 默认行为通过 `[cloud.relay] mode = "confirm"`）。

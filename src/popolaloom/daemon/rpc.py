@@ -46,19 +46,18 @@ from pydantic import BaseModel, Field
 
 from popolaloom import __version__
 from popolaloom.daemon.primitives import (
-    RelayHandoffEnvelope,
-)
-from popolaloom.daemon.primitives import (
     federate as federate_primitive,
 )
 from popolaloom.daemon.primitives import (
     relay as relay_primitive,
 )
+from popolaloom.daemon.primitives.relay import _build_handoff_envelope
 from popolaloom.daemon.primitives.supervise import (
     SubscriptionHandle,
     get_default_registry,
 )
 from popolaloom.daemon.server import AdapterCallback, Popolad
+from popolaloom.handoff import HandoffEnvelope
 from popolaloom.hitl import HITLChannel, HITLReply
 from popolaloom.hitl.cloud_bridge import CloudHITLBridge, bridge_for_daemon
 
@@ -255,7 +254,14 @@ class CloudHITLAnswerResponse(BaseModel):
 
 
 class RelayRequest(BaseModel):
-    """Body of ``POST /relay`` (v0.3.0 F2.5)."""
+    """Body of ``POST /relay`` (v0.3.0 F2.5; v0.9.0 native HandoffEnvelope).
+
+    Wire shape unchanged across the v0.7.3 → v0.9.0 migration so v0.2.x
+    callers (notably the ``popola_inject_subtask`` MCP alias) keep
+    working unchanged. Only the response envelope schema has migrated
+    from the legacy v0.3.0 ``RelayHandoffEnvelope`` to the v0.7.1+
+    :class:`HandoffEnvelope`.
+    """
 
     source_task_id: str = Field(..., min_length=1)
     target_cli: str = Field(..., min_length=1)
@@ -267,10 +273,16 @@ class RelayRequest(BaseModel):
 
 
 class RelayResponse(BaseModel):
-    """Response body of ``POST /relay``."""
+    """Response body of ``POST /relay`` (v0.9.0 native HandoffEnvelope).
+
+    BL-v0.9.0-1 / Q-D-3 — the legacy v0.3.0 ``RelayHandoffEnvelope`` is
+    removed; the response now carries the canonical
+    :class:`HandoffEnvelope` so the relay primitive emits the same wire
+    shape as :func:`Popolad.dispatch_with_envelope`.
+    """
 
     child_task_id: str
-    handoff_envelope: RelayHandoffEnvelope
+    handoff_envelope: HandoffEnvelope
 
 
 class RelayDispatchRequest(BaseModel):
@@ -792,14 +804,21 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
             raise HTTPException(status_code=400, detail=str(exc)) from exc
 
         parent_handle = popolad.state_store.get(req.source_task_id)
-        source_cli = req.source_cli or (parent_handle.cli if parent_handle else "unknown")
-        envelope = RelayHandoffEnvelope(
-            source_cli=source_cli,
+        resolved_source_cli = req.source_cli or (
+            parent_handle.cli if parent_handle else "unknown"
+        )
+        child_prompt = (
+            req.prompt
+            or f"[relay from {req.source_task_id}] {req.reason}"
+        )
+        envelope = _build_handoff_envelope(
+            source_cli=resolved_source_cli,
             target_cli=req.target_cli,
             source_task_id=req.source_task_id,
             payload=req.payload,
             reason=req.reason,
             constraints=req.constraints,
+            prompt=child_prompt,
         )
         return RelayResponse(child_task_id=child_task_id, handoff_envelope=envelope)
 

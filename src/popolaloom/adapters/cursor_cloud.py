@@ -135,7 +135,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudAuthError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 77,
         "hint_en": (
             "Your Cursor API key was rejected as invalid. Generate or rotate a key at "
@@ -154,7 +153,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudApiKeyRevokedError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 77,
         "hint_en": (
             "The API key was revoked or never existed. Open "
@@ -172,7 +170,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudPlanRequiredError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 78,
         "hint_en": (
             "Cloud Agents require a paid Cursor plan; this account is on a free "
@@ -190,7 +187,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudAuthError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 77,
         "hint_en": (
             "Your Cursor team role is not allowed to call this endpoint. Ask a "
@@ -208,7 +204,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudFeatureUnavailableError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 78,
         "hint_en": (
             "The requested cloud feature is not enabled for your team. Visit "
@@ -226,7 +221,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudNotFoundError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 100,
         "hint_en": (
             "Cursor cannot find this agent or run — it may have been deleted or "
@@ -243,9 +237,7 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "code": ["agent_busy"],
         "message_pattern": None,
         "subclass": "CursorCloudConflictError",
-        # v0.8.6 default; revisit in v0.8.8 per Q-C-5 (queue + notify)
         "retry": False,
-        "backoff": None,
         "cli_exit": 102,
         "hint_en": (
             "Another run on this agent is still active. Wait for it to finish, or "
@@ -265,7 +257,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudConflictError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 102,
         "hint_en": (
             "This agent is archived and cannot accept new runs. Unarchive it (POST "
@@ -284,7 +275,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudConflictError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 102,
         "hint_en": (
             "This run already reached a terminal state — there is nothing to "
@@ -302,7 +292,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudStreamExpiredError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 75,
         "hint_en": (
             "The live stream for this run has expired. Fetch terminal state via "
@@ -326,7 +315,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         ),
         "subclass": "RepoAllowlistError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 78,
         "hint_en": (
             "The Cursor GitHub App is not allow-listed for this repository. Open "
@@ -350,7 +338,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         ),
         "subclass": "GithubAppMissingError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 78,
         "hint_en": (
             "The Cursor GitHub App is not installed on the owning organization. A "
@@ -374,7 +361,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         ),
         "subclass": "GithubAppPermissionError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 78,
         "hint_en": (
             "The Cursor GitHub App is installed but missing required permissions "
@@ -394,7 +380,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudValidationError",
         "retry": False,
-        "backoff": None,
         "cli_exit": 64,
         "hint_en": (
             "Cursor rejected the request body — likely an invalid repos[0].url, "
@@ -409,20 +394,11 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         ),
     },
     "rate_limit": {
-        # full handling deferred to v0.8.8 per Q-C-3 (rate limiting policy)
         "http": 429,
         "code": ["rate_limit_exceeded"],
         "message_pattern": None,
         "subclass": "CursorCloudRateLimitError",
         "retry": True,
-        "backoff": {
-            "kind": "exponential",
-            "base_s": 1,
-            "factor": 2,
-            "cap_s": 16,
-            "max_attempts": 5,
-            "honor_header": "Retry-After",
-        },
         "cli_exit": 75,
         "hint_en": (
             "Cursor rate-limited this client; immediate retry will fail. Honor the "
@@ -440,13 +416,6 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         "message_pattern": None,
         "subclass": "CursorCloudError",
         "retry": True,
-        "backoff": {
-            "kind": "exponential",
-            "base_s": 1,
-            "factor": 2,
-            "cap_s": 4,
-            "max_attempts": 4,
-        },
         "cli_exit": 75,
         "hint_en": (
             "Cursor's backend is failing — try again in a minute. If the error "
@@ -562,7 +531,7 @@ class CursorCloudValidationError(CursorCloudError):
 
 
 class CursorCloudRateLimitError(CursorCloudError):
-    """429 — rate limit; retryable per ``Retry-After`` (full backoff in v0.8.8)."""
+    """429 — rate limit; retryable per ``Retry-After`` + :class:`BackoffConfig`."""
 
     hint_en = _ERROR_CATALOG["rate_limit"]["hint_en"]
     hint_zh = _ERROR_CATALOG["rate_limit"]["hint_zh"]
