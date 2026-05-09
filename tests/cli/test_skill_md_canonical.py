@@ -156,7 +156,7 @@ def test_skill_md_version_matches_package(
 
 
 def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
-    """Body length sits in ``[8 000, 32 000]`` chars (~ 2 000–8 000 tokens).
+    """Body length sits in ``[8 000, 34 000]`` chars (~ 2 000–8 500 tokens).
 
     Bump history:
       - Original Stage S3 window: ``[8 000, 16 000]`` (target ~ 11 000
@@ -167,22 +167,27 @@ def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
         deployment instructions + 22-item quick-reference table; see
         v0.8.7 REVIEW.md M-skill-md and the v0.8.7-cloud-hitl-prod
         change folder for context).
-      - **v0.8.8 bump: 28 000 → 32 000** (Workflow 8 — Cross-PR relay
+      - v0.8.8 bump: 28 000 → 32 000 (Workflow 8 — Cross-PR relay
         with Q-C-4 deviation callout + 5 mitigations + Workflow 9 —
         ``popola cloud runs`` walkthrough w/ multi-run lifecycle; see
         v0.8.8 plan §4.3 T2.3.1 + §4.4 T2.4.2 for AC and
-        relay-auto-safety.md §6 for the safety callout that anchors
-        the new content. The SKILL is the canonical user-facing
-        reference for cloud workloads and the additions are
-        intentional.
-    Any further growth past 32 000 must re-trigger the trim-vs-bump
+        relay-auto-safety.md §6.
+      - **v0.9.1 bump: 32 000 → 34 000** (Workflow 10 — Self-hosted
+        worker handoff via ``popola cloud worker {debug,start,status,
+        handoff}``; the SKILL is the canonical user-facing reference
+        for cloud workloads and Workflow 10 documents the third
+        dispatch lane v0.9.1 introduces alongside ``--cli=cursor`` and
+        ``--cli=cursor-cloud``. Compressed to a single 14-line block
+        (mental model + 4-verb summary + minimal command surface);
+        full prose lives in ``docs/USER_GUIDE.md``).
+    Any further growth past 34 000 must re-trigger the trim-vs-bump
     discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v0.8.8 bump: 28_000 → 32_000 (Workflow 8 relay + Workflow 9 cloud runs)
-    assert 8_000 <= body_len <= 32_000, (
+    # v0.9.1 bump: 32_000 → 34_000 (Workflow 10 self-hosted worker handoff)
+    assert 8_000 <= body_len <= 34_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 32 000] token-budget window (target ~ 11 000–28 000)."
+        f"[8 000, 34 000] token-budget window (target ~ 11 000–30 000)."
     )
 
 

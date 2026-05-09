@@ -110,6 +110,19 @@ PopolaLoom now speaks Cursor’s Background Agent REST alongside the historical 
 - **Live attach (v0.8.6+)**: `popola attach <id> --follow` for `runtime=cloud` tasks now ingests Cursor's SSE stream by default and auto-falls back to the legacy poll-only view on `410 stream_expired` / network errors; pass `--no-stream` to force the legacy path. See [`docs/USER_GUIDE.md#sse-ingest-v086`](docs/USER_GUIDE.md#sse-ingest-v086) for the full contract (incl. ≤3 s tolerated divergence between SSE and `cloud_phase`).
 - **Opt-in QA**: `pytest tests/real_cursor_cloud/ -m real_cursor_cloud` only after exporting the API key — four cheap tests (create+cancel sentinel, metadata GETs, bogus-key auth assertion); default CI lane **deselects** `-m real_cursor_cloud`.
 
+### Self-hosted worker handoff (v0.9.1+)
+
+<!-- updated: 2026-05-09 -->
+
+`popola cloud worker` wraps the upstream Cursor `agent worker` CLI so an operator on this machine can register the box with Cursor's [Cloud Agents UI](https://cursor.com/agents) and hand off a task prompt without confusing the flow with the REST-driven `popola dispatch --cli=cursor-cloud` path:
+
+- `popola cloud worker debug` — preflight (auth method, repo label, visibility probe).
+- `popola cloud worker start` — launch the worker (My Machines mode by default; `--pool` requires a service-account `CURSOR_API_KEY` per Cursor's Self-Hosted Pool contract).
+- `popola cloud worker status` — read `/healthz` + `/readyz` + `/metrics` from the worker's optional management server (loopback only; no API key needed).
+- `popola cloud worker handoff` — emit a copy-paste-ready prompt + URL envelope for the dashboard handoff (the envelope explicitly notes that no popola task id is created).
+
+`popola dispatch --cli=cursor-cloud` remains the only path that creates a popola-tracked Cloud Agent run via REST. Full reference: [`docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091`](docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091).
+
 > **Enterprise / Self-Hosted (v0.8.7+) — production cloud HITL with Lark approvals.** The broad-audience cloud-dispatch path above does not require any HITL prerequisites. To wire a Cursor Cloud Agent to defer high-stakes decisions to a human via Lark over the new MCP tool `popolaloom_cloud_hitl_request`, you need a Cursor **Self-Hosted Pool worker** (γ — first-class) or a **public HMAC-protected HTTPS gateway** (β — backup) per the v0.8.7 deployment-modes contract. See [`docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted`](docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted) for the install steps, topology diagrams, egress allowlist, secret-rotation runbook, and the L6 / L8 / L10 hardening callouts. If you have neither a self-hosted worker option nor a public HTTPS gateway, residential NAT / port-forward setups are **not supported** — see [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](docs/known-issues.md#v087--cloud-hitl-transport-anti-patterns).
 
 Example `popola list` rendering with the v0.8.6+ `runtime` column (between `task_id` and `cli`):

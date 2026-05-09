@@ -141,6 +141,33 @@ app = typer.Typer(
 )
 
 
+# v0.9.1+ — register the self-hosted worker subcommand group under
+# ``popola cloud worker``.  Imported lazily inside the registration
+# helper so an ``ImportError`` in the worker module surfaces as a clear
+# CLI error (No Silent Failures) instead of a top-level import crash.
+def _register_worker_subapp() -> None:
+    """Attach :data:`cloud_worker_cmd.app` as ``popola cloud worker``.
+
+    Lives in a helper so unit tests can import :mod:`cloud_cmd` without
+    triggering the side-effect of building the Typer subapp tree
+    (matters because ``test_cloud_runs.py`` imports the module before
+    monkeypatching its indirection points).
+    """
+    from popolaloom.cli import cloud_worker_cmd
+
+    app.add_typer(
+        cloud_worker_cmd.app,
+        name="worker",
+        help=(
+            "Self-hosted Cursor worker helpers (debug / start / status / handoff). "
+            "Wraps `agent worker` for the My Machines + Self-Hosted Pool flows."
+        ),
+    )
+
+
+_register_worker_subapp()
+
+
 # ── transport (daemon UDS) ────────────────────────────────────────────────
 
 

@@ -28,6 +28,7 @@ translation_url: /zh/USER_GUIDE.html
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
 - [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085)
+- [Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)](#self-hosted-worker-handoff-popola-cloud-worker-v091)
 - [Cloud HITL (Enterprise / Self-Hosted) (v0.8.7+)](#cloud-hitl-enterprise--self-hosted)
 - [Multi-run cloud agents (v0.8.8+)](#multi-run-cloud-agents-v088)
 - [Cost transparency — `status --verbose` (v0.8.8+)](#cost-transparency--status---verbose-v088)
@@ -565,6 +566,120 @@ Canonical design references:
 - `.local/research/v0.8.6_sse/state-source-of-truth.md` (writer contract + §4 reconciliation rules — local-only)
 - `.local/research/v0.8.6_sse/422-error-catalog.md` (canonical hint source — local-only)
 - [`docs/known-issues.md` — Cloud task hydration after daemon restart](known-issues.md)
+
+## Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
+
+<!-- updated: 2026-05-09 -->
+
+> **Tier**: any plan. v0.9.1 adds a thin wrapper around Cursor's `agent worker` CLI so an operator on this machine can spin up a worker, sanity-check the connection, and hand off a task prompt to the [Cloud Agents UI](https://cursor.com/agents) without confusing it with the broad-audience `popola dispatch --cli=cursor-cloud` REST path. This section is the reference for the new four-verb subcommand group; the upstream Cursor docs at [My Machines](https://cursor.com/docs/cloud-agent/my-machines) and [Self-Hosted Pool](https://cursor.com/docs/cloud-agent/self-hosted-pool) remain the source of truth for the worker semantics themselves.
+
+### Three dispatch shapes (mental model)
+
+PopolaLoom v0.9.1+ recognises three distinct paths for getting a Cursor agent to do work; each surface is wired separately:
+
+| Surface | What runs where | How you start it | Needs `CURSOR_API_KEY`? | Appears in Cloud Agents UI? |
+|---|---|---|---|---|
+| Local agent | Local subprocess on this box | `popola dispatch --cli=cursor` | No | No |
+| Cloud REST | Cursor-managed cloud workload | `popola dispatch --cli=cursor-cloud` (see [Cloud Agent dispatch](#cloud-agent-dispatch-v085)) | Yes | Yes |
+| Self-hosted worker | Cursor cloud orchestration + tool calls executed on this box | `popola cloud worker start` + dashboard / Slack / GitHub trigger | Pool only (service-account key); My Machines accepts browser login | Yes |
+
+`popola cloud worker` does **not** create a Cloud Agent run by itself. The worker process registers this machine with Cursor; the actual run is created from the dashboard ([cursor.com/agents](https://cursor.com/agents)), a chat-surface trigger (Slack / GitHub / Linear), or the Cloud Agents REST. The `worker handoff` verb just emits the prompt + URL pair so the human-driven step is copy-paste-friendly.
+
+### Verb reference
+
+| Verb | Purpose | Notes |
+|---|---|---|
+| `popola cloud worker debug` | Wraps `agent worker debug` preflight | Forwards stdout/stderr verbatim. `--pool` requires `CURSOR_API_KEY`. |
+| `popola cloud worker start` | Start the worker (foreground) | My Machines mode by default; `--pool` is Self-Hosted Pool (Enterprise). `--dry-run` prints argv. |
+| `popola cloud worker status` | Probe `/healthz` + `/readyz` + `/metrics` | Default `--management-addr 127.0.0.1:39231`. Loopback only; no `CURSOR_API_KEY` needed. |
+| `popola cloud worker handoff` | Emit prompt + URL envelope | `--worker-id` builds `https://cursor.com/agents#workerId=<id>`; `--worker-url` overrides. JSON or Markdown. |
+
+### Worker bootstrap walkthrough
+
+```bash
+# 1. Preflight — runs `agent worker debug` and reports auth method, repo
+#    label, and visibility probe. Confirms this machine can reach
+#    api2.cursor.sh with the user's `agent login` session.
+popola cloud worker debug --worker-dir "$(pwd)" --name dev-1
+
+# 2. Start the worker. My Machines mode (default) accepts the browser
+#    login that `agent login` set up; the worker's UUID + Cloud Agents
+#    URL are printed once the outbound connection is live.
+popola cloud worker start \
+    --worker-dir "$(pwd)" \
+    --name dev-1 \
+    --management-addr 127.0.0.1:39231
+
+# Output (foreground):
+#   Worker is now running
+#   Name: dev-1
+#   Run agents: https://cursor.com/agents#workerId=c60a7ec7-...
+
+# 3. From a second terminal, sanity-check the worker without leaving
+#    the foreground process. No CURSOR_API_KEY required.
+popola cloud worker status --management-addr 127.0.0.1:39231 --json | jq
+
+# 4. Hand off a task prompt to the dashboard. The envelope makes it
+#    explicit that no popola task id is created — the run lives in
+#    Cursor's Cloud Agents UI, not in `~/.popola/events/`.
+popola cloud worker handoff \
+    --worker-id c60a7ec7-a15c-4aff-a9d8-0b550c9893dc \
+    --prompt "Refactor the caching layer and add unit tests"
+```
+
+### Pool mode requires a service-account API key
+
+`agent worker start --pool` is Enterprise-only; PopolaLoom mirrors that contract:
+
+```bash
+$ popola cloud worker start --pool --pool-name popolaloom
+error: --pool requires a Cursor service-account API key (Enterprise).
+Export CURSOR_API_KEY=<service-account-key> and retry, OR drop --pool
+to launch a shared 'My Machines' worker (works with `agent login`).
+  see: https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers
+```
+
+Exit code `77` (matches the cloud-auth code used by `popola cloud runs`). Set `CURSOR_API_KEY=<service-account-key>` (NOT a personal / user / team key — see Cursor's [service accounts](https://cursor.com/docs/account/enterprise/service-accounts) doc for details) and retry. My Machines mode (`popola cloud worker start` without `--pool`) works with the standard browser-login auth.
+
+### Status payload
+
+`popola cloud worker status --json` returns the canonical envelope below. `metrics.values` only surfaces `cursor_self_hosted_worker_*` gauges and counters — unrelated metrics are dropped silently for forward-compat with newer worker builds.
+
+```json
+{
+  "management_addr": "127.0.0.1:39231",
+  "healthz": {"status": "ok", "status_code": 200, "timestamp": "..."},
+  "readyz":  {"status": "ok", "status_code": 200, "connected": true, "claimed": false, "timestamp": "..."},
+  "metrics": {
+    "status": 200,
+    "values": {
+      "cursor_self_hosted_worker_connected": 1,
+      "cursor_self_hosted_worker_session_active": 0,
+      "cursor_self_hosted_worker_connect_attempts_total": 1
+    }
+  }
+}
+```
+
+Connection failures (worker not running, wrong `--management-addr`, firewall) exit `1` with a hint that names the bind address; invalid CLI flags exit `2`.
+
+### Handoff envelope contract
+
+`popola cloud worker handoff` is intentionally side-effect-free: it never writes to `~/.popola/`, never spawns subprocesses, and never calls Cursor REST. The output makes the contract explicit so operators don't conflate the dashboard handoff with the REST path:
+
+```json
+{
+  "kind": "popola.cloud.worker.handoff",
+  "version": "v0.9.1",
+  "title": null,
+  "worker_url": "https://cursor.com/agents#workerId=...",
+  "prompt": "...",
+  "popola_task_id": null,
+  "note": "PopolaLoom did NOT create a Cloud Agent run. Open the worker_url in a browser and paste the prompt to launch a Cloud Agent on this self-hosted worker, OR use `popola dispatch --cli=cursor-cloud` (requires CURSOR_API_KEY) to create a run via REST."
+}
+```
+
+When you do want a popola-tracked task id (so `popola list` / `popola attach` work) and you have a `CURSOR_API_KEY`, use `popola dispatch --cli=cursor-cloud` instead — that path creates a run via REST, persists `cursor_agent_id` / `cursor_run_id` in the daemon, and surfaces the task in `popola list` with `runtime=cloud`.
 
 ## Cloud HITL (Enterprise / Self-Hosted)
 

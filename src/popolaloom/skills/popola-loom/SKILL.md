@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.9.0
+version: 0.9.1
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -49,6 +49,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
 | `popola dispatch ... --cli=cursor-cloud` | 派发任务到 Cursor **Cloud Agents** REST（远端跑，不占本机 subprocess） | 见下文 Workflow 6 |
+| `popola cloud worker {debug,start,status,handoff}` | 启动 / 查看本机 self-hosted Cursor worker，并把 prompt 交给浏览器端 Cloud Agents UI（不创建 popola task id） | 见下文 Workflow 10 |
 | Cloud Agent 调 `popolaloom_cloud_hitl_request` MCP 工具 | 云端任务遇高风险决策时 deferer 给真人审批走 Lark（v0.8.7+，Enterprise/γ 模式） | 见下文 Workflow 7 |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
 | `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
@@ -410,6 +411,24 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
 **和 `popola status --verbose` 的对比**：`status --verbose` 显示**单条最新 run**的 5 字段 cost block（`cost: n/a` + `model` + `wall` + `link` 等；honest disclosure，不编 cost 数字）；`popola cloud runs` 显示**全部 run 的可分页历史**。错误退出码：`task_id` 本地未知 → exit `4`（per Q-C-1 OQ-1，**与 `popola dispatch` 的 100 退出码不同**，CHANGELOG §Changed 显式记录此偏离）；401/403 → exit `77`（per Q-C-1 OQ-2，对齐 `_ERROR_CATALOG`）；429 / 5xx → exit `75`；403 plan_required → exit `78`。
 
 出处：wire 级细节见 `.local/research/v0.8.8_multi_run/runs-subcommand-spec.md`（`.local/` 仅本地存在，已 gitignore）。
+
+### Workflow 10 — Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
+
+<!-- updated: 2026-05-09 -->
+
+触发：`agent worker` / "self-hosted worker" / "My Machines" / "Self-Hosted Pool" / "把本机注册到 Cursor 云端"。**不**创建 popola task id；要 popola-tracked task 切回 Workflow 6 (`--cli=cursor-cloud` REST)。
+
+4 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），`--pool` 必须 service-account `CURSOR_API_KEY`（缺则退 77）；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`。
+
+```bash
+popola cloud worker start --worker-dir "$(pwd)" --name dev-1 \
+    --management-addr 127.0.0.1:39231
+# → "Run agents: https://cursor.com/agents#workerId=<uuid>"
+popola cloud worker status --management-addr 127.0.0.1:39231 --json | jq
+popola cloud worker handoff --worker-id <uuid> --prompt "..."
+```
+
+完整文档：[USER_GUIDE §Self-hosted worker handoff](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091)。
 
 ## Configuration
 
