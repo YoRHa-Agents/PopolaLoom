@@ -22,11 +22,13 @@ translation_url: /zh/QUICKSTART.html
 ## Step 1 — Install popolaloom
 
 ```bash
-# Current v0.9.1 release.
-# PyPI promotion is deferred, so use the GitHub tag for the v0.9.x surface.
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1
-# OR from this repo checkout:
-./install.sh install --from=git
+# Current v0.9.6 release.
+# v0.9.6 closes feedback_for_v0.9.4 lines 2-5: ./install.sh install no longer defaults
+# to PyPI (which 404'd on Chinese pip mirrors that don't carry popolaloom yet).
+# PyPI promotion is still deferred for the v0.9.x line, so use the GitHub paths:
+./install.sh install                                              # canonical (default --from=git, tracks main)
+./install.sh install --ref=v0.9.6                                 # canonical tag-pinned (recommended for v0.9.6)
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6 # manual fallback (always-works, tag-pinned)
 
 # OR from a clone (dev):
 git clone https://github.com/YoRHa-Agents/PopolaLoom.git
@@ -34,12 +36,12 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.1
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.6
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.9.1"
+popola version                       # → "popolaloom 0.9.6"
 ```
 
-If you intentionally want the latest PyPI-published stable line, `pip install popolaloom` still works, but it currently resolves to the previous v0.8.x line until the `BL-v0.9.x-PyPI` promotion patch lands.
+If you intentionally want the latest PyPI-published stable line, `pip install popolaloom` still works, but it currently resolves to the previous v0.8.x line until the `BL-v0.9.x-PyPI` promotion patch lands. After that, `./install.sh install --from=pypi --version=0.9.x` becomes the opt-in PyPI path; the `./install.sh install` default stays on the GitHub URL because v0.9.6 flipped it there.
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
 
@@ -136,7 +138,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.9.1 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.9.6 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.

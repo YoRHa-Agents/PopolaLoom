@@ -6,11 +6,11 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.9.3)
+# PopolaLoom — User Guide (v0.9.6)
 
 <!-- updated: 2026-05-10 -->
 
-> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.3 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.3 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.3`** (canonical, tag-pinned) **or `./install.sh install --from=git`** (alternate, auto-tracks main) — PyPI publish is deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The `./install.sh install` default uses `--from=pypi` and currently resolves to the prior v0.8.x stable line.
+> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.6 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.6 install via `./install.sh install`** (canonical; v0.9.6 default `--from=git` tracks `main`) **or `./install.sh install --ref=v0.9.6`** (canonical tag-pinned recipe) **or `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6`** (manual fallback) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). v0.9.6 closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: the official installer no longer defaults to `pip install popolaloom` (which 404'd on Chinese pip mirrors); pass `--from=pypi --version=0.9.x` only after `BL-v0.9.x-PyPI` lands.
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
@@ -123,19 +123,23 @@ Per-IDE install paths:
 
 `popola init` differs from `popola skill upgrade` in two ways: (1) `init` is **idempotent** — second invocation prints `SKIP <path> (already installed)`; `upgrade` **always overwrites** (after writing a `.popola-loom-bak.<ts>` backup). (2) `init` is the first-time-installer entry point; `upgrade` is the post-`pip install --upgrade popolaloom` refresh entry point.
 
-### `install.sh` — bash bootstrap installer (v0.8.4+)
+### `install.sh` — bash bootstrap installer (v0.8.4+; defaults flipped in v0.9.6)
 
 The unified bash installer at the repo root (`install.sh`) wraps the four-step manual workflow (`pip install` → `popola skill install` → `popola popolad start` → `popola doctor`) into a single shell command. The same script also drives the inverse path: `install.sh uninstall` removes the Skills and uninstalls the package; `install.sh update` upgrades the wheel and refreshes the on-disk SKILL.md.
 
-> **Current-release install note (v0.9.3)**: PyPI promotion is still deferred, so the default `install.sh install` / `--from=pypi` path resolves to the previous v0.8.x line. Use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.3` or `./install.sh install --from=git` when you need the v0.9.3 surface, including workspace worker reuse and `popola cloud worker dispatch`.
+> **Current-release install note (v0.9.6)**: closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5 — the `--from` default flipped from `pypi` to `git` because PyPI publish remains deferred for the v0.9.x line (Q-D-5 偏离默认 / `BL-v0.9.x-PyPI`). A fresh `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. New `--ref=<tag|branch|sha>` flag pins the install to a specific tag (`./install.sh install --ref=v0.9.6` is the canonical recipe). Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI promotion patch lands; until then `--from=pypi` resolves to the prior v0.8.x stable line.
 
 ```bash
-# Pull from GitHub and run as a one-liner
+# Pull from GitHub and run as a one-liner (v0.9.6 default --from=git tracks main)
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
 
 # Same, with explicit options
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
   | bash -s -- install --scope=global --target=all
+
+# Same, tag-pinned for reproducibility (v0.9.6+ canonical recipe)
+curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
+  | bash -s -- install --ref=v0.9.6
 
 # After a clone — same script, local invocation
 ./install.sh install --scope=project --target=cursor
@@ -147,10 +151,10 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 
 | Verb | Purpose |
 |---|---|
-| `install` (default) | `pip install popolaloom` (currently v0.8.x until PyPI promotion) → `popola skill install` → `popola popolad start` (best-effort) → `popola doctor` (best-effort) |
-| `update` | `pip install --upgrade popolaloom` → `popola skill upgrade --target=<...>` → `popola doctor` |
+| `install` (default) | `pip install` (v0.9.6 default `--from=git` tracks main; `--ref=<tag>` pins; `--from=pypi --version=X.Y.Z` is the PyPI fallback once `BL-v0.9.x-PyPI` lands) → `popola skill install` → `popola popolad start` (best-effort) → `popola doctor` (best-effort) |
+| `update` | `pip install --upgrade <spec>` → `popola skill upgrade --target=<...>` → `popola doctor` |
 | `uninstall` | `popola popolad stop` (best-effort) → `popola skill uninstall --target=<...>` → `pip uninstall popolaloom` (gated on confirmation) → optional `rm -rf $POPOLA_HOME` when `--purge` is set |
-| `version` | Print `install.sh v0.8.4` and exit |
+| `version` | Print `install.sh v0.9.6` and exit |
 | `help` / `--help` / `-h` | Print usage and exit |
 
 #### Flag matrix
@@ -159,7 +163,8 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 |---|---|---|
 | `--scope=<global\|project>` | install / update / uninstall | Skill scope (default: `global`) |
 | `--target=<cursor\|claude\|codex\|copilot\|all>` | install / update / uninstall | Which IDE Skill (default: `all`) |
-| `--from=<pypi\|git\|PATH>` | install / update | Install source (default: `pypi`) |
+| `--from=<git\|pypi\|PATH>` | install / update | Install source (**default in v0.9.6+: `git`**, tracks `main`; previously `pypi`) |
+| `--ref=<tag\|branch\|sha>` | install / update | (v0.9.6+ NEW) Append `@<ref>` to the GitHub URL — requires `--from=git`; e.g. `--ref=v0.9.6` |
 | `--version=<X.Y.Z>` | install / update | Pin a PyPI version (requires `--from=pypi`) |
 | `--python=<bin>` | all | Python interpreter (default: search `python3.12 → python3.11 → python3 → python`) |
 | `--no-skills` | all | Skip the Skill install / uninstall step |
@@ -174,24 +179,28 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 
 | Value | Translates to |
 |---|---|
-| `pypi` (default) | `pip install popolaloom` |
+| `git` (**default in v0.9.6+**) | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
+| `git` + `--ref=<ref>` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git@<ref>` (e.g. `--ref=v0.9.6` → `…@v0.9.6`) |
+| `pypi` | `pip install popolaloom` (currently delivers prior v0.8.x line until `BL-v0.9.x-PyPI` lands) |
 | `pypi` + `--version=X.Y.Z` | `pip install popolaloom==X.Y.Z` |
-| `git` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
 | any other value (filesystem path) | `pip install <path>` (works for local clones, wheel files, and tarballs) |
 
-For example: `./install.sh install --from=./dist/popolaloom-0.9.3-py3-none-any.whl` installs from a locally-built wheel.
+For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.whl` installs from a locally-built wheel. Contradictory inputs (`--ref` with `--from=pypi`, `--version=` without `--from=pypi`, `--ref` on the `uninstall` verb) fail loudly per the workspace No-Silent-Failures rule.
 
 #### Examples
 
 ```bash
-# Current v0.9.3 release from GitHub (recommended until PyPI promotion)
-./install.sh install --from=git
+# Canonical v0.9.6 install (default --from=git, tracks main)
+./install.sh install
 
-# Install only for Cursor at project scope, from the latest main on GitHub
-./install.sh install --target=cursor --scope=project --from=git
+# Canonical tag-pinned v0.9.6 install (recommended for reproducibility)
+./install.sh install --ref=v0.9.6
 
-# Install pinned to a specific PyPI version (currently previous v0.8.x line)
-./install.sh install --version=0.8.4
+# Install only for Cursor at project scope (default --from=git applies)
+./install.sh install --target=cursor --scope=project
+
+# Install pinned to a specific PyPI version (currently delivers prior v0.8.x line until BL-v0.9.x-PyPI)
+./install.sh install --from=pypi --version=0.9.6
 
 # Update only the package without touching Skill files
 ./install.sh update --no-skills
@@ -204,6 +213,7 @@ For example: `./install.sh install --from=./dist/popolaloom-0.9.3-py3-none-any.w
 
 # See exactly what would happen without touching disk
 ./install.sh install --dry-run
+./install.sh install --dry-run --ref=v0.9.6
 ./install.sh uninstall --dry-run --yes
 ```
 
@@ -520,7 +530,7 @@ The other 14 entries cover `401 unauthorized`, `401 api_key_not_found`, `403 rol
 
 <!-- updated: 2026-05-09 -->
 
-> **Install prerequisite (v0.9.3 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.3 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.3` (canonical, tag-pinned) OR `./install.sh install --from=git` (alternate). The default `./install.sh install` and `pip install popolaloom` paths currently resolve to the prior v0.8.x stable line until the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
+> **Install prerequisite (v0.9.6 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.6 install via `./install.sh install` (canonical; v0.9.6 default `--from=git` tracks `main`) OR `./install.sh install --ref=v0.9.6` (canonical tag-pinned recipe) OR `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6` (manual fallback). v0.9.6 closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
 
 
 `popola init --target=cloud-only` is the v0.9.0 W2.4 scaffold profile that drops a **minimal, cloud-dispatch-only project skeleton** — three files at the project root, no IDE skill installs, no `.local/` workspace, no local CLI shims, no local-tier HITL stubs. It is the right starting point when:

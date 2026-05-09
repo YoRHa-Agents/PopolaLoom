@@ -1,55 +1,60 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md). Per-version `release-notes-v*.md` files were consolidated into this single file in v0.7.0 (per user feedback v0.6.1#2).
 
-# PopolaLoom v0.9.5 — Init-time Cursor API key intake
+# PopolaLoom v0.9.6 — Install.sh default no longer requires PyPI
 
 <!-- updated: 2026-05-10 -->
 
 > Released: 2026-05-10
 
-> **How to install v0.9.5** (Q-D-5 偏离默认 carries forward; PyPI promotion remains tracked as `BL-v0.9.x-PyPI`):
+> **How to install v0.9.6** (Q-D-5 偏离默认 carries forward; PyPI promotion remains tracked as `BL-v0.9.x-PyPI`):
 >
 > ```bash
-> pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5
-> pip install 'popolaloom[credentials] @ git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5'
-> ./install.sh install --from=git
+> ./install.sh install                                                # canonical (default --from=git, tracks main)
+> ./install.sh install --ref=v0.9.6                                   # canonical tag-pinned (recommended for v0.9.6)
+> pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6   # manual fallback
 > ```
 
 ## Theme
 
-v0.9.5 is a strictly additive patch on top of v0.9.4 that closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md): if the operator hands `popola init` a Cursor API key on the way in, PopolaLoom forwards the value to the existing v0.9.2 OS-keyring resolver so they never have to re-enter it. The flag composes with every init path so no second invocation is needed.
+v0.9.6 is a strictly additive patch on top of v0.9.5 that closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: the official installer (`./install.sh`) used to default to `pip install popolaloom`, but PyPI publish remains intentionally deferred for the v0.9.x line (Q-D-5 偏离默认 / `BL-v0.9.x-PyPI`), so operators on Chinese pip mirrors hit `404 popolaloom` and the canonical install path silently failed. v0.9.6 fixes that with a default flip and adds a new tag-pin flag so a fresh `./install.sh install` works without PyPI.
 
 ## Highlights
 
-- **`popola init --cursor-api-key VAL`** — non-interactive intake. The literal value is forwarded to [`popolaloom.credentials.store_cursor_api_key`](src/popolaloom/credentials.py); the API key never appears in stdout / stderr (only the SHA-256 fingerprint).
-- **`popola init --cursor-api-key-file PATH`** — read the first non-empty line of `PATH` (utf-8) and persist it the same way. Mutually exclusive with `--cursor-api-key`. Missing or empty files are rejected (No Silent Failures).
-- **`--configure-cursor-auth` works on every init path** — auto-detect, verb subcommand (`cursor` / `claude` / `copilot` / `codex` / `local` / `all`), `--target=cloud-only`, `--interactive`. Passing `--cursor-api-key` / `--cursor-api-key-file` implies `--configure-cursor-auth`. The verb subcommand path runs the helper AFTER the verb body returns via a click `ctx.call_on_close` hook so install + credential persistence stay in lockstep.
-- **`--dry-run` short-circuits credential persistence** with a clear one-line skip message. Per the workspace No-Silent-Failures rule for secrets, the helper never prompts and never persists during a preview. Operators see exactly why the credential step was elided.
-- **Best-effort when `popolaloom[credentials]` is missing** — the helper prints an actionable hint pointing at the extra and the `CURSOR_API_KEY` env-var fallback, then returns without exiting non-zero. The install path itself still succeeds; only credential persistence is degraded.
+- **Default install source flipped from PyPI to GitHub** — `./install.sh install` now defaults to `--from=git` (tracks `main`) instead of `--from=pypi`. A fresh bootstrap on a Chinese pip mirror that doesn't carry `popolaloom` yet succeeds end-to-end. The 404 surface that broke the v0.9.x install path is exercised in the default lane (`tests/cli/test_install_script.py::test_install_script_install_default_uses_git_source` pins the new default so a future regression that flips it back to `pypi` fails fast).
+- **New `--ref=<tag|branch|sha>` flag** — append `@<ref>` to `git+https://github.com/YoRHa-Agents/PopolaLoom.git` so `./install.sh install --ref=v0.9.6` is the canonical tag-pinned recipe. Mirror of `--version=X.Y.Z` for the `--from=pypi` path; `--ref` requires `--from=git` and is forbidden for the `uninstall` verb (matches the existing `--version` semantics). Per the workspace No-Silent-Failures rule, contradictory inputs (`--ref` with `--from=pypi`, `--ref` with a local path source, `--ref` on `uninstall`) fail loudly with a clear error.
+- **`POPOLA_INSTALL_SCRIPT_VERSION` 0.8.4 → 0.9.6** — bash bootstrap surface change advertised explicitly so operators know which behavior they're getting from `install.sh version`. `./install.sh --help` documents the new default for `--from`, the new `--ref` flag, and the `install --ref=v0.9.6` plus `install --from=pypi --version=0.9.6` examples.
+- **PyPI fallback preserved** — `./install.sh install --from=pypi --version=0.9.6` keeps working for operators who specifically need PyPI; the path will become live once `BL-v0.9.x-PyPI` lands. Until then `--from=pypi` (with or without `--version=`) resolves to the prior v0.8.x stable line.
+- **`verb_install` log line transparency** — the install banner now prints `from=${FROM} ref=${REF:-(none)}` so the resolved install spec is visible (debug parity with how `--version` is already surfaced).
 
 ## Test surface
 
 Local verification before PR:
 
 ```bash
-python -m pytest tests/cli/test_init_credential_intake.py tests/cli/test_init_configure_cursor_auth.py tests/cli/test_init_cmd.py tests/cli/test_init_cmd_edge_cases.py tests/cli/test_init_paths.py tests/cli/test_init_interactive.py tests/cli/test_init_cloud_only.py tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py
+python -m pytest tests/cli/test_install_script.py tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py
 ruff check src/popolaloom tests/
 mypy src/popolaloom
 git diff --check
-pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=popolaloom --cov-report=term-missing --cov-report=xml:coverage-local.xml
-rm coverage-local.xml
+bash -n install.sh
+./install.sh --help | head -40
+./install.sh install --dry-run --no-daemon --no-skills
+./install.sh install --dry-run --no-daemon --no-skills --ref=v0.9.6
+./install.sh install --dry-run --no-daemon --no-skills --from=pypi --version=0.9.6
+pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=popolaloom --cov-report=term-missing --cov-fail-under=94 -q
+rm -f coverage-local.xml coverage.json .coverage*
 ```
 
-Results (focused subset): 118 passed, 2 skipped (the 2 skips are the v0.8.8 Q-C-4 callout lints that auto-skip post-overwrite per `tests/docs/test_release_notes_callout.py` — see CHANGELOG `[0.8.8]` for the historical record). Default-lane coverage holds the v0.9.4 floor at ≥94%; `ruff check src/popolaloom tests/` clean, `mypy src/popolaloom` clean, `git diff --check` clean.
+`tests/cli/test_install_script.py` lifts from 13 → 16 cases (3 new + 2 modified to assert the new git default; the `--help` smoke also asserts `--ref` appears in the rendered usage matrix). Default-lane coverage holds the v0.9.5 floor at ≥94%; `ruff check src/popolaloom tests/` clean, `mypy src/popolaloom` clean, `git diff --check` clean.
 
 ## Companion docs
 
-- [`CHANGELOG.md`](CHANGELOG.md) §[0.9.5]
-- [`README.md`](README.md) current release banner
-- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §"Credentials & secure storage" — new v0.9.5 init-time intake subsection
-- [`docs/API_STABILITY.md`](docs/API_STABILITY.md) v0.9.x stable surface — v0.9.5 init-time credential intake flags
+- [`CHANGELOG.md`](CHANGELOG.md) §[0.9.6]
+- [`README.md`](README.md) current release banner + v0.9.6 highlights section + install commands re-ordered (canonical `./install.sh install` first, tag-pinned `./install.sh install --ref=v0.9.6` second, manual `pip install git+...@v0.9.6` third)
+- [`docs/USER_GUIDE.md`](docs/USER_GUIDE.md) §"`install.sh` — bash bootstrap installer" — flag matrix + `--from=` source resolution table updated for the new git default and the new `--ref` flag
+- [`docs/API_STABILITY.md`](docs/API_STABILITY.md) §2 stable surfaces — v0.9.6 install.sh default flip + `--ref` flag join the v0.9.x stable surface
 
 ## Known limitations
 
-- PyPI publish remains deferred (`BL-v0.9.x-PyPI`); use the GitHub tag-pinned install commands above.
-- Single-tenant keyring slot still applies (one Cursor API key per machine, service `popolaloom.cursor` / username `default`); use the `CURSOR_API_KEY` env-var override to switch personal vs service-account contexts (unchanged from v0.9.2).
-- Best-effort credential persistence when `popolaloom[credentials]` is missing: the install path still succeeds, but the helper prints a hint pointing at the extra and the env-var fallback rather than persisting the key (intentional — v0.9.5 keeps the install path additive).
+- PyPI publish remains deferred (`BL-v0.9.x-PyPI`); use the GitHub tag-pinned install commands above. The default install no longer needs PyPI, so the impact is minimal — operators who explicitly need PyPI can opt in via `--from=pypi --version=0.9.x` once the promotion patch lands.
+- `--ref` accepts arbitrary git refs (branches, SHAs, and tags all work because `pip install git+...@<ref>` resolves them the same way). Operators MUST verify they used the intended ref. The install banner now prints `from=git ref=<value>` so the resolved spec is visible. v0.9.6 does not gate `--ref` to the tag namespace because that would prevent the `--ref=main` workflow some operators use during pre-release verification.
+- v0.9.5's init-time Cursor API key intake (`popola init --cursor-api-key VAL` / `--cursor-api-key-file PATH`) carries over byte-for-byte; the single-tenant keyring slot still applies (one Cursor API key per machine, service `popolaloom.cursor` / username `default`); use the `CURSOR_API_KEY` env-var override to switch personal vs service-account contexts (unchanged from v0.9.2).

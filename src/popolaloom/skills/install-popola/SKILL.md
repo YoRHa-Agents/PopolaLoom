@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.9.5
+version: 0.9.6
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -95,23 +95,23 @@ If `which popola` returns a path, popolaloom is already installed — skip Steps
 
 ## Install (full path — fresh machine)
 
-### Step 0 — one-line install (preferred, v0.8.4+)
+### Step 0 — one-line install (preferred, v0.8.4+; defaults flipped in v0.9.6)
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
 ```
 
-The unified `install.sh` (v0.8.4+) wraps Steps 1–4 below into a single shell command: `pip install popolaloom` → `popola skill install --target=all --global` → `popola popolad start` → `popola doctor`. It is **idempotent** — safe to re-run on an already-installed machine. Useful options:
+The unified `install.sh` (v0.9.6+) wraps Steps 1–4 below into a single shell command: `pip install` (defaults to `git+https://github.com/YoRHa-Agents/PopolaLoom.git` since v0.9.6 — see `.local/feedbacks/feedback_for_v0.9.4.md` lines 2-5; PyPI publish remains deferred per Q-D-5 偏离默认 / `BL-v0.9.x-PyPI`) → `popola skill install --target=all --global` → `popola popolad start` → `popola doctor`. It is **idempotent** — safe to re-run on an already-installed machine. Useful options:
 
 ```bash
 # install only for Cursor at project scope
 curl -fsSL .../install.sh | bash -s -- install --scope=project --target=cursor
 
-# install latest main from GitHub (when PyPI is gated by a corporate proxy)
-curl -fsSL .../install.sh | bash -s -- install --from=git
+# install pinned to a specific tag (canonical v0.9.6 install)
+curl -fsSL .../install.sh | bash -s -- install --ref=v0.9.6
 
-# pin a specific version
-curl -fsSL .../install.sh | bash -s -- install --version=0.8.4
+# install from PyPI (only works once BL-v0.9.x-PyPI lands — currently delivers v0.8.x)
+curl -fsSL .../install.sh | bash -s -- install --from=pypi --version=0.9.6
 
 # preview every command without touching disk
 curl -fsSL .../install.sh | bash -s -- install --dry-run
@@ -124,14 +124,18 @@ If the one-line bootstrap fails (e.g. corporate firewall blocks `raw.githubuserc
 ### Step 1 — pip install (one of these)
 
 ```bash
-# v0.9.5 (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER):
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5   # canonical v0.9.5 install (tag-pinned)
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git      # latest main (post-tag = v0.9.5)
+# v0.9.6 (Q-D-5 偏离默认 carries forward: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER).
+# v0.9.6 also flips ./install.sh default --from=pypi → --from=git so the canonical path no longer
+# requires PyPI (closes .local/feedbacks/feedback_for_v0.9.4.md lines 2-5):
+./install.sh install                                                # canonical (default --from=git, tracks main)
+./install.sh install --ref=v0.9.6                                   # canonical tag-pinned (recommended for v0.9.6)
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6   # manual tag-pinned fallback
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git      # manual latest main (post-tag = v0.9.6)
 pip install -e .                                                    # from a clone (dev workflow)
 pip install popolaloom                                              # PyPI (currently v0.8.x; v0.9.x once BL-v0.9.x-PyPI lands)
 ```
 
-If the user is on a corporate network that blocks PyPI, the `pip install git+...` forms usually still work (HTTPS to github.com is whitelisted in most environments). **Note (v0.9.5)**: `pip install popolaloom` (no `git+`) currently resolves to the prior v0.8.x stable line; for v0.9.5 specifically use the tag-pinned `git+...@v0.9.5` form.
+If the user is on a corporate network or pip mirror that blocks (or simply doesn't carry) PyPI's `popolaloom`, the `git+...` forms continue to work (HTTPS to github.com is whitelisted in most environments and is also the new `./install.sh install` default in v0.9.6). **Note (v0.9.6)**: `pip install popolaloom` (no `git+`) currently resolves to the prior v0.8.x stable line; for v0.9.6 specifically use `./install.sh install --ref=v0.9.6` or the tag-pinned `git+...@v0.9.6` form.
 
 ### Step 2 — register the Skill into every IDE you use
 
@@ -164,7 +168,7 @@ The daemon is the persistent process that holds task state, the event bus, and t
 
 ```bash
 popola doctor                 # 4-subsystem health table (skill / daemon / lark / arktower)
-popola version                # → "popolaloom 0.9.5"
+popola version                # → "popolaloom 0.9.6"
 popola list-cli               # registered adapters (cursor / claude / codex / copilot etc.)
 ```
 
@@ -212,7 +216,7 @@ Walks the operator through per-IDE confirmations: detect IDEs → confirm instal
 | Check | Command | Expected |
 |---|---|---|
 | popola CLI on PATH | `which popola` | `/usr/local/bin/popola` (or similar) |
-| Python module imports | `python -c "import popolaloom; print(popolaloom.__version__)"` | `0.9.5` |
+| Python module imports | `python -c "import popolaloom; print(popolaloom.__version__)"` | `0.9.6` |
 | Cursor Skill installed | `cat ~/.cursor/skills/popola-loom/SKILL.md \| head -1` | `---` (frontmatter) |
 | Claude Skill installed | `cat ~/.claude/skills/popola-loom/SKILL.md \| head -1` | `---` |
 | daemon running | `popola probe` | `pid=...  uptime=...` |
@@ -249,6 +253,6 @@ The host agent will auto-load the canonical `popola-loom` Skill (now installed) 
 
 ## Version + drift detection
 
-- This Skill's frontmatter `version` field reflects the wheel-shipped baseline at install time (currently `0.9.5`; bumped in lockstep with each release).
+- This Skill's frontmatter `version` field reflects the wheel-shipped baseline at install time (currently `0.9.6`; bumped in lockstep with each release).
 - After upgrading the wheel, run `popola skill upgrade --target=all` to refresh the on-disk SKILL.md (otherwise `popola doctor` flags drift once the wheel moves ahead).
 - The companion `.popola-loom-version` marker beside this `SKILL.md` is the byte-stable input the doctor uses for the drift check; do not hand-edit it (the installer + upgrader own the file).

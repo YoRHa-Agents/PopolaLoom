@@ -3,12 +3,14 @@
 <!-- updated: 2026-05-10 -->
 
 > **Status**: v0.9.0 GA published the first explicit stable /
-> experimental boundary; v0.9.5 carries forward the v0.9.3
-> workspace-worker singleton dispatch + private-worker routing extras
-> and v0.9.4 Actions validation hotfix under the same additive
-> v0.9.x contract, plus v0.9.5 adds the init-time Cursor API key
-> intake flags (`popola init --cursor-api-key` /
-> `--cursor-api-key-file`; see [§2.5](#25-cursor-api-key-credential-resolver-v092)).
+> experimental boundary; v0.9.6 carries forward the v0.9.3
+> workspace-worker singleton dispatch + private-worker routing extras,
+> the v0.9.4 Actions validation hotfix, and the v0.9.5 init-time
+> Cursor API key intake flags under the same additive v0.9.x contract,
+> plus v0.9.6 adds the install-time default flip (`./install.sh`
+> default `--from=pypi` → `--from=git`) and the new
+> `./install.sh --ref=<tag|branch|sha>` flag (see
+> [§2.7](#27-installsh-bash-bootstrap-installer-v096)).
 > **Lock decision**: **Q-D-7 (Q9-3)** — *"daemon RPC + CLI 列稳定；实验项以
 > `extra` / `__experimental` 标记"* — see row 10 of the *已锁定的全部 11 道决策*
 > table in the program plan and the matching `Q9-3` row in
@@ -318,6 +320,62 @@ public-API-but-not-CLI-exposed test seam.
   "fingerprint": "9c1f3a4b2e8d",        // 12 hex chars of sha256(value)
   "keyring_available": true
 }
+```
+
+### 2.6.1 `install.sh` bash bootstrap installer (v0.9.6+)
+
+> Note: this subsection is anchored as `2.7` in the navigation
+> bullet at the top of this document because it lands after the
+> v0.9.3 Cursor Cloud routing surface (§2.6). Renumber if §2 ever
+> grows another subsection between §2.6 and the deprecation policy.
+
+The repo-root `install.sh` bash bootstrap (script version
+`POPOLA_INSTALL_SCRIPT_VERSION="0.9.6"`) is part of the v0.9.x stable
+surface starting in v0.9.6. Its contract:
+
+- The verb names `install` / `update` / `uninstall` / `version` /
+  `help` are stable; renames are breaking.
+- The flag spellings `--scope=<global|project>`,
+  `--target=<cursor|claude|codex|copilot|all>`,
+  `--from=<git|pypi|PATH>`, `--version=<X.Y.Z>`,
+  `--ref=<tag|branch|sha>` (NEW v0.9.6),
+  `--python=<bin>`, `--no-skills`, `--no-daemon`, `--purge`,
+  `--yes` / `-y`, `--dry-run`, `--quiet` / `-q`, `--help` / `-h` are
+  stable; renames or removals are breaking.
+- The `--from` **default value is `git`** as of v0.9.6 (closes
+  [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md)
+  lines 2-5; flipped from `pypi` because PyPI publish remains
+  deferred for the v0.9.x line per Q-D-5 偏离默认 /
+  `BL-v0.9.x-PyPI`). Flipping it back to `pypi` would re-introduce
+  the 404 surface on Chinese pip mirrors and is therefore breaking.
+- The `--ref=<value>` flag requires `--from=git`; it joins the
+  v0.9.x stable surface in v0.9.6. Mirror of `--version=X.Y.Z`
+  (which still requires `--from=pypi`); contradictory inputs fail
+  loudly (No Silent Failures).
+- The `--ref` flag is forbidden for the `uninstall` verb (mirrors
+  the `--version` semantics for that verb).
+- Exit codes: `0` for success, non-zero for any validation or
+  command failure (the script aborts at the first non-best-effort
+  step per "No Silent Failures"). Specific exit codes are
+  implementation detail.
+- `./install.sh version` prints `install.sh v<POPOLA_INSTALL_SCRIPT_VERSION>`
+  on stdout; the `v<X.Y.Z>` substring is stable.
+- `./install.sh --help` prints the full flag matrix on stdout. The
+  `--ref` flag MUST appear in the rendered usage matrix
+  (`tests/cli/test_install_script.py::test_install_script_help_returns_zero`
+  pins this).
+
+**Out-of-scope (v0.9.x)**: rendered widths, ANSI colors, and exact
+prose wording of log lines are NOT part of the contract. Adding new
+flags in a v0.9.x minor is non-breaking; renaming or removing any
+listed flag in a v0.9.x patch or minor is breaking.
+
+```bash
+# Stable v0.9.6 surface — these three forms are the canonical install
+# recipes for the v0.9.x line until BL-v0.9.x-PyPI lands.
+./install.sh install                                              # default --from=git, tracks main
+./install.sh install --ref=v0.9.6                                 # canonical tag-pinned
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6 # manual fallback
 ```
 
 ### 2.6 Cursor Cloud private-worker routing extras (v0.9.3+)

@@ -14,6 +14,46 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 <!-- updated: 2026-05-10 -->
 
+## [0.9.6] — 2026-05-10
+
+**Theme**: Install.sh default fix. v0.9.6 is a strictly additive patch on top of v0.9.5 that closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: the official installer (`./install.sh`) used to default to `pip install popolaloom`, but PyPI publish remains intentionally deferred for the v0.9.x line (Q-D-5 偏离默认 / `BL-v0.9.x-PyPI`), so operators on Chinese pip mirrors hit `404 popolaloom` and the canonical install path silently failed. v0.9.6 flips the `--from` default from `pypi` to `git` so a fresh `./install.sh install` works without PyPI, and adds a new `--ref=<tag|branch|sha>` flag for tag-pinned installs (`./install.sh install --ref=v0.9.6` is the canonical tag-pinned recipe).
+
+### Fixed
+
+- **`./install.sh install` no longer requires PyPI** (closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5) — the `--from` default flips from `pypi` to `git`, so a fresh bootstrap on a Chinese pip mirror that doesn't carry `popolaloom` yet succeeds end-to-end. Per the workspace No-Silent-Failures rule the path that previously 404'd is now exercised in the default lane (`tests/cli/test_install_script.py::test_install_script_install_default_uses_git_source` pins the new behavior).
+
+### Added
+
+- **`--ref=<tag|branch|sha>` flag on `./install.sh`** (NEW; v0.9.6) — appends `@<ref>` to `git+https://github.com/YoRHa-Agents/PopolaLoom.git` so `./install.sh install --ref=v0.9.6` is the canonical tag-pinned recipe. Mirror of `--version=X.Y.Z` for the `--from=pypi` path; `--ref` requires `--from=git` and is forbidden for the `uninstall` verb (matches `--version` semantics). New global `REF=""` plus new `--ref=*` arm in `parse_flag` and matching guards in `validate_args` (No Silent Failures — operator gets a loud rejection instead of a silent ignore).
+- **`tests/cli/test_install_script.py::test_install_script_install_default_uses_git_source`** (NEW; v0.9.6) — pins the new default so a future regression that flips `FROM` back to `pypi` (re-introducing the 404 on Chinese pip mirrors) fails fast.
+- **`tests/cli/test_install_script.py::test_install_script_install_dry_run_with_ref_tag`** (NEW; v0.9.6) — asserts `install --dry-run --from=git --ref=v0.9.6` prints `git+https://github.com/YoRHa-Agents/PopolaLoom.git@v0.9.6`.
+- **`tests/cli/test_install_script.py::test_install_script_ref_outside_git_errors`** (NEW; v0.9.6) — asserts `--ref=v0.9.6` without `--from=git` (or with `--from=pypi`, or with a local path source) exits non-zero with a `--ref` / `--from=git` message.
+
+### Changed
+
+- **`./install.sh` default `--from=pypi` → `--from=git`** (v0.9.6) — see *Fixed* above. Operators who specifically need PyPI can opt back in via `--from=pypi --version=X.Y.Z`; the existing rule that `--version=X.Y.Z` requires `--from=pypi` is unchanged.
+- **`POPOLA_INSTALL_SCRIPT_VERSION` 0.8.4 → 0.9.6** — bash bootstrap surface change advertised explicitly so operators know which behavior they're getting from `install.sh version`.
+- **`./install.sh --help` text** — documents the new default for `--from`, the new `--ref=<tag|branch|sha>` flag, and adds `install.sh install --ref=v0.9.6` plus `install.sh install --from=pypi --version=0.9.6` to the Examples block. The PyPI fallback is explicitly annotated as "only works once BL-v0.9.x-PyPI lands" so the deviation from default is unambiguous.
+- **`verb_install` log line** — now reports `from=${FROM} ref=${REF:-(none)}` so the resolved install spec is visible in the install banner (transparency / debug parity with how `--version` is already surfaced).
+- **Release contract version** — bumped package, docs config, Skill markers, both `.popola-loom-version` markers, smoke assertions, README banner, install-popola SKILL install snippet, CHANGELOG, and RELEASE_NOTES to `0.9.6`.
+
+### Tests
+
+- Focused subset: `python -m pytest tests/cli/test_install_script.py tests/test_smoke.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/docs/test_release_notes_callout.py` — `tests/cli/test_install_script.py` lifts from 13 → 16 cases (3 new + 2 modified to assert the new git default) and the `--help` smoke test now asserts `--ref` appears in the rendered usage matrix.
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark" --cov=popolaloom --cov-report=term-missing --cov-fail-under=94 -q` reproduces the v0.9.5 floor (≥94% coverage).
+- Sanity: `bash -n install.sh` clean; `./install.sh install --dry-run --no-daemon --no-skills` prints the new `git+https://github.com/YoRHa-Agents/PopolaLoom.git` path; `./install.sh install --dry-run --no-daemon --no-skills --ref=v0.9.6` prints `git+...@v0.9.6`; `./install.sh install --dry-run --no-daemon --no-skills --from=pypi --version=0.9.6` prints `popolaloom==0.9.6`.
+- `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom` clean; `git diff --check` clean.
+
+### Files
+
+- **MOD source / tests**: `install.sh` (default flip + `--ref` flag + `validate_args` guards + `usage()` refresh + `verb_install` log line + script version bump 0.8.4 → 0.9.6 + top-of-file comment block); `tests/cli/test_install_script.py` (3 new cases — default-uses-git / ref-tag / ref-outside-git-errors; 2 modified — install-dry-run + version-pin; help-text smoke now asserts `--ref`).
+- **MOD release contracts**: `pyproject.toml`, `src/popolaloom/__init__.py`, `docs/_config.yml`, `tests/test_smoke.py`, `src/popolaloom/skills/popola-loom/SKILL.md`, `src/popolaloom/skills/install-popola/SKILL.md`, both `.popola-loom-version` markers, `README.md`, `docs/USER_GUIDE.md`, `docs/API_STABILITY.md`, `docs/QUICKSTART.md`, `docs/zh/QUICKSTART.md`, `CHANGELOG.md`, `RELEASE_NOTES.md`.
+
+### Known limitations
+
+- **PyPI publish still deferred** (Q-D-5 偏离默认 carries forward; `BL-v0.9.x-PyPI`) — v0.9.6 remains GitHub-Release-only. The default install no longer needs PyPI; for operators who specifically need PyPI, `./install.sh install --from=pypi --version=0.9.x` will start working once the v0.9.x PyPI promotion patch lands. Until then `--from=pypi` resolves to the prior v0.8.x stable line.
+- **`--ref` accepts arbitrary git refs** — branches, SHAs, and tags all work because `pip install git+...@<ref>` resolves them all the same way. Operators MUST verify they used the intended ref (the install banner now prints `from=git ref=<value>` so the resolved spec is visible). v0.9.6 does not gate `--ref` to the tag namespace because that would prevent the `--ref=main` workflow that some operators use during pre-release verification.
+
 ## [0.9.5] — 2026-05-10
 
 **Theme**: Init-time Cursor API key intake. v0.9.5 is a strictly additive patch on top of v0.9.4: it closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) by teaching `popola init` to accept the Cursor Cloud Agents REST API key directly, persist it through the existing `popolaloom.credentials` resolver into the OS keyring, and never ask for it again. The flag composes with every init path (auto-detect, verb subcommand, `--target=cloud-only`, `--interactive`); `--configure-cursor-auth` is correspondingly accepted everywhere too. `--dry-run` skips credential persistence with an explicit one-line message (per the workspace No-Silent-Failures rule for secrets).

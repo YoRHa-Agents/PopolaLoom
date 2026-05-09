@@ -1,17 +1,26 @@
 #!/usr/bin/env bash
 # install.sh — unified PopolaLoom + Skill installer / updater / uninstaller.
 #
-# Version: 0.8.4
+# Version: 0.9.6
 # License: MIT (matches the PopolaLoom package license)
 # Repo:    https://github.com/YoRHa-Agents/PopolaLoom
 #
-# This is the v0.8.4 single-shell-command installer that wraps the four
+# This is the v0.9.6 single-shell-command installer that wraps the four
 # manual steps from the install-popola Skill workflow:
 #
-#   1. pip install popolaloom (or git+, or local path)
+#   1. pip install popolaloom (defaults to git URL — see below; or PyPI / local path)
 #   2. popola skill install --target=<...> --<scope>
 #   3. popola popolad start  (best-effort)
 #   4. popola doctor          (best-effort)
+#
+# v0.9.6 default-source switch (closes feedback_for_v0.9.4 lines 2-5):
+# the default ``--from`` is now ``git`` (tracks ``main``). Pin a specific
+# tag with ``--ref=<tag>`` (e.g. ``--ref=v0.9.6``). PyPI publish remains
+# deferred for the v0.9.x line per Q-D-5 偏离默认 and the
+# ``BL-v0.9.x-PyPI`` backlog item, so a fresh ``./install.sh install``
+# no longer 404s on Chinese pip mirrors that don't carry popolaloom yet.
+# Pass ``--from=pypi --version=X.Y.Z`` to opt back into the PyPI path
+# once the promotion patch lands.
 #
 # It also exposes the inverse path: ``install.sh uninstall`` removes the
 # Skill from every IDE then ``pip uninstall popolaloom`` (and, when
@@ -20,7 +29,9 @@
 # Usage:
 #   curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
 #   curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash -s -- install --scope=global --target=all
-#   ./install.sh install   --target=cursor --scope=project --from=git
+#   ./install.sh install                                # default — git, tracks main
+#   ./install.sh install --ref=v0.9.6                   # tag-pinned (canonical)
+#   ./install.sh install --target=cursor --scope=project
 #   ./install.sh update    --target=all
 #   ./install.sh uninstall --target=all --yes --purge
 #   ./install.sh version
@@ -40,7 +51,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly POPOLA_INSTALL_SCRIPT_VERSION="0.8.4"
+readonly POPOLA_INSTALL_SCRIPT_VERSION="0.9.6"
 readonly POPOLA_PACKAGE_NAME="popolaloom"
 readonly POPOLA_GIT_URL="git+https://github.com/YoRHa-Agents/PopolaLoom.git"
 
@@ -49,8 +60,16 @@ readonly POPOLA_GIT_URL="git+https://github.com/YoRHa-Agents/PopolaLoom.git"
 VERB=""
 SCOPE="global"
 TARGET="all"
-FROM="pypi"
+# v0.9.6 (closes feedback_for_v0.9.4 lines 2-5): default flipped from "pypi"
+# to "git" so a fresh ``./install.sh install`` works on Chinese pip mirrors
+# that don't carry popolaloom yet. PyPI promotion remains deferred for the
+# v0.9.x line per Q-D-5 偏离默认 (BL-v0.9.x-PyPI in the project tracker).
+FROM="git"
 PIN_VERSION=""
+# v0.9.6 NEW: optional git ref (tag / branch / sha) appended to POPOLA_GIT_URL
+# as ``@<ref>`` so operators can pin tag-stable installs without reaching for
+# PyPI. Only valid when FROM=git; --version=X.Y.Z still requires --from=pypi.
+REF=""
 PYTHON_BIN=""
 NO_SKILLS=0
 NO_DAEMON=0
@@ -106,10 +125,14 @@ Options:
   --scope=<global|project>     Skill install scope (default: global)
   --target=<cursor|claude|codex|copilot|all>
                                 Which IDE Skill(s) to install (default: all)
-  --from=<pypi|git|PATH>        Install source for popolaloom: pypi (default),
-                                git (latest main from GitHub),
-                                or a local path/wheel.
-  --version=<X.Y.Z>             Pin a specific PyPI version (install/update only)
+  --from=<git|pypi|PATH>        Install source for popolaloom (default: git, tracks main).
+                                git  — install from the GitHub repo (default; pin a tag with --ref).
+                                pypi — install from PyPI (only works once BL-v0.9.x-PyPI lands).
+                                PATH — local filesystem path / wheel / tarball.
+  --ref=<tag|branch|sha>        (--from=git only) Append @<ref> to the GitHub URL so the install
+                                resolves to a specific tag, branch, or commit
+                                (e.g. --ref=v0.9.6 for the canonical v0.9.6 install).
+  --version=<X.Y.Z>             Pin a specific PyPI version (install/update only; requires --from=pypi)
   --python=<bin>                Python interpreter to use (default: python3)
   --no-skills                   Skip Skill install/uninstall step
   --no-daemon                   Skip daemon start (install verb only)
@@ -120,9 +143,11 @@ Options:
   --help, -h                    Print usage + exit 0
 
 Examples:
-  install.sh install --target=all --scope=global
-  install.sh install --from=git
-  install.sh install --from=./dist/popolaloom-0.8.4-py3-none-any.whl
+  install.sh install                                                 # default: git, tracks main
+  install.sh install --ref=v0.9.6                                    # canonical tag-pinned install
+  install.sh install --target=cursor --scope=project                 # Cursor-only, project scope
+  install.sh install --from=pypi --version=0.9.6                     # PyPI fallback (only works once BL-v0.9.x-PyPI lands)
+  install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.whl # local wheel
   install.sh update --target=cursor
   install.sh uninstall --yes
   install.sh uninstall --yes --purge
@@ -147,6 +172,9 @@ parse_flag() {
             ;;
         --version=*)
             PIN_VERSION="${arg#--version=}"
+            ;;
+        --ref=*)
+            REF="${arg#--ref=}"
             ;;
         --python=*)
             PYTHON_BIN="${arg#--python=}"
@@ -228,6 +256,14 @@ validate_args() {
 
     if [ -n "${PIN_VERSION}" ] && [ "${FROM}" != "pypi" ]; then
         die "--version=X.Y.Z requires --from=pypi (got --from=${FROM})"
+    fi
+
+    if [ -n "${REF}" ] && [ "${VERB}" = "uninstall" ]; then
+        die "--ref=<value> is not valid for the uninstall verb"
+    fi
+
+    if [ -n "${REF}" ] && [ "${FROM}" != "git" ]; then
+        die "--ref=<value> requires --from=git (got --from=${FROM})"
     fi
 }
 
@@ -316,7 +352,11 @@ resolve_install_spec() {
             fi
             ;;
         git)
-            printf '%s' "${POPOLA_GIT_URL}"
+            if [ -n "${REF}" ]; then
+                printf '%s@%s' "${POPOLA_GIT_URL}" "${REF}"
+            else
+                printf '%s' "${POPOLA_GIT_URL}"
+            fi
             ;;
         *)
             # Treat as a local filesystem path or .whl.
@@ -355,7 +395,7 @@ popola_installed() {
 # ── verbs ───────────────────────────────────────────────────────────────
 
 verb_install() {
-    log "PopolaLoom install — verb=install scope=${SCOPE} target=${TARGET} from=${FROM}"
+    log "PopolaLoom install — verb=install scope=${SCOPE} target=${TARGET} from=${FROM} ref=${REF:-(none)}"
 
     local py
     py="$(detect_python)"

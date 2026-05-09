@@ -66,7 +66,12 @@ def test_install_script_exists_and_executable() -> None:
 
 
 def test_install_script_help_returns_zero(tmp_path: Path) -> None:
-    """``install.sh --help`` exits 0 and prints the verb / option matrix."""
+    """``install.sh --help`` exits 0 and prints the verb / option matrix.
+
+    v0.9.6 (closes feedback_for_v0.9.4 lines 2-5): the help output must also
+    advertise the new ``--ref=<tag|branch|sha>`` flag introduced alongside
+    the default-source switch from ``pypi`` to ``git``.
+    """
     result = _run(["--help"], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
     out = result.stdout
@@ -76,6 +81,7 @@ def test_install_script_help_returns_zero(tmp_path: Path) -> None:
     assert "--scope" in out
     assert "--target" in out
     assert "--dry-run" in out
+    assert "--ref" in out
 
 
 def test_install_script_version_returns_zero(tmp_path: Path) -> None:
@@ -96,7 +102,16 @@ def test_install_script_unknown_verb_returns_nonzero_with_message(tmp_path: Path
 
 
 def test_install_script_install_dry_run_prints_pip_command(tmp_path: Path) -> None:
-    """``install --dry-run`` prints the would-be ``pip install popolaloom`` command."""
+    """``install --dry-run`` prints the would-be ``pip install`` command.
+
+    v0.9.6 (closes ``.local/feedbacks/feedback_for_v0.9.4.md`` lines 2-5):
+    the default ``--from`` flipped from ``pypi`` to ``git`` because PyPI
+    publish remains deferred for the v0.9.x line (Q-D-5 偏离默认,
+    BL-v0.9.x-PyPI). With no explicit ``--from`` the dry-run must therefore
+    emit the GitHub URL, not the bare PyPI package name. The repo URL still
+    carries ``PopolaLoom.git`` (CamelCase project name) so the popolaloom
+    identity is reachable case-insensitively for grep-based smoke checks.
+    """
     result = _run(
         ["install", "--dry-run", "--no-daemon", "--no-skills"],
         cwd=tmp_path,
@@ -104,17 +119,27 @@ def test_install_script_install_dry_run_prints_pip_command(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "pip install" in out
-    assert "popolaloom" in out
+    assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
+    assert "popolaloom" in out.lower()
 
 
 def test_install_script_install_dry_run_with_version_pin(tmp_path: Path) -> None:
-    """``install --dry-run --version=X.Y.Z`` includes the pin in the pip command."""
+    """``install --dry-run --from=pypi --version=X.Y.Z`` includes the pin.
+
+    v0.9.6: with the default flipped to ``git`` (per
+    ``.local/feedbacks/feedback_for_v0.9.4.md`` lines 2-5), version pinning
+    must now be paired with an explicit ``--from=pypi`` because the pin is
+    only valid for the PyPI source. The reverse case (``--version`` without
+    ``--from=pypi`` errors out) is covered by
+    ``test_install_script_pin_version_outside_pypi_errors`` below.
+    """
     result = _run(
         [
             "install",
             "--dry-run",
             "--no-daemon",
             "--no-skills",
+            "--from=pypi",
             "--version=9.9.9",
         ],
         cwd=tmp_path,
@@ -141,8 +166,110 @@ def test_install_script_install_dry_run_with_git_source(tmp_path: Path) -> None:
     assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
 
 
+def test_install_script_install_default_uses_git_source(tmp_path: Path) -> None:
+    """With no ``--from`` flag, the dry-run produces the git URL.
+
+    v0.9.6 (closes ``.local/feedbacks/feedback_for_v0.9.4.md`` lines 2-5):
+    the default install source flipped from ``pypi`` to ``git`` because
+    PyPI publish remains deferred for the v0.9.x line (Q-D-5 偏离默认,
+    BL-v0.9.x-PyPI). This test pins the new default so a future regression
+    that flips the default back to ``pypi`` (re-introducing the 404 on
+    Chinese pip mirrors that don't carry popolaloom yet) fails fast.
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
+    # Sanity: the unpinned PyPI form must not appear when default is git
+    # (`popolaloom` still appears as the egg-name embedded in the URL,
+    # so we anchor on the pin form to avoid a false positive).
+    assert "popolaloom==" not in out
+
+
+def test_install_script_install_dry_run_with_ref_tag(tmp_path: Path) -> None:
+    """``install --dry-run --from=git --ref=v0.9.6`` appends ``@v0.9.6`` to the URL.
+
+    v0.9.6 NEW (closes ``.local/feedbacks/feedback_for_v0.9.4.md`` lines 2-5):
+    the ``--ref`` flag is the canonical tag-pinned install for the v0.9.x
+    line until PyPI promotion lands (BL-v0.9.x-PyPI). The flag must produce
+    the standard pip-resolvable ``git+...@<ref>`` form so operators on
+    air-gapped or firewalled hosts can pin exact tags via the same recipe.
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--from=git",
+            "--ref=v0.9.6",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git@v0.9.6" in out
+
+
+def test_install_script_ref_outside_git_errors(tmp_path: Path) -> None:
+    """``--ref=<value>`` requires ``--from=git``; PyPI / path sources error out.
+
+    v0.9.6: matches the ``--version=X.Y.Z requires --from=pypi`` rule
+    introduced earlier (No Silent Failures — the operator gets a loud
+    rejection instead of a silent ignore).
+    """
+    # With explicit --from=pypi the rejection is unambiguous.
+    result_pypi = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--from=pypi",
+            "--ref=v0.9.6",
+        ],
+        cwd=tmp_path,
+    )
+    assert result_pypi.returncode != 0
+    combined_pypi = result_pypi.stdout + result_pypi.stderr
+    assert "ref" in combined_pypi.lower()
+    assert "git" in combined_pypi.lower()
+
+    # With a local path source the same gate fires.
+    result_path = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--from=./local/path",
+            "--ref=v0.9.6",
+        ],
+        cwd=tmp_path,
+    )
+    assert result_path.returncode != 0
+    combined_path = result_path.stdout + result_path.stderr
+    assert "ref" in combined_path.lower()
+    assert "git" in combined_path.lower()
+
+
 def test_install_script_update_dry_run_prints_upgrade_command(tmp_path: Path) -> None:
-    """``update --dry-run`` prints the would-be ``pip install --upgrade`` command."""
+    """``update --dry-run`` prints the would-be ``pip install --upgrade`` command.
+
+    v0.9.6: the default ``--from=git`` flip applies to ``update`` too (both
+    verbs share ``resolve_install_spec``), so the URL form is the canonical
+    output. ``popolaloom`` lowercase only appears when the operator opts
+    back into ``--from=pypi``; we keep the assertion case-insensitive so
+    the upgrade smoke remains grep-friendly.
+    """
     result = _run(
         ["update", "--dry-run", "--no-skills"],
         cwd=tmp_path,
@@ -150,7 +277,7 @@ def test_install_script_update_dry_run_prints_upgrade_command(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "pip install --upgrade" in out
-    assert "popolaloom" in out
+    assert "popolaloom" in out.lower()
 
 
 def test_install_script_uninstall_dry_run_prints_pip_uninstall(tmp_path: Path) -> None:
