@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 0.9.4
+version: 0.9.5
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -124,14 +124,14 @@ If the one-line bootstrap fails (e.g. corporate firewall blocks `raw.githubuserc
 ### Step 1 — pip install (one of these)
 
 ```bash
-# v0.9.3 (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER):
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.3   # canonical v0.9.3 install (tag-pinned)
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git      # latest main (post-tag = v0.9.3)
+# v0.9.5 (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER):
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.5   # canonical v0.9.5 install (tag-pinned)
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git      # latest main (post-tag = v0.9.5)
 pip install -e .                                                    # from a clone (dev workflow)
 pip install popolaloom                                              # PyPI (currently v0.8.x; v0.9.x once BL-v0.9.x-PyPI lands)
 ```
 
-If the user is on a corporate network that blocks PyPI, the `pip install git+...` forms usually still work (HTTPS to github.com is whitelisted in most environments). **Note (v0.9.3)**: `pip install popolaloom` (no `git+`) currently resolves to the prior v0.8.x stable line; for v0.9.3 specifically use the tag-pinned `git+...@v0.9.3` form.
+If the user is on a corporate network that blocks PyPI, the `pip install git+...` forms usually still work (HTTPS to github.com is whitelisted in most environments). **Note (v0.9.5)**: `pip install popolaloom` (no `git+`) currently resolves to the prior v0.8.x stable line; for v0.9.5 specifically use the tag-pinned `git+...@v0.9.5` form.
 
 ### Step 2 — register the Skill into every IDE you use
 
@@ -164,7 +164,7 @@ The daemon is the persistent process that holds task state, the event bus, and t
 
 ```bash
 popola doctor                 # 4-subsystem health table (skill / daemon / lark / arktower)
-popola version                # → "popolaloom 0.9.3"
+popola version                # → "popolaloom 0.9.5"
 popola list-cli               # registered adapters (cursor / claude / codex / copilot etc.)
 ```
 
@@ -212,7 +212,7 @@ Walks the operator through per-IDE confirmations: detect IDEs → confirm instal
 | Check | Command | Expected |
 |---|---|---|
 | popola CLI on PATH | `which popola` | `/usr/local/bin/popola` (or similar) |
-| Python module imports | `python -c "import popolaloom; print(popolaloom.__version__)"` | `0.9.3` |
+| Python module imports | `python -c "import popolaloom; print(popolaloom.__version__)"` | `0.9.5` |
 | Cursor Skill installed | `cat ~/.cursor/skills/popola-loom/SKILL.md \| head -1` | `---` (frontmatter) |
 | Claude Skill installed | `cat ~/.claude/skills/popola-loom/SKILL.md \| head -1` | `---` |
 | daemon running | `popola probe` | `pid=...  uptime=...` |
@@ -249,6 +249,6 @@ The host agent will auto-load the canonical `popola-loom` Skill (now installed) 
 
 ## Version + drift detection
 
-- This Skill's frontmatter `version` field reflects the wheel-shipped baseline at install time (currently `0.9.3`; bumped in lockstep with each release).
+- This Skill's frontmatter `version` field reflects the wheel-shipped baseline at install time (currently `0.9.5`; bumped in lockstep with each release).
 - After upgrading the wheel, run `popola skill upgrade --target=all` to refresh the on-disk SKILL.md (otherwise `popola doctor` flags drift once the wheel moves ahead).
 - The companion `.popola-loom-version` marker beside this `SKILL.md` is the byte-stable input the doctor uses for the drift check; do not hand-edit it (the installer + upgrader own the file).

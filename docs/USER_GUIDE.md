@@ -732,6 +732,51 @@ The flag is **opt-in** because:
 The `popola init --interactive` wizard accepts the same flag and runs
 the helper after the IDE / `.local/` install plan is applied.
 
+### Init-time non-interactive intake (v0.9.5+)
+
+v0.9.5 closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md)
+by adding two flags to `popola init` so an operator who knows their
+Cursor API key up front can hand it over in one invocation and never
+be asked again:
+
+```bash
+# Inline value: the literal goes through `store_cursor_api_key` →
+# OS keyring. Implies --configure-cursor-auth on every init path.
+popola init --cursor-api-key "cr_..."
+
+# File path: the helper reads the first non-empty line (utf-8 strip).
+# Mutually exclusive with --cursor-api-key.
+popola init --cursor-api-key-file ./secrets/cursor.key
+
+# Composes with every init path:
+popola init cursor --cursor-api-key "cr_..."                       # verb subcommand
+popola init --target=cloud-only --cursor-api-key "cr_..."          # cloud-only scaffold
+popola init --interactive --cursor-api-key "cr_..."                # wizard skips the credential prompt
+```
+
+The flags are designed for **non-interactive** callers (CI bootstrap
+scripts, containers, fresh-machine installers): the literal value is
+forwarded straight to [`popolaloom.credentials.store_cursor_api_key`](../src/popolaloom/credentials.py)
+and the operator-facing output prints only the SHA-256 fingerprint
+(never the raw value). Empty / whitespace-only values are rejected
+with a clear `BadParameter` error per **No Silent Failures**.
+
+`--dry-run` short-circuits credential persistence with an explicit
+one-line skip message — secrets must never be persisted during a
+preview:
+
+```bash
+popola init --dry-run --cursor-api-key "cr_..."
+# ...
+#   credential setup skipped during dry-run preview (--dry-run is set; secret persistence requires a real install)
+```
+
+When `pip install popolaloom[credentials]` was not run, the helper
+prints an actionable hint pointing at the extra and the
+`CURSOR_API_KEY` env-var fallback, then returns without exiting
+non-zero — the install path itself succeeded; only credential
+persistence is degraded (best-effort).
+
 ### Security invariants (locked in v0.9.x)
 
 The following invariants are part of the v0.9.x stable surface; tests

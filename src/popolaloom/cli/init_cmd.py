@@ -693,6 +693,7 @@ def _install_cloud_only(
     dry_run: bool,
     force: bool,
     configure_cursor_auth: bool = False,
+    cursor_api_key: str | None = None,
 ) -> None:
     """Scaffold the cloud-only project skeleton at ``cwd`` (v0.9.0 W2.4).
 
@@ -725,6 +726,13 @@ def _install_cloud_only(
     entirely (per the workspace **No Silent Failures** rule for
     secrets — never prompt during dry-run).
 
+    v0.9.5 ``--cursor-api-key`` / ``--cursor-api-key-file`` extension:
+    when ``cursor_api_key`` is non-None the helper persists the value
+    via :func:`_persist_cursor_api_key_noninteractive` instead of
+    prompting (no operator interaction needed). Mutually deferential
+    with ``configure_cursor_auth`` — the resolved value wins so we do
+    not prompt twice.
+
     Args:
         cwd: project root to scaffold into (``Path.cwd()`` from the
             top-level callback; tests override via ``monkeypatch.chdir``).
@@ -737,6 +745,10 @@ def _install_cloud_only(
             the operator to store the Cursor API key in the OS keyring
             after the scaffold is written. Ignored on ``dry_run`` so
             no prompt is shown for previews.
+        cursor_api_key: pre-resolved Cursor API key (v0.9.5+) provided
+            via ``--cursor-api-key`` or ``--cursor-api-key-file`` on the
+            init root. When set, the helper persists it via the
+            non-interactive path and never prompts.
     """
     typer.echo("popola init — target: cloud-only")
     typer.echo(
@@ -756,20 +768,212 @@ def _install_cloud_only(
         target = cwd / relative_path
         _write_cloud_file(target, content, dry_run=dry_run, force=force)
 
-    if not dry_run:
-        typer.echo(
-            "\nNext steps:\n"
-            "  1. cp .env.example .env && edit .env to set CURSOR_API_KEY\n"
-            "  2. popola popolad start          (boot the daemon)\n"
-            "  3. make dispatch PROMPT=\"...\"    "
-            "(or: popola dispatch ... --cli=cursor-cloud)"
+    if dry_run:
+        if cursor_api_key is not None or configure_cursor_auth:
+            typer.echo(_DRY_RUN_CREDENTIAL_SKIP_MSG)
+        return
+
+    typer.echo(
+        "\nNext steps:\n"
+        "  1. cp .env.example .env && edit .env to set CURSOR_API_KEY\n"
+        "  2. popola popolad start          (boot the daemon)\n"
+        "  3. make dispatch PROMPT=\"...\"    "
+        "(or: popola dispatch ... --cli=cursor-cloud)"
+    )
+
+    if cursor_api_key is not None:
+        _persist_cursor_api_key_noninteractive(cursor_api_key)
+    elif configure_cursor_auth:
+        _offer_cursor_credential_setup()
+
+
+# ── credential setup helpers (v0.9.2+ / v0.9.5+) ────────────────────────
+
+
+_DRY_RUN_CREDENTIAL_SKIP_MSG: str = (
+    "\n  credential setup skipped during dry-run preview "
+    "(--dry-run is set; secret persistence requires a real install)"
+)
+"""Operator-facing one-liner emitted when ``--dry-run`` is paired with any
+of ``--configure-cursor-auth`` / ``--cursor-api-key`` / ``--cursor-api-key-file``.
+
+Per the workspace **No Silent Failures** rule and v0.9.2 Secret-Handling
+Invariants, we never prompt for or persist a secret during a dry-run
+preview. The skip message is explicit so operators see exactly why the
+credential step was elided. The literal is reused across the cloud-only,
+interactive, auto-detect, and per-verb subcommand paths so a future
+edit changes a single source of truth.
+"""
+
+
+def _resolve_cursor_api_key_input(
+    *,
+    value: str | None,
+    file: Path | None,
+) -> str | None:
+    """Resolve the v0.9.5 init-time Cursor API key intake.
+
+    Returns the resolved (stripped) key string when one of the inputs is
+    provided, ``None`` when both are unset, and raises
+    :class:`typer.BadParameter` when the inputs are mutually exclusive,
+    when the inline value is empty/whitespace-only, or when the file is
+    missing or empty (per the workspace **No Silent Failures** rule —
+    never silently treat a malformed flag as "operator did not pass it").
+
+    Args:
+        value: literal value of ``--cursor-api-key`` (already stripped
+            once by Typer's option parsing); ``None`` when the flag was
+            absent. Whitespace-only is rejected.
+        file: ``Path`` from ``--cursor-api-key-file``. The file is read
+            with ``encoding="utf-8"``; the first non-empty line (after
+            ``str.strip()``) is treated as the key. Missing or empty
+            files raise :class:`typer.BadParameter`.
+
+    Raises:
+        typer.BadParameter: any of the conditions above.
+    """
+    if value is not None and file is not None:
+        raise typer.BadParameter(
+            "--cursor-api-key and --cursor-api-key-file are mutually exclusive; "
+            "pass only one"
         )
+    if value is not None:
+        stripped = value.strip()
+        if not stripped:
+            raise typer.BadParameter(
+                "--cursor-api-key value must not be empty or whitespace-only"
+            )
+        return stripped
+    if file is not None:
+        try:
+            text = file.read_text(encoding="utf-8")
+        except FileNotFoundError as exc:
+            raise typer.BadParameter(
+                f"--cursor-api-key-file path not found: {file}"
+            ) from exc
+        except OSError as exc:
+            raise typer.BadParameter(
+                f"--cursor-api-key-file could not be read: {file} ({exc})"
+            ) from exc
+        first_line: str | None = None
+        for raw_line in text.splitlines():
+            stripped_line = raw_line.strip()
+            if stripped_line:
+                first_line = stripped_line
+                break
+        if not first_line:
+            raise typer.BadParameter(
+                f"--cursor-api-key-file is empty or contains only whitespace: {file}"
+            )
+        return first_line
+    return None
 
-        if configure_cursor_auth:
-            _offer_cursor_credential_setup()
+
+def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
+    """Persist ``raw_key`` in the OS keyring without prompting (v0.9.5+).
+
+    Used by the init-time non-interactive intake (``--cursor-api-key`` /
+    ``--cursor-api-key-file``). Best-effort when the optional keyring
+    extra is missing: prints an actionable hint pointing at the
+    ``credentials`` extra and the env-var fallback, then returns
+    without exiting non-zero — the install path itself succeeded; only
+    the secret persistence is degraded.
+
+    The literal key value is never echoed; the printed line carries
+    only the backend label and a 12-hex-char fingerprint so operators
+    can confirm the round-trip without leaking entropy.
+
+    Args:
+        raw_key: the resolved key string (already stripped by
+            :func:`_resolve_cursor_api_key_input` or by the cloud-only
+            init path).
+    """
+    from popolaloom.credentials import (
+        CredentialBackendError,
+        compute_fingerprint,
+        is_keyring_available,
+        store_cursor_api_key,
+    )
+
+    typer.echo("\nSecure Cursor API key storage (v0.9.5 init-time intake):")
+    if not is_keyring_available():
+        typer.echo(
+            "  WARN: OS keyring backend unavailable; the install path "
+            "succeeded but credential storage was skipped.",
+            err=True,
+        )
+        typer.echo(
+            "        Install the optional extra to enable secure storage:",
+            err=True,
+        )
+        typer.echo(
+            "          `pip install popolaloom[credentials]`",
+            err=True,
+        )
+        typer.echo(
+            "        Until then, set CURSOR_API_KEY in your shell or "
+            ".env file (the env var is the documented fallback).",
+            err=True,
+        )
+        return
+
+    try:
+        status = store_cursor_api_key(raw_key)
+    except CredentialBackendError as exc:
+        typer.echo(
+            f"  ERROR: keyring store failed: {exc}",
+            err=True,
+        )
+        typer.echo(
+            "  Falling back to env var path: set CURSOR_API_KEY in your shell.",
+            err=True,
+        )
+        return
+    except ValueError as exc:
+        typer.echo(
+            f"  ERROR: invalid api key value: {exc}",
+            err=True,
+        )
+        return
+
+    fp = compute_fingerprint(raw_key) or "(unknown)"
+    typer.echo(
+        f"  Stored Cursor API key. backend={status.backend_name}  fingerprint={fp}"
+    )
 
 
-# ── credential setup helper (v0.9.2+) ────────────────────────────────────
+def _handle_credential_intake_after_install(
+    *,
+    resolved_key: str | None,
+    configure_cursor_auth: bool,
+    dry_run: bool,
+) -> None:
+    """Run the right credential helper after install completes (v0.9.5+).
+
+    Branch table:
+
+    * ``resolved_key is None`` AND ``configure_cursor_auth is False``
+      → no-op (operator did not opt in).
+    * ``dry_run is True`` AND any of the credential intake flags set
+      → print the canonical skip message and return; never prompt or
+      persist (per **No Silent Failures** dry-run rule for secrets).
+    * ``resolved_key is not None`` → persist via the non-interactive
+      helper (no prompting; the value was already collected from
+      ``--cursor-api-key`` or ``--cursor-api-key-file``).
+    * Otherwise (``configure_cursor_auth is True`` AND
+      ``resolved_key is None``) → walk the operator through the
+      existing :func:`_offer_cursor_credential_setup` interactive
+      prompt path.
+    """
+    if resolved_key is None and not configure_cursor_auth:
+        return
+    if dry_run:
+        typer.echo(_DRY_RUN_CREDENTIAL_SKIP_MSG)
+        return
+    if resolved_key is not None:
+        _persist_cursor_api_key_noninteractive(resolved_key)
+        return
+    _offer_cursor_credential_setup()
 
 
 def _offer_cursor_credential_setup() -> None:
@@ -951,15 +1155,62 @@ def init_callback(
         "--configure-cursor-auth",
         help=(
             "v0.9.2+: prompt to securely store a Cursor API key in the OS "
-            "keyring after a successful --target=cloud-only scaffold. "
-            "Hidden-input prompt; the literal value is never echoed. "
-            "No-op when --dry-run is set (we never prompt for secrets "
-            "during a dry-run preview, per No Silent Failures)."
+            "keyring after the install completes. v0.9.5+ accepts the flag "
+            "on every init path (auto-detect, verb subcommand, "
+            "--target=cloud-only, --interactive). Hidden-input prompt; "
+            "the literal value is never echoed. No-op when --dry-run is "
+            "set (No Silent Failures: never prompt for secrets during "
+            "a preview)."
+        ),
+    ),
+    cursor_api_key: str | None = typer.Option(
+        None,
+        "--cursor-api-key",
+        help=(
+            "v0.9.5+: non-interactive Cursor API key intake. The literal "
+            "value is forwarded to the OS keyring via "
+            "popolaloom.credentials.store_cursor_api_key. Implies "
+            "--configure-cursor-auth on every init path (auto-detect, "
+            "verb subcommand, --target=cloud-only, --interactive). "
+            "Mutually exclusive with --cursor-api-key-file. Empty / "
+            "whitespace-only values are rejected."
+        ),
+    ),
+    cursor_api_key_file: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--cursor-api-key-file",
+        help=(
+            "v0.9.5+: read the Cursor API key from the first non-empty "
+            "line of PATH (utf-8) and persist via --cursor-api-key's path. "
+            "Mutually exclusive with --cursor-api-key. Missing or empty "
+            "files are rejected (No Silent Failures)."
         ),
     ),
 ) -> None:
-    """Top-level callback: handle ``--target``, ``--list``, ``--interactive``, and auto-detect."""
+    """Top-level callback: handle ``--target``, ``--list``, ``--interactive``, and auto-detect.
+
+    v0.9.5 (closes ``.local/feedbacks/feedback_for_v0.9.4.md``): adds two
+    new credential-intake options on the root callback —
+    ``--cursor-api-key VAL`` and ``--cursor-api-key-file PATH`` — that
+    forward the resolved value to
+    :func:`popolaloom.credentials.store_cursor_api_key` so operators do
+    not have to re-enter the key on subsequent dispatches. Either flag
+    implies ``--configure-cursor-auth`` (no need to pass both); the
+    flags compose with every init path (auto-detect, verb subcommand,
+    ``--target=cloud-only``, ``--interactive``). ``--dry-run`` skips
+    persistence with a clear one-line message (per the workspace
+    **No Silent Failures** rule for secrets — never prompt or persist
+    during a preview).
+    """
     cwd = Path.cwd()
+
+    resolved_cursor_api_key = _resolve_cursor_api_key_input(
+        value=cursor_api_key,
+        file=cursor_api_key_file,
+    )
+    effective_configure_cursor_auth = (
+        configure_cursor_auth or resolved_cursor_api_key is not None
+    )
 
     if target is InitTarget.CLOUD_ONLY:
         if ctx.invoked_subcommand is not None:
@@ -978,24 +1229,36 @@ def init_callback(
             cwd,
             dry_run=dry_run,
             force=force,
-            configure_cursor_auth=configure_cursor_auth,
+            configure_cursor_auth=effective_configure_cursor_auth,
+            cursor_api_key=resolved_cursor_api_key,
         )
         raise typer.Exit(code=0)
-
-    if configure_cursor_auth and not interactive:
-        # The flag is meaningful only paired with --target=cloud-only
-        # or --interactive; surface a clear error rather than silently
-        # ignoring it (No Silent Failures).
-        raise typer.BadParameter(
-            "--configure-cursor-auth requires --target=cloud-only or --interactive"
-        )
 
     if interactive:
         if ctx.invoked_subcommand is not None:
             raise typer.BadParameter(
                 "--interactive cannot be combined with a verb subcommand"
             )
-        _run_interactive_wizard(cwd, configure_cursor_auth=configure_cursor_auth)
+        # v0.9.5: when a non-interactive value was supplied, persist it
+        # immediately so the credential reaches the keyring even if the
+        # operator declines every install in the wizard's "Nothing
+        # selected" early-return branch. The wizard's own credential
+        # prompt is suppressed in this case (the value is already
+        # collected) by passing ``configure_cursor_auth=False``.
+        if resolved_cursor_api_key is not None:
+            _handle_credential_intake_after_install(
+                resolved_key=resolved_cursor_api_key,
+                configure_cursor_auth=True,
+                dry_run=dry_run,
+            )
+        _run_interactive_wizard(
+            cwd,
+            configure_cursor_auth=(
+                configure_cursor_auth and resolved_cursor_api_key is None
+            ),
+            cursor_api_key=None,
+            dry_run=dry_run,
+        )
         raise typer.Exit(code=0)
 
     if list_only:
@@ -1007,6 +1270,21 @@ def init_callback(
         raise typer.Exit(code=0)
 
     if ctx.invoked_subcommand is not None:
+        # A per-verb subcommand (cursor / claude / copilot / codex /
+        # local / all) will run after this callback returns. Defer the
+        # credential helper to a click ``ctx.call_on_close`` hook so it
+        # fires AFTER the verb body completes (per the v0.9.5 contract:
+        # "after the verb installs, run the credential helper").
+        if effective_configure_cursor_auth:
+
+            def _after_subcommand_credential_helper() -> None:
+                _handle_credential_intake_after_install(
+                    resolved_key=resolved_cursor_api_key,
+                    configure_cursor_auth=effective_configure_cursor_auth,
+                    dry_run=dry_run,
+                )
+
+            ctx.call_on_close(_after_subcommand_credential_helper)
         return
 
     typer.echo("popola init — target: full (default)")
@@ -1023,6 +1301,12 @@ def init_callback(
         elif verb in {"cursor", "claude", "copilot", "codex"}:
             _install_target(verb, scope="project", cwd=cwd, dry_run=dry_run)
 
+    _handle_credential_intake_after_install(
+        resolved_key=resolved_cursor_api_key,
+        configure_cursor_auth=effective_configure_cursor_auth,
+        dry_run=dry_run,
+    )
+
 
 # ── interactive wizard ──────────────────────────────────────────────────
 
@@ -1038,7 +1322,13 @@ integration.
 """
 
 
-def _run_interactive_wizard(cwd: Path, *, configure_cursor_auth: bool = False) -> None:
+def _run_interactive_wizard(
+    cwd: Path,
+    *,
+    configure_cursor_auth: bool = False,
+    cursor_api_key: str | None = None,
+    dry_run: bool = False,
+) -> None:
     """Walk the operator through an interactive setup.
 
     Steps (per the v0.5.5 L5.B contract):
@@ -1058,15 +1348,25 @@ def _run_interactive_wizard(cwd: Path, *, configure_cursor_auth: bool = False) -
     6. v0.9.2+: when ``configure_cursor_auth`` is True (operator passed
        ``--configure-cursor-auth``), invite the operator to securely
        store a Cursor API key in the OS keyring after every other step.
+    7. v0.9.5+: when ``cursor_api_key`` is non-None (operator passed
+       ``--cursor-api-key`` or ``--cursor-api-key-file`` on the init
+       root), persist the value via the non-interactive path instead
+       of prompting; the interactive credential prompt is skipped to
+       avoid asking for a value the operator already supplied. ``dry_run``
+       short-circuits credential persistence with a clear message
+       (per the No Silent Failures dry-run rule for secrets).
 
     All I/O goes through :func:`typer.confirm` and :func:`typer.prompt`;
     tests inject stdin via ``CliRunner.invoke(..., input="...")`` per
     Typer's testing docs.
 
-    The wizard never honours ``--dry-run`` directly: it's a separate
-    UX surface (operators driving the wizard explicitly want writes).
-    Tests should patch ``Path.home`` + ``Path.cwd`` to a tmp dir to
-    keep the developer's real config untouched.
+    The wizard never honours ``--dry-run`` directly for the install
+    plan: it's a separate UX surface (operators driving the wizard
+    explicitly want writes). The ``dry_run`` argument is forwarded
+    only to the credential intake step so a previewer cannot
+    accidentally persist a secret. Tests should patch ``Path.home`` +
+    ``Path.cwd`` to a tmp dir to keep the developer's real config
+    untouched.
     """
     detected = set(_auto_detect(cwd))
 
@@ -1115,8 +1415,11 @@ def _run_interactive_wizard(cwd: Path, *, configure_cursor_auth: bool = False) -
     if install_local_choice:
         _install_local(cwd, no_compile=False, with_examples=False, dry_run=False)
 
-    if configure_cursor_auth:
-        _offer_cursor_credential_setup()
+    _handle_credential_intake_after_install(
+        resolved_key=cursor_api_key,
+        configure_cursor_auth=configure_cursor_auth,
+        dry_run=dry_run,
+    )
 
     typer.echo("\nInteractive setup complete.")
 
