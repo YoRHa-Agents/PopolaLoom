@@ -259,6 +259,68 @@ def _run_subprocess(argv: list[str]) -> int:
     return completed.returncode
 
 
+def _resolve_pool_env(env: dict[str, str]) -> dict[str, str]:
+    """Inject ``CURSOR_API_KEY`` into ``env`` from the credential resolver.
+
+    v0.9.2: ``agent worker start --pool`` reads ``CURSOR_API_KEY`` from
+    the spawned subprocess environment. When the operator stored their
+    service-account key via ``popola auth cursor set`` (precedence #3)
+    instead of ``export CURSOR_API_KEY=...``, we need to surface the
+    resolved value into the subprocess env so the upstream CLI sees it.
+
+    Returns a fresh dict (does not mutate the caller's). Returns the
+    input unchanged when no API key is configured (caller has already
+    failed via :func:`_fail_pool_requires_api_key` in that case).
+    """
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    if env.get("CURSOR_API_KEY", "").strip():
+        return env
+    resolved = resolve_cursor_api_key()
+    if not resolved:
+        return env
+    out = dict(env)
+    out["CURSOR_API_KEY"] = resolved
+    return out
+
+
+def _spawn_worker_subprocess(argv: list[str], *, pool: bool) -> int:
+    """Spawn the ``agent worker`` subprocess; inject keyring-resolved key when ``pool`` is True.
+
+    v0.9.2: when ``pool`` is True we may need to inject ``CURSOR_API_KEY``
+    into the subprocess env (the upstream CLI reads from env) so a
+    keyring-stored service-account key reaches the pool worker without
+    a manual ``export`` step. We do this by mutating the parent
+    ``os.environ`` only when the resolver-side value is missing —
+    short-circuiting both branches of :func:`_resolve_pool_env` when
+    no injection is needed.
+
+    The injection mutates ``os.environ`` directly (not a private dict)
+    so existing test fixtures that monkey-patch :func:`_run_subprocess`
+    with a 1-arg lambda continue to work; v0.9.2 callers gain the
+    keyring-aware behaviour transparently.
+
+    Returns the subprocess exit code (whatever :func:`_run_subprocess`
+    returns).
+    """
+    if pool:
+        merged = _resolve_pool_env(dict(os.environ))
+        injected_key = merged.get("CURSOR_API_KEY")
+        original_value = os.environ.get("CURSOR_API_KEY")
+        try:
+            if injected_key and not (original_value and original_value.strip()):
+                os.environ["CURSOR_API_KEY"] = injected_key
+                return _run_subprocess(argv)
+            return _run_subprocess(argv)
+        finally:
+            if injected_key and not (original_value and original_value.strip()):
+                if original_value is None:
+                    os.environ.pop("CURSOR_API_KEY", None)
+                else:
+                    os.environ["CURSOR_API_KEY"] = original_value
+    return _run_subprocess(argv)
+
+
 def _fetch_management_endpoint(
     host: str,
     port: int,
@@ -358,9 +420,11 @@ def worker_debug_cmd(
     Forwards stdout / stderr verbatim so the operator sees the same
     auth method / visibility-probe report the upstream CLI emits. Pool
     workers require a service-account API key — when ``--pool`` is set
-    without ``CURSOR_API_KEY`` we fail fast with the canonical hint.
+    without one configured (env var OR keyring) we fail fast with the
+    canonical hint. v0.9.2: the keyring-stored value is injected into
+    the subprocess env so the upstream CLI sees ``CURSOR_API_KEY``.
     """
-    if pool and not os.environ.get("CURSOR_API_KEY", "").strip():
+    if pool and not _has_resolvable_api_key():
         _fail_pool_requires_api_key()
 
     binary = _resolve_agent_binary()
@@ -373,7 +437,7 @@ def worker_debug_cmd(
         pool_name=pool_name,
         labels=labels_kv,
     )
-    rc = _run_subprocess(argv)
+    rc = _spawn_worker_subprocess(argv, pool=pool)
     raise typer.Exit(code=rc)
 
 
@@ -449,7 +513,7 @@ def worker_start_cmd(
     ``--management-addr`` to confirm the outbound connection to Cursor's
     cloud is live.
     """
-    if pool and not os.environ.get("CURSOR_API_KEY", "").strip():
+    if pool and not _has_resolvable_api_key():
         _fail_pool_requires_api_key()
 
     if management_addr is not None:
@@ -476,16 +540,30 @@ def worker_start_cmd(
         typer.echo(_format_quoted_argv(argv))
         raise typer.Exit(code=_EXIT_OK)
 
-    rc = _run_subprocess(argv)
+    rc = _spawn_worker_subprocess(argv, pool=pool)
     raise typer.Exit(code=rc)
+
+
+def _has_resolvable_api_key() -> bool:
+    """True iff the credential resolver returns a non-empty key.
+
+    v0.9.2: the pool worker's API key lookup honours both the env var
+    and the OS keyring (precedence #2 + #3 from the resolver). Returning
+    True here means :func:`_resolve_pool_env` will subsequently inject
+    the resolved value into the spawned subprocess env.
+    """
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    return resolve_cursor_api_key() is not None
 
 
 def _fail_pool_requires_api_key() -> NoReturn:
     """Print the canonical pool-without-key hint and exit ``77``."""
     typer.echo(
         "error: --pool requires a Cursor service-account API key (Enterprise). "
-        "Export CURSOR_API_KEY=<service-account-key> and retry, OR drop --pool "
-        "to launch a shared 'My Machines' worker (works with `agent login`).",
+        "Configure one via: export CURSOR_API_KEY=<service-account-key>, OR "
+        "`popola auth cursor set` (stores in OS keyring), OR drop --pool to "
+        "launch a shared 'My Machines' worker (works with `agent login`).",
         err=True,
     )
     typer.echo(

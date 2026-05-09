@@ -284,11 +284,16 @@ def runs(
         )
         effective_limit = _MAX_LIMIT
 
-    # Step 1 — fail fast on missing CURSOR_API_KEY (avoid a daemon round-trip).
-    api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+    # Step 1 — fail fast on missing credentials (avoid a daemon round-trip).
+    # v0.9.2: route through the resolver so OS keyring storage answers
+    # in addition to the historical CURSOR_API_KEY env path.
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    api_key = resolve_cursor_api_key()
     if not api_key:
         typer.echo(
-            "error: CURSOR_API_KEY env var is required for 'popola cloud runs'",
+            "error: no Cursor API key configured for 'popola cloud runs' "
+            "(set CURSOR_API_KEY env or run `popola auth cursor set`)",
             err=True,
         )
         raise typer.Exit(code=_EXIT_CLOUD_AUTH_ERROR)

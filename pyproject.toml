@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "0.9.1"
+version = "0.9.2"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -73,6 +73,13 @@ dev = [
 # built-in S1..S6 regex catalogue; without it the scanner emits a WARNING
 # and uses the fallback (per the No-Silent-Failures rule).
 relay-secrets = ["detect-secrets>=1.5.0"]
+# v0.9.2 — optional secure credential storage backend.
+# When installed, `popola auth cursor set` persists CURSOR_API_KEY into
+# the OS keyring (macOS Keychain, Windows Credential Manager, libsecret
+# on Linux). Without it, the env-var path remains the only supported
+# precedence slot and `popola auth cursor set` fails loudly with a
+# remediation hint (No Silent Failures).
+credentials = ["keyring>=25"]
 
 [project.scripts]
 # Typer CLI 入口 (出处: spec.md §3.1 L0/L1)

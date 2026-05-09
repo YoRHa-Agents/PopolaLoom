@@ -687,7 +687,13 @@ def _write_cloud_file(target: Path, content: str, *, dry_run: bool, force: bool)
     return "OK"
 
 
-def _install_cloud_only(cwd: Path, *, dry_run: bool, force: bool) -> None:
+def _install_cloud_only(
+    cwd: Path,
+    *,
+    dry_run: bool,
+    force: bool,
+    configure_cursor_auth: bool = False,
+) -> None:
     """Scaffold the cloud-only project skeleton at ``cwd`` (v0.9.0 W2.4).
 
     Drops three files at the project root:
@@ -710,6 +716,15 @@ def _install_cloud_only(cwd: Path, *, dry_run: bool, force: bool) -> None:
     overwrite)``. With ``--force`` set we write all three files
     unconditionally (including overwriting any existing copy).
 
+    v0.9.2 ``--configure-cursor-auth`` extension: when the flag is set
+    AND ``dry_run`` is False, additionally walk the operator through
+    :func:`_offer_cursor_credential_setup` after the scaffold is on
+    disk. The credential setup itself is gated by an interactive
+    ``typer.confirm`` so a non-interactive caller (e.g. a CI test)
+    will not hang. ``dry_run`` short-circuits the credential step
+    entirely (per the workspace **No Silent Failures** rule for
+    secrets — never prompt during dry-run).
+
     Args:
         cwd: project root to scaffold into (``Path.cwd()`` from the
             top-level callback; tests override via ``monkeypatch.chdir``).
@@ -718,6 +733,10 @@ def _install_cloud_only(cwd: Path, *, dry_run: bool, force: bool) -> None:
         force: when True, overwrite pre-existing files; when False,
             existing files print SKIP and the operator's content is
             preserved (mirrors the behaviour of every other init verb).
+        configure_cursor_auth: opt-in flag (v0.9.2+); when True, prompt
+            the operator to store the Cursor API key in the OS keyring
+            after the scaffold is written. Ignored on ``dry_run`` so
+            no prompt is shown for previews.
     """
     typer.echo("popola init — target: cloud-only")
     typer.echo(
@@ -745,6 +764,90 @@ def _install_cloud_only(cwd: Path, *, dry_run: bool, force: bool) -> None:
             "  3. make dispatch PROMPT=\"...\"    "
             "(or: popola dispatch ... --cli=cursor-cloud)"
         )
+
+        if configure_cursor_auth:
+            _offer_cursor_credential_setup()
+
+
+# ── credential setup helper (v0.9.2+) ────────────────────────────────────
+
+
+def _offer_cursor_credential_setup() -> None:
+    """Walk the operator through `popola auth cursor set` interactively.
+
+    Invoked from:
+
+    * ``popola init --target=cloud-only --configure-cursor-auth`` (after
+      the scaffold is on disk).
+    * The interactive wizard's optional credential step.
+
+    Skips silently when the keyring extra is unavailable so the operator
+    sees an actionable hint rather than a hard failure (the scaffold
+    is valuable even without the keyring backend — they can fall back
+    to ``CURSOR_API_KEY`` in ``.env``).
+
+    Per the v0.9.2 plan §"Secret Handling Invariants", the prompt uses
+    :func:`typer.prompt(hide_input=True)` so the typed key never
+    re-echoes; the stored fingerprint is printed afterwards so the
+    operator can confirm the round-trip.
+    """
+    from popolaloom.credentials import (
+        CredentialBackendError,
+        compute_fingerprint,
+        is_keyring_available,
+        store_cursor_api_key,
+    )
+
+    typer.echo("\nSecure Cursor API key storage (v0.9.2+):")
+    if not is_keyring_available():
+        typer.echo(
+            "  WARN: OS keyring backend unavailable; install the optional "
+            "extra to enable secure storage:"
+        )
+        typer.echo("        `pip install popolaloom[credentials]`")
+        typer.echo(
+            "        Until then, set CURSOR_API_KEY in your shell or "
+            ".env file (the env var is the documented fallback)."
+        )
+        return
+
+    if not typer.confirm(
+        "  Store a Cursor API key in the OS keyring now?",
+        default=False,
+    ):
+        typer.echo("  Skipped. You can run `popola auth cursor set` later.")
+        return
+
+    raw = typer.prompt(
+        "  Cursor API key (input hidden; stored in OS keyring only)",
+        hide_input=True,
+        confirmation_prompt=False,
+    )
+    raw = (raw or "").strip()
+    if not raw:
+        typer.echo("  Empty input; skipping. Run `popola auth cursor set` to retry.")
+        return
+
+    try:
+        status = store_cursor_api_key(raw)
+    except CredentialBackendError as exc:
+        typer.echo(f"  ERROR: {exc}")
+        typer.echo(
+            "  Falling back to env var path: set CURSOR_API_KEY in your shell."
+        )
+        return
+    except ValueError as exc:
+        typer.echo(f"  ERROR: {exc}")
+        return
+
+    fp = compute_fingerprint(raw) or "(unknown)"
+    typer.echo(
+        f"  Stored. backend={status.backend_name}  fingerprint={fp}"
+    )
+    typer.echo(
+        "  Next dispatches will resolve via OS keyring (precedence: "
+        "CURSOR_API_KEY env > keyring)."
+    )
 
 
 # ── --list ───────────────────────────────────────────────────────────────
@@ -843,6 +946,17 @@ def init_callback(
             "the first time)."
         ),
     ),
+    configure_cursor_auth: bool = typer.Option(
+        False,
+        "--configure-cursor-auth",
+        help=(
+            "v0.9.2+: prompt to securely store a Cursor API key in the OS "
+            "keyring after a successful --target=cloud-only scaffold. "
+            "Hidden-input prompt; the literal value is never echoed. "
+            "No-op when --dry-run is set (we never prompt for secrets "
+            "during a dry-run preview, per No Silent Failures)."
+        ),
+    ),
 ) -> None:
     """Top-level callback: handle ``--target``, ``--list``, ``--interactive``, and auto-detect."""
     cwd = Path.cwd()
@@ -860,15 +974,28 @@ def init_callback(
             raise typer.BadParameter(
                 "--target=cloud-only cannot be combined with --interactive"
             )
-        _install_cloud_only(cwd, dry_run=dry_run, force=force)
+        _install_cloud_only(
+            cwd,
+            dry_run=dry_run,
+            force=force,
+            configure_cursor_auth=configure_cursor_auth,
+        )
         raise typer.Exit(code=0)
+
+    if configure_cursor_auth and not interactive:
+        # The flag is meaningful only paired with --target=cloud-only
+        # or --interactive; surface a clear error rather than silently
+        # ignoring it (No Silent Failures).
+        raise typer.BadParameter(
+            "--configure-cursor-auth requires --target=cloud-only or --interactive"
+        )
 
     if interactive:
         if ctx.invoked_subcommand is not None:
             raise typer.BadParameter(
                 "--interactive cannot be combined with a verb subcommand"
             )
-        _run_interactive_wizard(cwd)
+        _run_interactive_wizard(cwd, configure_cursor_auth=configure_cursor_auth)
         raise typer.Exit(code=0)
 
     if list_only:
@@ -911,7 +1038,7 @@ integration.
 """
 
 
-def _run_interactive_wizard(cwd: Path) -> None:
+def _run_interactive_wizard(cwd: Path, *, configure_cursor_auth: bool = False) -> None:
     """Walk the operator through an interactive setup.
 
     Steps (per the v0.5.5 L5.B contract):
@@ -928,6 +1055,9 @@ def _run_interactive_wizard(cwd: Path) -> None:
        the directory is missing.
     4. Show the install plan and prompt: "Proceed? [Y/n]".
     5. When confirmed, dispatch each chosen install verb.
+    6. v0.9.2+: when ``configure_cursor_auth`` is True (operator passed
+       ``--configure-cursor-auth``), invite the operator to securely
+       store a Cursor API key in the OS keyring after every other step.
 
     All I/O goes through :func:`typer.confirm` and :func:`typer.prompt`;
     tests inject stdin via ``CliRunner.invoke(..., input="...")`` per
@@ -984,6 +1114,10 @@ def _run_interactive_wizard(cwd: Path) -> None:
         _install_target(ide, scope=scope, cwd=cwd, dry_run=False)
     if install_local_choice:
         _install_local(cwd, no_compile=False, with_examples=False, dry_run=False)
+
+    if configure_cursor_auth:
+        _offer_cursor_credential_setup()
+
     typer.echo("\nInteractive setup complete.")
 
 

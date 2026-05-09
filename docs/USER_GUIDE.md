@@ -6,11 +6,11 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.9.0 GA)
+# PopolaLoom — User Guide (v0.9.1)
 
 <!-- updated: 2026-05-09 -->
 
-> **Generally Available since v0.9.0 (2026-05-08).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.0 specifically install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0`** (canonical, tag-pinned) **or `./install.sh install --from=git`** (alternate, auto-tracks main) — PyPI publish is deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The `./install.sh install` default uses `--from=pypi` and currently resolves to the prior v0.8.x stable line.
+> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.1 (2026-05-09).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.1 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1`** (canonical, tag-pinned) **or `./install.sh install --from=git`** (alternate, auto-tracks main) — PyPI publish is deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The `./install.sh install` default uses `--from=pypi` and currently resolves to the prior v0.8.x stable line.
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
@@ -28,6 +28,7 @@ translation_url: /zh/USER_GUIDE.html
 - [Lark integration](#lark-integration)
 - [Adapter passthrough (`--cli-flag`)](#adapter-passthrough)
 - [Cloud Agent dispatch (v0.8.5+)](#cloud-agent-dispatch-v085)
+- [Credentials & secure storage (v0.9.2+)](#credentials--secure-storage-v092)
 - [Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)](#self-hosted-worker-handoff-popola-cloud-worker-v091)
 - [Cloud HITL (Enterprise / Self-Hosted) (v0.8.7+)](#cloud-hitl-enterprise--self-hosted)
 - [Multi-run cloud agents (v0.8.8+)](#multi-run-cloud-agents-v088)
@@ -126,6 +127,8 @@ Per-IDE install paths:
 
 The unified bash installer at the repo root (`install.sh`) wraps the four-step manual workflow (`pip install` → `popola skill install` → `popola popolad start` → `popola doctor`) into a single shell command. The same script also drives the inverse path: `install.sh uninstall` removes the Skills and uninstalls the package; `install.sh update` upgrades the wheel and refreshes the on-disk SKILL.md.
 
+> **Current-release install note (v0.9.1)**: PyPI promotion is still deferred, so the default `install.sh install` / `--from=pypi` path resolves to the previous v0.8.x line. Use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1` or `./install.sh install --from=git` when you need the v0.9.1 surface, including `popola cloud worker`.
+
 ```bash
 # Pull from GitHub and run as a one-liner
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh | bash
@@ -144,7 +147,7 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 
 | Verb | Purpose |
 |---|---|
-| `install` (default) | `pip install popolaloom` → `popola skill install` → `popola popolad start` (best-effort) → `popola doctor` (best-effort) |
+| `install` (default) | `pip install popolaloom` (currently v0.8.x until PyPI promotion) → `popola skill install` → `popola popolad start` (best-effort) → `popola doctor` (best-effort) |
 | `update` | `pip install --upgrade popolaloom` → `popola skill upgrade --target=<...>` → `popola doctor` |
 | `uninstall` | `popola popolad stop` (best-effort) → `popola skill uninstall --target=<...>` → `pip uninstall popolaloom` (gated on confirmation) → optional `rm -rf $POPOLA_HOME` when `--purge` is set |
 | `version` | Print `install.sh v0.8.4` and exit |
@@ -176,18 +179,18 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 | `git` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
 | any other value (filesystem path) | `pip install <path>` (works for local clones, wheel files, and tarballs) |
 
-For example: `./install.sh install --from=./dist/popolaloom-0.8.4-py3-none-any.whl` installs from a locally-built wheel.
+For example: `./install.sh install --from=./dist/popolaloom-0.9.1-py3-none-any.whl` installs from a locally-built wheel.
 
 #### Examples
 
 ```bash
-# Fresh install for every IDE at user-home scope (the typical first run)
-./install.sh install
+# Current v0.9.1 release from GitHub (recommended until PyPI promotion)
+./install.sh install --from=git
 
 # Install only for Cursor at project scope, from the latest main on GitHub
 ./install.sh install --target=cursor --scope=project --from=git
 
-# Install pinned to a specific PyPI version
+# Install pinned to a specific PyPI version (currently previous v0.8.x line)
 ./install.sh install --version=0.8.4
 
 # Update only the package without touching Skill files
@@ -216,7 +219,7 @@ For example: `./install.sh install --from=./dist/popolaloom-0.8.4-py3-none-any.w
 
 The two surfaces are **complementary**, not competing:
 
-- `install.sh` is the **first-time bootstrap** — run it on a fresh machine to get popolaloom installed end-to-end (pip + Skills + daemon + doctor) in one command. Also the recommended path for upgrade and uninstall.
+- `install.sh` is the **first-time bootstrap** — run it on a fresh machine to get popolaloom installed end-to-end (pip + Skills + daemon + doctor) in one command. Until v0.9.x is on PyPI, pass `--from=git` for the current release. It is also the recommended path for upgrade and uninstall.
 - `popola init` is the **post-install IDE wizard** — run it after `install.sh` (or `pip install popolaloom`) to add additional IDEs, scaffold the `.local/` workspace surface, or run the interactive setup wizard.
 
 ### Self-evaluation
@@ -397,14 +400,23 @@ Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapt
 ### Prerequisites
 
 1. **Daemon** — identical to other adapters: `popola popolad start` (Unix socket RPC).
-2. **API key** — export a non-empty **`CURSOR_API_KEY`**. PopolaLoom authenticates with Cursor’s Cloud Agents REST using **HTTP Basic** (username = API key, password empty) through `CloudCursorClient`.
+2. **API key** — configure a Cursor Cloud Agents API key via either of the two stable precedence slots (v0.9.2+, see [API_STABILITY §2.5](API_STABILITY.md#25-cursor-api-key-credential-resolver-v092)):
+   - **Env var (highest precedence)** — `export CURSOR_API_KEY="cr_..."`. This is the documented path for CI / ephemeral shells and remains backward-compatible with every v0.8.x guide.
+   - **OS keyring** — `popola auth cursor set` stores the secret in macOS Keychain / Windows Credential Manager / libsecret (Linux) so subsequent shell sessions resolve it automatically without re-export. Requires `pip install popolaloom[credentials]`.
 
-Without the key, `--cli=cursor-cloud` is rejected at adapter availability checks; the historical `--cli=cursor` subprocess path is unchanged.
+   PopolaLoom authenticates with Cursor's Cloud Agents REST using **HTTP Basic** (username = API key, password empty) through `CloudCursorClient`. See the [Credentials & secure storage](#credentials--secure-storage-v092) section below for the full flow.
+
+Without a configured key in **either** slot, `--cli=cursor-cloud` is rejected at adapter availability checks; the historical `--cli=cursor` subprocess path is unchanged.
 
 ### Dispatch
 
 ```bash
+# Option A: env var (CI-friendly, ephemeral)
 export CURSOR_API_KEY="cr_..."   # example shape only — use your Cursor dashboard key material
+
+# Option B (v0.9.2+): OS keyring (persistent, no re-export needed)
+popola auth cursor set --validate
+
 popola dispatch "Plan database migration scaffolding" \
   --cli=cursor-cloud \
   --cwd ~/workspace/acme-backend \
@@ -503,7 +515,7 @@ The other 14 entries cover `401 unauthorized`, `401 api_key_not_found`, `403 rol
 
 <!-- updated: 2026-05-09 -->
 
-> **Install prerequisite (v0.9.0 GA)** — `popola` must be on PATH before this scaffold can run. For v0.9.0 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0` (canonical, tag-pinned) OR `./install.sh install --from=git` (alternate). The default `./install.sh install` and `pip install popolaloom` paths currently resolve to the prior v0.8.x stable line until the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
+> **Install prerequisite (v0.9.1 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.1 install via `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.1` (canonical, tag-pinned) OR `./install.sh install --from=git` (alternate). The default `./install.sh install` and `pip install popolaloom` paths currently resolve to the prior v0.8.x stable line until the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
 
 
 `popola init --target=cloud-only` is the v0.9.0 W2.4 scaffold profile that drops a **minimal, cloud-dispatch-only project skeleton** — three files at the project root, no IDE skill installs, no `.local/` workspace, no local CLI shims, no local-tier HITL stubs. It is the right starting point when:
@@ -566,6 +578,202 @@ Canonical design references:
 - `.local/research/v0.8.6_sse/state-source-of-truth.md` (writer contract + §4 reconciliation rules — local-only)
 - `.local/research/v0.8.6_sse/422-error-catalog.md` (canonical hint source — local-only)
 - [`docs/known-issues.md` — Cloud task hydration after daemon restart](known-issues.md)
+
+## Credentials & secure storage (v0.9.2+)
+
+<!-- updated: 2026-05-10 -->
+
+> **Status**: v0.9.2 introduces a unified credential resolver and the
+> `popola auth cursor` CLI surface so operators can store their Cursor
+> Cloud Agents API key in the OS keyring instead of `export`-ing it in
+> every shell. The historical `CURSOR_API_KEY` env-var path remains
+> the highest-precedence slot; nothing about v0.8.x / v0.9.0 / v0.9.1
+> docs is invalidated. See [API_STABILITY §2.5](API_STABILITY.md#25-cursor-api-key-credential-resolver-v092)
+> for the full SemVer-stable contract.
+
+### Why this exists
+
+Cloud dispatch surfaces (`popola dispatch --cli=cursor-cloud`,
+`popola attach <cloud-task>`, `popola cloud runs`, `popola relay`,
+`popola cloud worker --pool`) all need the same Cursor Cloud Agents
+REST API key. Pre-v0.9.2 every call site read
+`os.environ["CURSOR_API_KEY"]` directly, which made operators choose
+between:
+
+- **Re-exporting** the key in every shell session (forgetful, easy to
+  leak via `echo $CURSOR_API_KEY` to chat tools), or
+- **Committing** it to a `.env` file (catastrophic if the file ends up
+  in git history — the `popola init --target=cloud-only` scaffold's
+  `.env.example` ships with the value blank for this reason).
+
+v0.9.2 adds a third path: the OS keyring. The secret lives in macOS
+Keychain / Windows Credential Manager / libsecret (Linux) — encrypted
+at rest under the operator's login session. PopolaLoom reads it at
+dispatch time without ever printing or logging the value.
+
+### Precedence chain
+
+The resolver applies the same precedence chain across every cloud
+call site (formal contract in
+[API_STABILITY §2.5](API_STABILITY.md#25-cursor-api-key-credential-resolver-v092)):
+
+1. **Explicit override** — passed by tests / library callers via
+   `CredentialResolver(override=...)`. CLI does NOT expose this slot.
+2. **`CURSOR_API_KEY` env var** — backward-compatible with every
+   pre-v0.9.2 doc. Whitespace-only values are ignored (treated as
+   unset).
+3. **OS keyring** — populated by `popola auth cursor set` (or the
+   `init --target=cloud-only --configure-cursor-auth` prompt).
+4. **Missing** — every cloud call site emits a remediation message
+   listing all three of `popola auth cursor set`, `CURSOR_API_KEY`,
+   and `popola init --target=cloud-only --configure-cursor-auth`.
+
+The env var deliberately wins over the keyring so CI / debug shells
+that set the env var see no surprise behaviour change after a
+keyring entry is configured.
+
+### `popola auth cursor` verb reference
+
+| Verb | Purpose | Stable flags (v0.9.x) |
+|---|---|---|
+| `popola auth cursor set` | Persist a key in the OS keyring | `--api-key VAL`, `--from-env`, `--validate`, `--json` (`--api-key` ⊕ `--from-env`) |
+| `popola auth cursor status` | Show resolver state without revealing the secret | `--json` |
+| `popola auth cursor clear` | Remove the keyring entry (env var untouched) | `--yes` / `-y`, `--json` |
+
+The literal API key value never appears in stdout / stderr / log
+output for any of the three verbs. `set` reads from `--api-key`
+(already on the operator's argv), `--from-env` (copies the env var
+into the keyring), or a hidden-input prompt (`typer.prompt(hide_input=True)`).
+
+#### Setup (one-time)
+
+```bash
+# 1. Install the optional extra (one-time per machine)
+pip install 'popolaloom[credentials]'
+
+# 2. Store the key (interactive hidden-input prompt)
+popola auth cursor set
+# Cursor API key (will be stored in the OS keyring; input hidden):
+
+# 2b. Or pipe-friendly variants
+popola auth cursor set --api-key cr_...                       # explicit
+popola auth cursor set --from-env                             # migrate from `export`
+popola auth cursor set --api-key cr_... --validate            # round-trip GET /v1/me first
+
+# 3. Confirm it's reachable
+popola auth cursor status
+# Cursor API key: configured
+#   source:           keyring
+#   backend:          macOS Keychain  (or "libsecret", "Secret Service", ...)
+#   fingerprint:      9c1f3a4b2e8d
+#   keyring available: True
+
+# 3b. Same in JSON for scripting
+popola auth cursor status --json
+# {"backend_name": "macOS Keychain", "configured": true, "fingerprint": "9c1f3a4b2e8d", "keyring_available": true, "source": "keyring"}
+```
+
+After this, every cloud call site (`popola dispatch --cli=cursor-cloud`,
+`popola cloud runs`, `popola attach <cloud-task>`, `popola relay`,
+cloud cancel) resolves the key from the keyring without any further
+configuration. You can `unset CURSOR_API_KEY` in your shell — the
+keyring slot answers from then on.
+
+#### Removing the entry
+
+```bash
+popola auth cursor clear --yes
+# Cursor API key removed from the OS keyring.
+
+# Idempotent — safe to call twice:
+popola auth cursor clear --yes
+# No Cursor API key was stored in the OS keyring (no-op).
+```
+
+`clear` does NOT touch `$CURSOR_API_KEY` — that env var is owned by
+your shell / CI pipeline and clearing it via PopolaLoom would surprise
+existing scripts.
+
+### `init --target=cloud-only --configure-cursor-auth`
+
+The cloud-only scaffold gained a `--configure-cursor-auth` flag in
+v0.9.2 that walks the operator through a one-shot keyring setup right
+after the three scaffold files (`popolad.toml` / `.env.example` /
+`Makefile`) are on disk:
+
+```bash
+popola init --target=cloud-only --configure-cursor-auth
+# popola init — target: cloud-only
+#   ...
+# Next steps:
+#   1. cp .env.example .env && edit .env to set CURSOR_API_KEY
+#   2. popola popolad start          (boot the daemon)
+#   3. make dispatch PROMPT="..."    (or: popola dispatch ... --cli=cursor-cloud)
+#
+# Secure Cursor API key storage (v0.9.2+):
+#   Store a Cursor API key in the OS keyring now? [y/N]:
+```
+
+The flag is **opt-in** because:
+
+- It prompts; non-interactive callers (CI) should rely on the env
+  var path (slot #2) and not be blocked by an interactive question.
+- `--dry-run` short-circuits the prompt entirely (never ask for a
+  secret during a preview — No Silent Failures).
+- When the keyring extra is unavailable, the helper prints an
+  actionable hint pointing at `pip install popolaloom[credentials]`
+  + the env-var fallback rather than failing the whole scaffold.
+
+The `popola init --interactive` wizard accepts the same flag and runs
+the helper after the IDE / `.local/` install plan is applied.
+
+### Security invariants (locked in v0.9.x)
+
+The following invariants are part of the v0.9.x stable surface; tests
+in [`tests/test_credentials.py`](../tests/test_credentials.py),
+[`tests/cli/test_auth_cmd.py`](../tests/cli/test_auth_cmd.py), and
+[`tests/test_credentials_redaction.py`](../tests/test_credentials_redaction.py)
+pin them at PR time:
+
+1. The literal API key value never appears in stdout, stderr, log
+   output, NDJSON event payloads, audit rows, or handoff envelopes.
+   Status surfaces show only `configured` / `source` /
+   `backend_name` / `fingerprint` / `keyring_available`.
+2. The fingerprint is the first **12 hex chars** of `sha256(value)`
+   — enough to disambiguate "is this the same key I just set?"
+   without leaking entropy.
+3. The non-secret metadata file at
+   `$POPOLA_HOME/credentials.toml` is created with mode `0600`
+   (owner read/write only) and contains only `backend` /
+   `fingerprint` / `last_set_at` — never the value itself.
+4. The keyring service identifier `popolaloom.cursor` and username
+   slot `default` are stable; changing either would orphan
+   operator-stored secrets.
+5. When the keyring extra is missing, `popola auth cursor set`
+   exits **3** with a remediation hint rather than silently falling
+   back to a plaintext file.
+6. The cursor-cloud marker payload (visible via `popola list` /
+   `popola status` after the v0.8.5 dispatch path) redacts
+   `extra.api_key` to `<REDACTED:CURSOR_API_KEY>` before persisting,
+   so the override slot leaks zero entropy into the SQLite +
+   NDJSON surfaces.
+
+### Threat model (out of scope)
+
+The keyring backend is at most as secure as the operator's login
+session. v0.9.2 does **not** defend against:
+
+- A root-level attacker reading `/proc/<pid>/environ` (env var path).
+- A malicious process running as the same user (the keyring is
+  unlocked for the session — by design).
+- Operators who paste the key into chat tools / commit it to git
+  manually.
+
+For company-wide deployments where these are concerns, use the
+upstream Cursor [service account](https://cursor.com/docs/account/enterprise/service-accounts)
+flow (mint a short-lived token via `POST /v1/sub-tokens` and set
+`$CURSOR_API_KEY` in your secret manager — secret rotation is then
+handled outside PopolaLoom).
 
 ## Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
 

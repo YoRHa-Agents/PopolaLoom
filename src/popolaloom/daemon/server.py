@@ -137,6 +137,28 @@ def _default_events_dir() -> Path:
     return Path.home() / ".popola" / "events"
 
 
+def _redact_cmd_for_persistence(cmd: list[str]) -> list[str]:
+    """Return a copy of ``cmd`` safe to persist / log / notify with.
+
+    v0.9.2: when ``cmd`` is a cursor-cloud sentinel argv (the JSON
+    marker payload from
+    :meth:`popolaloom.adapters.cursor_cloud.CursorCloudAdapter.build_command`),
+    the embedded ``extra.api_key`` value is redacted to a placeholder.
+    Non-cloud cmds (vanilla ``cursor-agent`` / ``claude`` / ``codex``
+    argv) pass through unchanged.
+
+    Used at three persistence boundaries: :class:`TaskHandle.cmd`, the
+    NDJSON ``task.dispatched`` event payload, and the ArkTower SQLite
+    row. The unredacted cmd remains in-memory only long enough to reach
+    :meth:`Supervisor.spawn`, which extracts ``api_key`` from the
+    payload (or, more commonly, falls through to the credential
+    resolver in :mod:`popolaloom.credentials`).
+    """
+    from popolaloom.adapters.cursor_cloud import redact_cloud_marker_cmd
+
+    return redact_cloud_marker_cmd(cmd)
+
+
 class Popolad:
     """Minimal popolad daemon facade — dispatch / status / tail / list.
 
@@ -514,8 +536,16 @@ class Popolad:
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
+        # v0.9.2: redact secrets (CURSOR_API_KEY in cloud marker payload)
+        # before persisting to TaskHandle.cmd / NDJSON / ArkTower so
+        # `popola list` / `popola status` / event_log don't expose them.
+        # The unredacted ``cmd`` is still passed to ``supervisor.spawn``
+        # so the cloud spawn-path can resolve the override; that resolution
+        # also goes through the credential resolver (env / keyring).
+        persistable_cmd = _redact_cmd_for_persistence(cmd)
+
         arktower_task_id, persisted = self._maybe_create_arktower_task(
-            task_id=task_id, cli=cli, prompt=prompt, cmd=cmd
+            task_id=task_id, cli=cli, prompt=prompt, cmd=persistable_cmd
         )
 
         events_dir = self._resolve_events_dir(extra)
@@ -535,7 +565,7 @@ class Popolad:
             started_at=datetime.now(UTC),
             event_log_path=event_log_path,
             arktower_task_id=arktower_task_id,
-            cmd=cmd,
+            cmd=persistable_cmd,
             persisted=persisted,
         )
         self._state.register(handle)
@@ -547,7 +577,7 @@ class Popolad:
                 "cli": cli,
                 "prompt": prompt,
                 "cwd": str(cwd_path) if cwd_path else None,
-                "cmd": cmd,
+                "cmd": persistable_cmd,
                 "arktower_task_id": arktower_task_id,
                 "persisted": persisted,
             },
@@ -606,8 +636,13 @@ class Popolad:
         if not isinstance(cmd, list) or not cmd:
             raise ValueError(f"adapter returned invalid cmd: {cmd!r}")
 
+        # v0.9.2: redact secrets in the persisted cmd (see _dispatch_legacy
+        # for rationale). The supervisor still receives the unredacted
+        # cmd so the cloud spawn-path can read the override.
+        persistable_cmd = _redact_cmd_for_persistence(cmd)
+
         arktower_task_id, persisted = self._maybe_create_arktower_task(
-            task_id=task_id, cli=cli, prompt=prompt, cmd=cmd
+            task_id=task_id, cli=cli, prompt=prompt, cmd=persistable_cmd
         )
 
         events_dir = self._resolve_events_dir(extra)
@@ -624,7 +659,7 @@ class Popolad:
             started_at=datetime.now(UTC),
             event_log_path=event_log_path,
             arktower_task_id=arktower_task_id,
-            cmd=cmd,
+            cmd=persistable_cmd,
             persisted=persisted,
         )
         self._state.register(handle)
@@ -636,7 +671,7 @@ class Popolad:
                 "cli": cli,
                 "prompt": prompt,
                 "cwd": str(cwd_path) if cwd_path else None,
-                "cmd": cmd,
+                "cmd": persistable_cmd,
                 "arktower_task_id": arktower_task_id,
                 "persisted": persisted,
             },
@@ -681,7 +716,7 @@ class Popolad:
             cwd=cwd_path,
             prompt=prompt,
             extra=extra or {},
-            cmd=cmd,
+            cmd=persistable_cmd,
             status="pending",
         )
 
@@ -1087,14 +1122,23 @@ class Popolad:
         }
 
     def _resolve_cloud_cursor_client(self) -> CloudCursorClient:
-        """Return the injected client or lazily construct one from ``CURSOR_API_KEY``."""
+        """Return the injected client or lazily construct one from credentials.
+
+        v0.9.2: resolves through :func:`popolaloom.credentials.resolve_cursor_api_key`
+        so cloud cancel honours both the historical ``CURSOR_API_KEY`` env
+        var path and the OS keyring storage. Tests inject
+        ``Popolad(cloud_client=...)`` to bypass the resolver entirely.
+        """
         if self._cloud_client is not None:
             return self._cloud_client
-        api_key = os.environ.get("CURSOR_API_KEY", "").strip()
+        from popolaloom.credentials import resolve_cursor_api_key
+
+        api_key = resolve_cursor_api_key()
         if not api_key:
             raise RuntimeError(
-                "CURSOR_API_KEY is required to cancel cloud-runtime tasks "
-                "(inject Popolad(cloud_client=...) in tests)"
+                "Cursor API key is required to cancel cloud-runtime tasks "
+                "(set CURSOR_API_KEY env, run `popola auth cursor set`, "
+                "or inject Popolad(cloud_client=...) in tests)"
             )
         self._cloud_client = CloudCursorClient(api_key)
         return self._cloud_client
