@@ -15,7 +15,7 @@ url: https://YoRHa-Agents.github.io
 baseurl: /PopolaLoom
 
 # Site version (rendered in the footer by _layouts/default.html)
-popola_version: "0.9.2"
+popola_version: "0.9.3"
 
 # Site metadata
 github:

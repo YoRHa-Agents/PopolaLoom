@@ -67,12 +67,24 @@ def test_cloud_marker_triggers_create_agent_path(
     }
     instance.get_run.return_value = {"status": "FINISHED"}
     mocker.patch("popolaloom.daemon.cloud_poller.time.sleep", return_value=None)
-    cmd = _marker_cmd("do work", {"repo_url": "https://github.com/o/r"})
+    cmd = _marker_cmd(
+        "do work",
+        {
+            "repo_url": "https://github.com/o/r",
+            "use_private_worker": True,
+            "labels": {"pool": "popolaloom", "worker": "ci-1"},
+        },
+    )
     pid = sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
     assert pid == 0
     assert sup.join(task_id, timeout=5.0)
     mock_cls.assert_called_once()
     instance.create_agent.assert_called_once()
+    assert instance.create_agent.call_args.kwargs["use_private_worker"] is True
+    assert instance.create_agent.call_args.kwargs["labels"] == {
+        "pool": "popolaloom",
+        "worker": "ci-1",
+    }
     handle = store.get(task_id)
     assert handle is not None
     assert handle.runtime == "cloud"

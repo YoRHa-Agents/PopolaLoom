@@ -1,15 +1,15 @@
 # PopolaLoom API Stability Boundary — v0.9.x
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-10 -->
 
 > **Status**: v0.9.0 GA published the first explicit stable /
-> experimental boundary; v0.9.1 adds the self-hosted worker handoff CLI
-> surface under the same additive v0.9.x contract.
+> experimental boundary; v0.9.3 adds workspace-worker singleton dispatch
+> and private-worker routing extras under the same additive v0.9.x contract.
 > **Lock decision**: **Q-D-7 (Q9-3)** — *"daemon RPC + CLI 列稳定；实验项以
 > `extra` / `__experimental` 标记"* — see row 10 of the *已锁定的全部 11 道决策*
 > table in the program plan and the matching `Q9-3` row in
 > [`decision-matrices-zh.md`](../.local/research/v0.8.5-to-v0.9.0_roadmap/decision-matrices-zh.md).
-> **Last updated**: 2026-05-09
+> **Last updated**: 2026-05-10
 
 This document is the canonical contract for what an operator, integrator,
 or downstream Skill MAY rely on across the v0.9.x line, and what is
@@ -93,7 +93,7 @@ v0.9.x stable CLI surface is:
 
 | # | Verb | Stable contract (flag names, defaults, exit codes) | Landed |
 | --- | --- | --- | --- |
-| 1 | `popola dispatch <prompt>` | `--cli`, `--cwd`, `--cli-flag KEY=VAL`, `--events-dir`, `--replay`, `--wait`, `--timeout`, `--json`. Returns `task_id` on stdout. Exit codes: `0` success / `1` daemon-down or unknown CLI / `2` invalid args. | v0.2.0 |
+| 1 | `popola dispatch <prompt>` | `--cli`, `--cwd`, `--cli-flag KEY=VAL`, `--events-dir`, `--replay`, `--wait`, `--timeout`, `--json`. Returns `task_id` on stdout. For `--cli=cursor-cloud`, stable private-worker routing extras are listed in [§2.6](#26-cursor-cloud-private-worker-routing-extras-v093). Exit codes: `0` success / `1` daemon-down or unknown CLI / `2` invalid args. | v0.2.0 |
 | 2 | `popola list` | `--state`, `--all/-a`, `--no-runtime`, `--json`. Default rendered columns (in order): `task_id, runtime, cli, state, pid, started_at`. `--json` always carries `runtime`. | v0.2.0 (column added v0.8.6 — see [§6](#6-cross-links-to-v08x-release_notes)) |
 | 3 | `popola status <task>` | `--json`, `--verbose`. Without `--verbose` the JSON shape is the v0.8.5 baseline (no `verbose` key). Cost block (`--verbose`) is **experimental** — see [§3.2](#32-cost-surface-fields-in-popola-status-verbose-q-c-2). | v0.2.0 (`--verbose` v0.8.8) |
 | 4 | `popola attach <task>` | `--from <int>`, `--follow/--no-follow` (default `--follow`), `--no-stream`. Streams NDJSON event lines `<time>  <type>  <data>`. | v0.2.0 (`--no-stream` v0.8.6) |
@@ -105,7 +105,7 @@ v0.9.x stable CLI surface is:
 | 10 | `popola handoff` | Sub-app: `inspect` / `archive` / `list`. On-disk envelope tooling. | v0.7.2 |
 | 11 | `popola cloud` | Sub-app namespace. Verb `runs` is **experimental** in v0.9.0 — see [§3.1](#31-popola-cloud-runs-q-c-1). The sub-app shell itself is stable. | v0.8.8 |
 | 12 | `popola relay <task_a>` | `--dry-run`, `--no-confirm`, `--target-repo`, `--confirm-allowlist`, `--message`, `--idempotency-key`, `--json`. Default `mode = "auto"` per Q-C-4 lock. Behaviour gated by `[cloud.relay]` (see [§3.3](#33-cloudrelay-config-schema-q-c-4)). Exit codes: `0`, `1` policy-denied, `2` invalid-args, `75` cloud-API, `77` cloud-auth, `78` feature-unavailable, `100` not-found, `102` conflict. | v0.8.8 |
-| 13 | `popola cloud worker` | Sub-app: `debug` / `start` / `status` / `handoff`. My Machines mode uses upstream `agent login`; `--pool` requires a Cursor service-account API key (resolved per [§2.5](#25-cursor-api-key-credential-resolver-v092)) and exits `77` when missing. `status --json` and `handoff --json` schemas are additive; `handoff.popola_task_id` is always `null` because this lane does not create a popola-tracked task. | v0.9.1 |
+| 13 | `popola cloud worker` | Sub-app: `debug` / `start` / `status` / `handoff` / `dispatch`. My Machines mode uses upstream `agent login`; `--pool` requires a Cursor service-account API key (resolved per [§2.5](#25-cursor-api-key-credential-resolver-v092)) and exits `77` when missing. `start` reuses the workspace worker by default unless `--allow-duplicate` is passed. `handoff.popola_task_id` is always `null`; `dispatch` creates a normal popola-tracked cursor-cloud task routed to the workspace worker. | v0.9.1 (`dispatch` + singleton reuse v0.9.3) |
 | 14 | `popola auth cursor` | Sub-app: `set` / `status` / `clear`. `set` accepts `--api-key VAL` / `--from-env` / `--validate` / `--json` (mutually-exclusive `--api-key` ⊕ `--from-env`). `status --json` envelope keys are stable: `configured` / `source` / `backend_name` / `fingerprint` / `keyring_available`. `clear` accepts `--yes` / `--json` and is idempotent. The literal API key value is **never** echoed, logged, or returned in any envelope (No Silent Failures). Exit codes: `0` ok / `2` invalid args / `3` keyring backend unavailable / `77` `--validate` round-trip rejected by Cursor. | v0.9.2 |
 
 **Stable-scope rules**:
@@ -244,7 +244,7 @@ discoverers and by `popola skill doctor`. Three keys are stable:
 ```yaml
 ---
 name: popola-loom
-version: 0.9.1
+version: 0.9.3
 description: "PopolaLoom — 跨 CLI 元编排器。…"
 ---
 ```
@@ -303,6 +303,24 @@ public-API-but-not-CLI-exposed test seam.
   "keyring_available": true
 }
 ```
+
+### 2.6 Cursor Cloud private-worker routing extras (v0.9.3+)
+
+For `popola dispatch --cli=cursor-cloud`, the following `--cli-flag`
+extras are stable across the v0.9.x line:
+
+| Extra | Type | Stable contract |
+| ----- | ---- | --------------- |
+| `use_private_worker` | bool | Requests Cursor REST `usePrivateWorker=true`. |
+| `labels` | `dict[str,str]` | Worker routing labels passed to Cursor Cloud Agents. |
+| `worker_name` | string | Convenience key merged into `labels.worker`; automatically enables `use_private_worker`. |
+| `machine_name` | string | Convenience key merged into `labels.machine`; automatically enables `use_private_worker`. |
+| `pool_name` | string | Convenience key merged into `labels.pool`; automatically enables `use_private_worker`. |
+
+Contradictory input (`use_private_worker=false` with labels or any
+convenience key) fails loudly. `popola cloud worker dispatch` is the
+workspace-targeted wrapper around this same stable cursor-cloud routing
+surface; it posts through `popolad` and returns a normal popola task id.
 
 ---
 

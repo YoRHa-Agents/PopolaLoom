@@ -272,7 +272,10 @@ def dispatch(
     cli_flag: list[str] = typer.Option(  # noqa: B008
         [],
         "--cli-flag",
-        help="Repeatable adapter extras KEY=VAL (e.g. --cli-flag yolo=true). R-012.",
+        help=(
+            "Repeatable adapter extras KEY=VAL (e.g. repo_url=...; "
+            "cursor-cloud routing: worker_name/pool_name/labels). R-012."
+        ),
     ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,

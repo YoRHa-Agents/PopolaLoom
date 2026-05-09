@@ -139,6 +139,34 @@ def test_create_agent_payload_shape(router: respx.Router, api_key: str) -> None:
     client.close()
 
 
+def test_create_agent_payload_private_worker_routing(
+    router: respx.Router,
+    api_key: str,
+) -> None:
+    captured: dict[str, httpx.Request] = {}
+
+    def record(request: httpx.Request) -> httpx.Response:
+        captured["req"] = request
+        return httpx.Response(
+            200,
+            json={"agent": {"id": "bc-x"}, "run": {"id": "run-x"}},
+        )
+
+    router.post("/v1/agents").mock(side_effect=record)
+    client = CloudCursorClient(api_key)
+    client.create_agent(
+        "route locally",
+        "composer-2",
+        "https://github.com/acme/app",
+        use_private_worker=True,
+        labels={"pool": "popolaloom", "worker": "ci-1"},
+    )
+    body = json.loads(captured["req"].content.decode())
+    assert body["usePrivateWorker"] is True
+    assert body["labels"] == {"pool": "popolaloom", "worker": "ci-1"}
+    client.close()
+
+
 def test_create_agent_returns_agent_id(router: respx.Router, api_key: str) -> None:
     router.post("/v1/agents").mock(
         return_value=httpx.Response(
