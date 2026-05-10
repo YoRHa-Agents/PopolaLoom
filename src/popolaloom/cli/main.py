@@ -338,6 +338,91 @@ def dispatch(
             "派发到 Cursor 云端时使用的 model id;留空交由 Cursor 选择默认 model。"
         ),
     ),
+    auth_mode: str = typer.Option(
+        "rest",
+        "--auth-mode",
+        help=(
+            "EXPERIMENTAL (v1.0.0 Q-13/Q-22) — auth transport for cursor-cloud "
+            "dispatches: 'rest' (default; uses CURSOR_API_KEY against the "
+            "stable POST /v1/agents schema) or 'session-jwt' (opt-in; uses "
+            "the JWT at ~/.config/cursor/auth.json against the experimental "
+            "Connect-RPC StartBackgroundComposerFromSnapshot endpoint to "
+            "unlock --mode/--max-mode/--effort/--time-budget/--long-running/"
+            "--auto-proceed-after-plan/--preset). Path-B (session-jwt) is "
+            "NOT part of the v1.x SemVer stability surface; Cursor may "
+            "change the wire format without notice. "
+            "(实验性) cursor-cloud 派发使用的鉴权通道;'rest' 为默认稳定接口,"
+            "'session-jwt' 启用实验性 RPC 路径以支持 --mode 等高级控制项。"
+        ),
+    ),
+    mode: str = typer.Option(
+        "",
+        "--mode",
+        help=(
+            "EXPERIMENTAL — agent mode (path-B only): "
+            "agent|ask|plan|debug|triage|project|multitask. "
+            "Requires --auth-mode=session-jwt. "
+            "Agent 工作模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    max_mode: bool = typer.Option(
+        False,
+        "--max-mode/--no-max-mode",
+        help=(
+            "EXPERIMENTAL — enable max-context mode on the chosen model "
+            "(path-B only). Requires --auth-mode=session-jwt. "
+            "启用 max-context 模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    effort: str = typer.Option(
+        "",
+        "--effort",
+        help=(
+            "EXPERIMENTAL — effort_mode (path-B only): low|medium|high. "
+            "Requires --auth-mode=session-jwt. "
+            "Agent 投入深度;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    time_budget: str = typer.Option(
+        "",
+        "--time-budget",
+        help=(
+            "EXPERIMENTAL — time budget (path-B only). Accepted forms: "
+            "bare integer (= seconds), or suffixed '60s' / '30m' / '1h'. "
+            "Requires --auth-mode=session-jwt. "
+            "时间预算;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    long_running: bool = typer.Option(
+        False,
+        "--long-running/--no-long-running",
+        help=(
+            "EXPERIMENTAL — enable long_running_agent_mode (path-B only). "
+            "Requires --auth-mode=session-jwt. "
+            "启用长任务模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    auto_proceed_after_plan: bool = typer.Option(
+        False,
+        "--auto-proceed-after-plan/--no-auto-proceed-after-plan",
+        help=(
+            "EXPERIMENTAL — auto_proceed_after_planning (path-B only); "
+            "typically paired with --mode=plan. "
+            "Requires --auth-mode=session-jwt. "
+            "规划完成后自动执行;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    preset: str = typer.Option(
+        "",
+        "--preset",
+        help=(
+            "EXPERIMENTAL — flag preset (path-B only). Built-in: "
+            "'quick-fix' / 'long-running-plan' / 'exploration' / 'review' "
+            "(Q-17). Custom presets via ~/.config/popola/presets.toml. "
+            "Requires --auth-mode=session-jwt. "
+            "标志预设;需要 --auth-mode=session-jwt。"
+        ),
+    ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,
         "--events-dir",
@@ -423,6 +508,19 @@ def dispatch(
                 cloud_target_flag=cloud_target,
                 worker_name_flag=worker_name,
             )
+
+        _apply_path_b_flags(
+            extra,
+            cli=cli,
+            auth_mode=auth_mode,
+            mode=mode,
+            max_mode=max_mode,
+            effort=effort,
+            time_budget=time_budget,
+            long_running=long_running,
+            auto_proceed_after_plan=auto_proceed_after_plan,
+            preset=preset,
+        )
 
     if events_dir is not None:
         extra.setdefault("__events_dir", str(events_dir))
@@ -1694,6 +1792,225 @@ def _validate_cloud_target_flags(cloud_target: str, worker_name: str) -> None:
             err=True,
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+
+# v1.0.0 (Q-13/Q-19) — REST-rejection contract for path-B-only flags.
+_PATH_B_ONLY_FLAGS: tuple[str, ...] = (
+    "--mode",
+    "--max-mode",
+    "--effort",
+    "--time-budget",
+    "--long-running",
+    "--auto-proceed-after-plan",
+    "--preset",
+)
+_VALID_AUTH_MODES: frozenset[str] = frozenset({"rest", "session-jwt"})
+
+# Q-17 LOCKED — built-in preset catalog. Each entry is a partial dict
+# of (mode, max_mode, effort, time_budget, long_running,
+# auto_proceed_after_plan); the resolver expands it into the equivalent
+# explicit flags (later flags override preset values).
+_BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
+    "quick-fix": {
+        "mode": "agent",
+        "effort": "medium",
+        "time_budget": "600s",
+    },
+    "long-running-plan": {
+        "mode": "plan",
+        "effort": "high",
+        "time_budget": "3600s",
+        "long_running": True,
+        "auto_proceed_after_plan": True,
+    },
+    "exploration": {
+        "mode": "ask",
+        "effort": "medium",
+    },
+    "review": {
+        "mode": "ask",
+        "effort": "high",
+        "max_mode": True,
+    },
+}
+
+
+def _parse_time_budget(value: str) -> int:
+    """Parse a ``--time-budget`` value (Q-18) → seconds (int).
+
+    Accepted forms: ``"60"`` / ``"60s"`` / ``"30m"`` / ``"1h"``. Empty
+    string returns 0; negative values are rejected.
+
+    Raises:
+        typer.BadParameter: with a bilingual hint when the value is
+            unparseable. The CLI surface translates this to exit 2.
+    """
+    import re
+
+    if not value:
+        return 0
+    match = re.fullmatch(r"(\d+)([smh]?)", value.strip())
+    if not match:
+        raise typer.BadParameter(
+            f"--time-budget={value!r} not in accepted forms "
+            f"(integer-seconds | <int>s | <int>m | <int>h); "
+            f"(--time-budget={value!r} 取值非法,可使用 60 / 60s / 30m / 1h)"
+        )
+    n = int(match.group(1))
+    suffix = match.group(2) or "s"
+    multiplier = {"s": 1, "m": 60, "h": 3600}[suffix]
+    return n * multiplier
+
+
+def _apply_preset(
+    extra: dict[str, Any],
+    preset: str,
+    *,
+    explicit: dict[str, Any],
+) -> dict[str, Any]:
+    """Expand ``--preset <name>`` into the path-B extras (Q-17).
+
+    Built-in catalog: see :data:`_BUILTIN_PRESETS`. Custom catalog: read
+    from ``~/.config/popola/presets.toml`` (TOML overlay; v1.0.0 ships
+    the loader but does not require the file to exist). Explicit per-task
+    flags override preset values when both are set (preset is sugar for
+    a flag combination; explicit flags WIN).
+
+    Returns the merged dict (preset defaults + explicit overrides),
+    suitable for direct merge into the ``extra`` dict the dispatcher
+    consumes.
+    """
+    if not preset:
+        return explicit
+    catalog: dict[str, dict[str, Any]] = dict(_BUILTIN_PRESETS)
+    overlay_path = Path.home() / ".config" / "popola" / "presets.toml"
+    if overlay_path.exists():
+        try:
+            import tomllib
+
+            with overlay_path.open("rb") as fp:
+                overlay_data = tomllib.load(fp)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            logger.warning(
+                "failed to load custom presets from %s: %s; using built-ins only",
+                overlay_path,
+                exc,
+            )
+        else:
+            for k, v in overlay_data.items():
+                if isinstance(v, dict):
+                    catalog[k] = v
+    if preset not in catalog:
+        valid = sorted(catalog.keys())
+        typer.echo(
+            f"error: --preset={preset!r} not in {valid}; "
+            f"(--preset={preset!r} 必须是 {valid} 之一)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    base = dict(catalog[preset])
+    base.update(explicit)
+    return base
+
+
+def _apply_path_b_flags(
+    extra: dict[str, Any],
+    *,
+    cli: str,
+    auth_mode: str,
+    mode: str,
+    max_mode: bool,
+    effort: str,
+    time_budget: str,
+    long_running: bool,
+    auto_proceed_after_plan: bool,
+    preset: str,
+) -> None:
+    """Translate the path-B Typer flags into ``extra``-keyed values.
+
+    Per Q-19 (LOCKED), path-B-only flags REJECT (exit 2) when the user
+    has not explicitly enabled --auth-mode=session-jwt. The hint points
+    at the actual fix (``--auth-mode=session-jwt``).
+
+    Per Q-13 (LOCKED), the default --auth-mode=rest preserves the
+    v0.10.0 stable surface; this helper is a no-op when no path-B flag
+    is set AND auth_mode==rest.
+    """
+    if auth_mode not in _VALID_AUTH_MODES:
+        typer.echo(
+            f"error: --auth-mode={auth_mode!r} is not one of "
+            f"{sorted(_VALID_AUTH_MODES)}; "
+            f"(--auth-mode={auth_mode!r} 必须是 'rest' 或 'session-jwt')",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    explicit: dict[str, Any] = {}
+    if mode:
+        explicit["mode"] = mode
+    if max_mode:
+        explicit["max_mode"] = True
+    if effort:
+        explicit["effort"] = effort
+    if time_budget:
+        explicit["time_budget"] = time_budget
+    if long_running:
+        explicit["long_running"] = True
+    if auto_proceed_after_plan:
+        explicit["auto_proceed_after_plan"] = True
+
+    merged = _apply_preset(extra, preset, explicit=explicit)
+    if not merged and auth_mode == "rest":
+        return
+
+    if cli and cli not in {"cursor-cloud", ""}:
+        if merged:
+            logger.warning(
+                "path-B flags ignored for --cli=%r; "
+                "(path-B 标志只对 cursor-cloud 有效,已忽略)",
+                cli,
+            )
+        return
+
+    if merged and auth_mode == "rest":
+        flag_list = sorted(
+            {
+                "--mode" if k == "mode" else (
+                    "--max-mode" if k == "max_mode" else (
+                        "--effort" if k == "effort" else (
+                            "--time-budget" if k == "time_budget" else (
+                                "--long-running" if k == "long_running" else (
+                                    "--auto-proceed-after-plan"
+                                    if k == "auto_proceed_after_plan"
+                                    else f"--{k.replace('_', '-')}"
+                                )
+                            )
+                        )
+                    )
+                )
+                for k in merged.keys()
+            }
+        )
+        typer.echo(
+            f"error: path-B flags {flag_list} require --auth-mode=session-jwt "
+            f"(currently --auth-mode=rest). The Cursor REST schema does NOT "
+            f"accept these fields (the gateway returns 'Unrecognized key'). "
+            f"(path-B 标志 {flag_list} 需要 --auth-mode=session-jwt;"
+            f"当前 --auth-mode=rest 不支持这些字段)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    if not merged:
+        return
+
+    if "time_budget" in merged and isinstance(merged["time_budget"], str):
+        merged["time_budget_s"] = _parse_time_budget(merged["time_budget"])
+        merged.pop("time_budget", None)
+
+    extra["auth_mode"] = auth_mode
+    for k, v in merged.items():
+        extra[k] = v
 
 
 def _apply_model_flag(extra: dict[str, Any], model: str, cli: str) -> None:
