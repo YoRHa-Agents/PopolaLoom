@@ -71,6 +71,11 @@ def test_install_script_help_returns_zero(tmp_path: Path) -> None:
     v0.9.6 (closes feedback_for_v0.9.4 lines 2-5): the help output must also
     advertise the new ``--ref=<tag|branch|sha>`` flag introduced alongside
     the default-source switch from ``pypi`` to ``git``.
+
+    v0.9.7 (closes feedback_for_v0.9.4 line 1): help must also advertise the
+    new ``--with-credentials`` flag, since the WARN paths in
+    ``credentials.py`` / ``init_cmd.py`` / ``auth_cmd.py`` now point at
+    that flag instead of a raw ``pip install popolaloom[credentials]``.
     """
     result = _run(["--help"], cwd=tmp_path)
     assert result.returncode == 0, result.stderr
@@ -82,6 +87,7 @@ def test_install_script_help_returns_zero(tmp_path: Path) -> None:
     assert "--target" in out
     assert "--dry-run" in out
     assert "--ref" in out
+    assert "--with-credentials" in out
 
 
 def test_install_script_version_returns_zero(tmp_path: Path) -> None:
@@ -335,3 +341,175 @@ def test_install_script_install_dry_run_default_verb_no_args(tmp_path: Path) -> 
     )
     assert result.returncode == 0, result.stderr
     assert "verb=install" in result.stdout
+
+
+# ── v0.9.7 --with-credentials (closes feedback_for_v0.9.4 line 1) ──────
+
+
+def test_install_script_with_credentials_dry_run_pypi(tmp_path: Path) -> None:
+    """``--with-credentials --from=pypi`` resolves to ``popolaloom[credentials]``.
+
+    v0.9.7 NEW (closes ``.local/feedbacks/feedback_for_v0.9.4.md`` line 1):
+    the previous WARN paths in ``credentials.py`` / ``init_cmd.py`` /
+    ``auth_cmd.py`` told operators to run a separate
+    ``pip install popolaloom[credentials]``. v0.9.7 rolls that into the
+    same install via the new ``--with-credentials`` flag, and the WARN
+    text is updated to point at the flag instead of a bare ``pip install``
+    (per the workspace rule "popola 不使用 pip 修正安装方式").
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--with-credentials",
+            "--from=pypi",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "popolaloom[credentials]" in out
+    assert "with_credentials=1" in out
+
+
+def test_install_script_with_credentials_dry_run_pypi_with_version(
+    tmp_path: Path,
+) -> None:
+    """``--with-credentials --from=pypi --version=X.Y.Z`` resolves cleanly.
+
+    v0.9.7: the spec must be ``popolaloom[credentials]==X.Y.Z`` (extras
+    immediately after the package name; ``==`` after the closing bracket).
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--with-credentials",
+            "--from=pypi",
+            "--version=9.9.9",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "popolaloom[credentials]==9.9.9" in out
+
+
+def test_install_script_with_credentials_dry_run_git_default(tmp_path: Path) -> None:
+    """``--with-credentials`` (default git) emits the PEP 508 ``pkg @ url`` form.
+
+    v0.9.7: modern pip (>=21) accepts ``popolaloom[credentials] @ git+...``
+    directly; the deprecated ``#egg=popolaloom[credentials]`` form is
+    intentionally not used.
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--with-credentials",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert (
+        "popolaloom[credentials] @ git+https://github.com/YoRHa-Agents/PopolaLoom.git"
+        in out
+    )
+
+
+def test_install_script_with_credentials_dry_run_git_with_ref(tmp_path: Path) -> None:
+    """``--with-credentials --ref=<tag>`` keeps both the extra and the ``@<ref>``.
+
+    v0.9.7: the resolved spec must be
+    ``popolaloom[credentials] @ git+https://github.com/.../PopolaLoom.git@v0.9.6``
+    so operators can pin a specific tag AND get the credentials extra in
+    one install — matches the canonical tag-pinned recipe shape.
+    """
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--with-credentials",
+            "--ref=v0.9.6",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert (
+        "popolaloom[credentials] @ "
+        "git+https://github.com/YoRHa-Agents/PopolaLoom.git@v0.9.6"
+        in out
+    )
+
+
+def test_install_script_with_credentials_uninstall_errors(tmp_path: Path) -> None:
+    """``uninstall --with-credentials`` is rejected (no Silent Failures).
+
+    v0.9.7: ``--with-credentials`` only makes sense for install / update —
+    the uninstall verb drops the package entirely, so a stray flag must
+    fail loud rather than silently no-op (matches ``--ref`` + ``--version``
+    semantics introduced in earlier patches).
+    """
+    result = _run(
+        [
+            "uninstall",
+            "--with-credentials",
+            "--dry-run",
+            "--yes",
+            "--no-skills",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode != 0
+    combined = result.stdout + result.stderr
+    assert "with-credentials" in combined.lower()
+    assert "uninstall" in combined.lower()
+
+
+def test_install_script_with_credentials_update_dry_run(tmp_path: Path) -> None:
+    """``update --with-credentials`` shares the same resolver as install.
+
+    v0.9.7: operators with an existing v0.9.6 install upgrade-in-place to
+    add the keyring extra via ``./install.sh update --with-credentials``.
+    The flag flows through ``resolve_install_spec`` so the upgrade spec
+    matches the install spec verbatim.
+    """
+    result = _run(
+        ["update", "--dry-run", "--no-skills", "--with-credentials"],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "pip install --upgrade" in out
+    assert "popolaloom[credentials]" in out
+    assert "with_credentials=1" in out
+
+
+def test_install_script_default_install_omits_credentials_extra(
+    tmp_path: Path,
+) -> None:
+    """Without ``--with-credentials`` the spec MUST NOT include ``[credentials]``.
+
+    v0.9.7: the flag is opt-in. A fresh ``./install.sh install`` must
+    behave exactly like v0.9.6 (no extras appended), so the surface
+    remains additive and existing CI lanes do not pick up the optional
+    ``keyring>=25`` dep without explicit consent.
+    """
+    result = _run(
+        ["install", "--dry-run", "--no-daemon", "--no-skills"],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "[credentials]" not in out
+    assert "with_credentials=0" in out

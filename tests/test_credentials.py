@@ -396,13 +396,26 @@ def test_store_strips_whitespace(
 def test_store_raises_when_keyring_extra_missing(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Missing extra → CredentialBackendError with remediation hint."""
+    """Missing extra → CredentialBackendError with remediation hint.
+
+    v0.9.7 (closes ``feedback_for_v0.9.4.md`` line 1): the remediation
+    hint must point at ``./install.sh install --with-credentials`` AND
+    surface the ``CURSOR_API_KEY`` env-var fallback. It must NOT
+    surface a raw ``pip install popolaloom[credentials]`` line — per the
+    workspace rule "popola 不使用 pip 修正安装方式" we route operators
+    through the official installer flag instead of a bare pip command.
+    """
     monkeypatch.setattr(cred_mod, "_import_keyring", lambda: None)
     with pytest.raises(CredentialBackendError) as exc_info:
         store_cursor_api_key("cr_value")
     msg = str(exc_info.value)
     assert "keyring" in msg.lower()
-    assert "install" in msg.lower() or CURSOR_API_KEY_ENV in msg
+    assert "install" in msg.lower()
+    assert CURSOR_API_KEY_ENV in msg
+    # v0.9.7 invariants:
+    assert "./install.sh install --with-credentials" in msg
+    assert "pip install" not in msg
+    assert "popolaloom[credentials]" not in msg
 
 
 def test_delete_is_idempotent(

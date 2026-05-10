@@ -71,7 +71,7 @@ For the long version with explanations, see [`docs/QUICKSTART.md`](docs/QUICKSTA
 | `popola popolad {start,stop,status}` | Daemon lifecycle | `popola popolad start` |
 | `popola init [<ide>] [--global / --project]` | Multi-IDE Skill installer (idempotent) | `popola init cursor --global` |
 | `popola init --interactive` | Human-driven setup wizard (v0.5.5+) | `popola init --interactive` |
-| `popola auth cursor {set,status,clear}` | Secure Cursor API key storage in the OS keyring (v0.9.2+; requires `popolaloom[credentials]` extra) | `popola auth cursor set --validate` |
+| `popola auth cursor {set,status,clear}` | Secure Cursor API key storage in the OS keyring (v0.9.2+; install the optional extra via `./install.sh install --with-credentials` v0.9.7+ or `pip install 'popolaloom[credentials]'`) | `popola auth cursor set --validate` |
 | `popola doctor [--strict] [--json]` | 4-subsystem health (skill / daemon / lark / arktower) | `popola doctor --strict` |
 | `popola eval run --output PATH` | 8-dim PopolaLoom-nines self-eval | `popola eval run -o /tmp/nines.toml` |
 | `popola version` | Print `popolaloom <version>` | `popola version` |

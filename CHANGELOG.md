@@ -10,9 +10,47 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for the next v0.9.x patch.)
-
 <!-- updated: 2026-05-10 -->
+
+**Theme**: Drop the `pip install popolaloom[credentials]` hint from every WARN / error path; offer the same via the official installer instead. Closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) line 1 ("popola 不使用 pip 修正安装方式" + "init 阶段给出，本地需要能存储并加密"): the previous remediation lines pointed operators at a bare `pip install` command, which conflicted with the workspace rule about not surfacing pip directly. v0.9.7 introduces `./install.sh install --with-credentials` (rolls the optional `keyring>=25` extra into the same install) and rewrites three production WARN / error paths to point at it instead. Headless containers without a SecretService backend get an explicit fallback hint to set `CURSOR_API_KEY` in a 0o600 `.env` file (`credentials.py` precedence #2).
+
+### Added
+
+- **`./install.sh install --with-credentials`** (NEW; v0.9.7) — opt-in flag that appends the optional `[credentials]` extra (Python `keyring>=25`) to the resolved install spec. Composes with all three `--from` modes: PyPI emits `popolaloom[credentials]` / `popolaloom[credentials]==X.Y.Z`; git emits `popolaloom[credentials] @ git+https://github.com/YoRHa-Agents/PopolaLoom.git[@<ref>]` (PEP 508); local path emits `popolaloom[credentials] @ <PATH>` (PEP 508). `--with-credentials` is rejected on `uninstall` (loud error per **No Silent Failures**, mirrors `--ref` / `--version` semantics). Also accepted by `update`. New `WITH_CREDENTIALS=0` global, new `--with-credentials` arm in `parse_flag`, new validator clause in `validate_args`, refreshed `usage()` block + Examples lines, install / update banner now reports `with_credentials=${WITH_CREDENTIALS}`. `POPOLA_INSTALL_SCRIPT_VERSION` 0.9.6 → 0.9.7.
+- **`tests/cli/test_install_script.py`** — 6 new cases pinning the new flag's behaviour: PyPI without version, PyPI with `--version=X.Y.Z`, git default + extras (PEP 508 `pkg @ url` form), git + `--ref=<tag>` + extras, `update --with-credentials` shares the resolver, `uninstall --with-credentials` errors loud. Plus a regression test that pins **default install MUST omit the extras** so the surface stays additive. The `--help` smoke test now also asserts `--with-credentials` appears in the rendered usage matrix.
+
+### Fixed
+
+- **WARN / error text in three production paths now drops `pip install popolaloom[credentials]`** (closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) line 1):
+  - `popolaloom.credentials._keyring_set` (`CredentialBackendError` raised from `popola auth cursor set` / init-time persistence) — now points at `./install.sh install --with-credentials` plus the `CURSOR_API_KEY` env / 0o600 `.env` fallback.
+  - `popolaloom.cli.init_cmd._persist_cursor_api_key_noninteractive` (the WARN the user hits when running `popola init --cursor-api-key-file <path>` on a host without a keyring backend) — same replacement, plus an explicit "headless Linux container" sentence so operators on dev containers / CI know the installer flag won't magically conjure a SecretService backend either.
+  - `popolaloom.cli.init_cmd._offer_cursor_credential_setup` (the interactive `popola init --target=cloud-only --configure-cursor-auth` walkthrough) — same replacement.
+  - `popolaloom.cli.auth_cmd._fail_no_keyring` (called from `popola auth cursor {set,clear,status --json}` when the extra is missing) — same replacement.
+- **Five test files** updated to assert the new invariants: `tests/test_credentials.py::test_store_raises_when_keyring_extra_missing` now requires `./install.sh install --with-credentials` in the message AND asserts `pip install` is absent; `tests/cli/test_init_credential_intake.py::test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero` + `TestPersistCursorApiKeyNoninteractive::test_unavailable_keyring_prints_hint_returns_none` and `tests/cli/test_init_configure_cursor_auth.py::test_helper_returns_when_keyring_extra_missing` mirror the same assertion (no `pip install`, no `popolaloom[credentials]`, must contain `./install.sh install --with-credentials`).
+
+### Changed
+
+- **`docs/USER_GUIDE.md`** — three keyring-setup snippets now lead with `./install.sh install --with-credentials` (and `./install.sh update --with-credentials` for existing installs); the manual `pip install 'popolaloom[credentials]'` form is retained as a labelled "Manual fallback" so air-gapped operators still see it. The cloud-only `--configure-cursor-auth` description and the v0.9.5 init-time intake fallback paragraph are updated to match.
+- **`docs/QUICKSTART.md` + `docs/zh/QUICKSTART.md`** — Cloud bootstrap bullet now recommends `./install.sh install --with-credentials` with `pip install 'popolaloom[credentials]'` as a manual fallback.
+- **`README.md`** — `popola auth cursor` row in the verb table now lists both install paths.
+
+### Tests
+
+- Focused subset: `python -m pytest tests/cli/test_install_script.py tests/cli/test_init_credential_intake.py tests/cli/test_init_configure_cursor_auth.py tests/test_credentials.py -q` → 118 passed.
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark and not real_cursor_cloud" -q --no-cov` → 2835 passed, 21 skipped, 86 deselected, 0 failures.
+- Sanity: `bash -n install.sh` clean; `./install.sh install --dry-run --no-daemon --no-skills --with-credentials` prints the new PEP 508 spec; `./install.sh uninstall --with-credentials --dry-run --yes` exits non-zero with the expected error. `ruff check src/popolaloom tests/` clean; `mypy src/popolaloom/credentials.py src/popolaloom/cli/init_cmd.py src/popolaloom/cli/auth_cmd.py` clean; `git diff --check` clean.
+
+### Files
+
+- **MOD source / tests**: `install.sh` (new global + parse_flag arm + validator + resolver branch + usage refresh + install/update banner + script version 0.9.6 → 0.9.7); `src/popolaloom/credentials.py` (WARN text); `src/popolaloom/cli/init_cmd.py` (two WARN sites); `src/popolaloom/cli/auth_cmd.py` (`_fail_no_keyring` text); `tests/cli/test_install_script.py` (6 new cases + 1 modified help-text smoke); `tests/test_credentials.py`, `tests/cli/test_init_credential_intake.py`, `tests/cli/test_init_configure_cursor_auth.py` (assertion-tightening to require `./install.sh install --with-credentials` and forbid `pip install` / `popolaloom[credentials]` in user-facing error / WARN text).
+- **MOD docs**: `docs/USER_GUIDE.md`, `docs/QUICKSTART.md`, `docs/zh/QUICKSTART.md`, `README.md` (verb-table row); `.local/feedbacks/feedback_for_v0.9.4.md` (resolution stamp appended).
+
+### Known limitations
+
+- **Headless Linux containers still cannot persist to a keyring** — `--with-credentials` installs the `keyring` Python package, but on a host without `dbus-launch` / `/run/user/$UID/bus` / `secret-tool` the registered backend is `keyring.backends.fail.Keyring` and `is_keyring_available()` returns `False`. The new WARN text now calls this out explicitly: operators on dev containers / CI should rely on `CURSOR_API_KEY` (env or 0o600 `.env`) which is the documented `credentials.py` precedence #2 slot. Installing a cryptfile-backed keyring (`keyrings.cryptfile`) is intentionally not bundled because its master-passphrase prompt does not compose with the `popolad` long-running daemon model.
+- **`POPOLA_INSTALL_SCRIPT_VERSION` 0.9.7 ahead of `popolaloom.__version__` 0.9.6** — the bash bootstrap surface is independently versioned (it has historically lagged or led the Python package at minor-patch granularity). The next package release will align both to `0.9.7`; until then `popola version` will print `popolaloom 0.9.6` while `./install.sh version` prints `0.9.7`. This is intentional (additive bash-only change) and `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` keeps the SKILL.md frontmatter aligned to the package version, not the installer version.
+
+## [0.9.6] — 2026-05-10
 
 ## [0.9.6] — 2026-05-10
 
