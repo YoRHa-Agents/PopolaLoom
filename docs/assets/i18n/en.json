@@ -42,7 +42,19 @@
   "docs.release_notes": "Release Notes (v0.8.0+ floats here)",
   "docs.changelog": "CHANGELOG — full v0.0.1 → v0.8.x history",
   "status.heading": "Project status",
-  "status.lead": "v0.8.4 — Unified install script (install.sh) wraps pip install + popola skill install + popolad + doctor; new popola skill uninstall verb closes the install/update/uninstall loop across cursor/claude/codex/copilot × global/project. Hands-off envelope remains stable; license MIT.",
+  "status.lead": "v0.9.7 carries forward the v0.9.0 GA stability boundary while refreshing the public docs for cloud workers, secure key storage, and Cloud HITL gamma. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, and file-backed handoff now share one documented surface. The safe install path is ./install.sh install, with ./install.sh install --with-credentials for OS-keyring-backed Cursor API keys.",
   "footer.tagline": "A loom that weaves agents.",
-  "notice.en_only": "This page has no Chinese translation yet — header / footer / landing page only."
+  "notice.en_only": "This page has no Chinese translation yet — header / footer / landing page only.",
+  "nav.design": "Design",
+  "feature.cloud.title": "Cloud + self-hosted worker (v0.8.5–v0.9.3)",
+  "feature.cloud.body": "Dispatch to Cursor Cloud, stream cloud runs, or register this machine with popola cloud worker while keeping popola status / attach semantics consistent.",
+  "feature.credentials.title": "Secure credential storage (v0.9.2+)",
+  "feature.credentials.body": "popola auth cursor set --validate stores the Cursor API key in the OS keyring; v0.9.7 adds ./install.sh install --with-credentials for the optional backend.",
+  "design_ideas.heading": "Core design ideas",
+  "design_ideas.loom": "Loom, not router — N agent strands become one audited tapestry through dispatch, handoff files, and replay-by-id.",
+  "design_ideas.sidecar": "Sidecar daemon — popolad owns process lifetime, SQLite state, event logs, cloud polling, and HITL so terminals can disappear safely.",
+  "design_ideas.boundary": "Automation-grade boundary — v0.9.0+ locks CLI verbs, daemon RPC routes, --json schemas, and config section names while marking experiments explicitly.",
+  "design_ideas.link": "Read the full design philosophy →",
+  "docs.demo_page": "Demo Page — scenario cards and terminal-recording command flows",
+  "docs.design_ideas": "Design Ideas — the seven architectural choices behind the loom"
 }

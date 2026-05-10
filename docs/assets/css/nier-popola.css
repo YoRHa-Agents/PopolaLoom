@@ -559,3 +559,114 @@ h3:hover .anchor-link,
   from { opacity: 0; transform: translate(-50%, 8px); }
   to   { opacity: 1; transform: translate(-50%, 0); }
 }
+
+
+/* 10. Scenario grid (demo-page + DEMO scenario picker) */
+.scenario-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+  gap: 1.2rem;
+  margin: 2rem 0;
+}
+
+.scenario-card {
+  position: relative;
+  display: block;
+  min-height: 12rem;
+  padding: 1.4rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  color: var(--text-primary);
+  text-decoration: none;
+  transition: border-color 150ms ease, border-left-color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
+}
+
+.scenario-card:hover,
+.scenario-card:focus-visible {
+  border-color: var(--accent-primary);
+  border-left: 3px solid var(--accent-primary);
+  color: var(--text-primary);
+  outline: none;
+  transform: translateY(-2px);
+  box-shadow: 0 6px 18px rgba(var(--shadow-rgb), 0.12);
+}
+
+.scenario-card h3 {
+  margin-top: 0;
+  margin-right: 5.5rem;
+  font-size: 1.2rem;
+}
+
+.scenario-card h3::after {
+  content: '';
+  display: inline;
+  width: auto;
+  height: auto;
+  margin: 0;
+  background: none;
+  opacity: 0;
+  transition: opacity 150ms ease, margin-left 150ms ease;
+}
+
+.scenario-card:hover h3::after,
+.scenario-card:focus-visible h3::after {
+  content: ' →';
+  margin-left: 0.15em;
+  opacity: 1;
+}
+
+.scenario-card p {
+  color: var(--text-secondary);
+}
+
+.scenario-card__badge {
+  position: absolute;
+  top: 1rem;
+  right: 1rem;
+  padding: 0.15rem 0.45rem;
+  border: 1px solid var(--border-subtle);
+  color: var(--accent-secondary);
+  background: var(--code-bg);
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-size: 0.72rem;
+  line-height: 1.4;
+}
+
+.scenario-card__link {
+  display: inline-block;
+  margin-top: 0.8rem;
+  color: var(--accent-secondary);
+  font-weight: 600;
+}
+
+/* 11. Terminal block (recording-style command flows) */
+.terminal-block {
+  background: var(--text-primary);
+  color: var(--bg-primary);
+  border: 1px solid var(--accent-primary);
+  border-left: 3px solid var(--accent-primary);
+  box-shadow: inset 0 1px 0 rgba(var(--shadow-rgb), 0.18), 0 8px 24px rgba(var(--shadow-rgb), 0.16);
+  line-height: 1.4em;
+  padding: 1.1rem 1.2rem;
+  white-space: pre;
+}
+
+[data-theme="dark"] .terminal-block {
+  background: var(--code-bg);
+  color: var(--text-primary);
+}
+
+.terminal-block code {
+  color: inherit;
+}
+
+.terminal-block--active code::after {
+  content: "▌";
+  color: var(--accent-primary);
+  animation: caret-blink 1s step-end infinite;
+}
+
+@keyframes caret-blink {
+  0%, 49% { opacity: 1; }
+  50%, 100% { opacity: 0; }
+}

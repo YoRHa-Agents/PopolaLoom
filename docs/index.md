@@ -4,6 +4,8 @@ title: PopolaLoom
 description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / Copilot)
 ---
 
+<!-- updated: 2026-05-10 -->
+
 <section class="hero">
   <h1 data-i18n="hero.title">PopolaLoom</h1>
   <p class="tagline" data-i18n="hero.tagline">A loom that weaves agents.</p>
@@ -21,8 +23,9 @@ description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / 
 <h2 data-i18n="install.heading">Install in one line</h2>
 
 ```bash
-pip install popolaloom
+./install.sh install                 # canonical v0.9.7 path
 popola init                          # auto-detect Cursor / Claude / Codex / Copilot
+popola auth cursor set --validate    # optional: Cursor Cloud API key in OS keyring
 popola popolad start                 # boot the UDS daemon
 popola dispatch "echo hello popola" --cli=cursor
 popola doctor                        # 4-subsystem health check
@@ -42,8 +45,8 @@ popola doctor                        # 4-subsystem health check
     <p data-i18n="feature.survival.body">popolad UDS daemon with persistent SQLite task pool; tasks outlive shell close, SSH disconnect, even reboots.</p>
   </div>
   <div class="feature-card">
-    <h3 data-i18n="feature.handoff.title">Hands-off envelope (v0.8.0+)</h3>
-    <p data-i18n="feature.handoff.body">Every dispatch persists a Markdown front-matter envelope to .local/.agent/handoff/ — auditable, replayable via popola dispatch --replay &lt;id&gt;, addressable by content-derived slug-hash.</p>
+    <h3 data-i18n="feature.cloud.title">Cloud + Self-hosted worker (v0.8.5–v0.9.3)</h3>
+    <p data-i18n="feature.cloud.body">Dispatch to Cursor Cloud, stream cloud runs, or register this machine with popola cloud worker while keeping popola status / attach semantics consistent.</p>
   </div>
   <div class="feature-card">
     <h3 data-i18n="feature.hitl.title">HITL across 5 channels</h3>
@@ -57,7 +60,23 @@ popola doctor                        # 4-subsystem health check
     <h3 data-i18n="feature.eval.title">8-dim PopolaLoom-nines self-eval</h3>
     <p data-i18n="feature.eval.body">popola eval run produces a composite score with per-dimension evidence pipelines — dispatch_isolation, hitl_latency, attach_correctness, cross_cli_handoff, and four more.</p>
   </div>
+  <div class="feature-card">
+    <h3 data-i18n="feature.credentials.title">Secure credential storage (v0.9.2+)</h3>
+    <p data-i18n="feature.credentials.body">popola auth cursor set --validate stores the Cursor API key in the OS keyring; v0.9.7 adds ./install.sh install --with-credentials for the optional backend.</p>
+  </div>
 </div>
+
+<hr class="ornament">
+
+<h2 data-i18n="design_ideas.heading">Core design ideas</h2>
+
+<ul>
+  <li data-i18n="design_ideas.loom">Loom, not router — N agent strands become one audited tapestry through dispatch, handoff files, and replay-by-id.</li>
+  <li data-i18n="design_ideas.sidecar">Sidecar daemon — popolad owns process lifetime, SQLite state, event logs, cloud polling, and HITL so terminals can disappear safely.</li>
+  <li data-i18n="design_ideas.boundary">Automation-grade boundary — v0.9.0+ locks CLI verbs, daemon RPC routes, --json schemas, and config section names while marking experiments explicitly.</li>
+</ul>
+
+<p><a href="design-ideas.html" data-i18n="design_ideas.link">Read the full design philosophy →</a></p>
 
 <hr class="ornament">
 
@@ -86,6 +105,8 @@ popola doctor                        # 4-subsystem health check
   <li><a href="QUICKSTART.html" data-i18n="docs.quickstart">Quickstart — 5-minute onboarding (install → first task)</a></li>
   <li><a href="USER_GUIDE.html" data-i18n="docs.user_guide">User Guide — full reference (CLI verbs, MCP, HITL, Lark, hands-off envelope)</a></li>
   <li><a href="DEMO.html" data-i18n="docs.demo">Demo — walkthroughs, example outputs, self-evolution journey</a></li>
+  <li><a href="demo-page.html" data-i18n="docs.demo_page">Demo Page — scenario cards and terminal-recording command flows</a></li>
+  <li><a href="design-ideas.html" data-i18n="docs.design_ideas">Design Ideas — the seven architectural choices behind the loom</a></li>
   <li><a href="https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md" data-i18n="docs.release_notes">Release Notes (v0.8.0+ floats here)</a></li>
   <li><a href="https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md" data-i18n="docs.changelog">CHANGELOG — full v0.0.1 → v0.8.x history</a></li>
 </ul>
@@ -94,4 +115,4 @@ popola doctor                        # 4-subsystem health check
 
 <h2 data-i18n="status.heading">Project status</h2>
 
-<p data-i18n="status.lead">v0.8.4 — Unified install script (install.sh) wraps pip install + popola skill install + popolad + doctor; new popola skill uninstall verb closes the install/update/uninstall loop across cursor/claude/codex/copilot × global/project. Hands-off envelope remains stable; license MIT.</p>
+<p data-i18n="status.lead">v0.9.7 carries forward the v0.9.0 GA stability boundary while refreshing the public docs for cloud workers, secure key storage, and Cloud HITL gamma. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, and file-backed handoff now share one documented surface. The safe install path is ./install.sh install, with ./install.sh install --with-credentials for OS-keyring-backed Cursor API keys.</p>
