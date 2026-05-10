@@ -324,6 +324,20 @@ def dispatch(
             "不会回退到本地执行。"
         ),
     ),
+    model: str = typer.Option(
+        "",
+        "--model",
+        help=(
+            "Model id forwarded to the Cursor cloud agent (Q-A1, v1.0.0). "
+            "Equivalent to --cli-flag model=<id>; this flag is the "
+            "discoverable / self-documenting form. Accepted ids are listed "
+            "by GET /v1/models (e.g. 'default', 'gpt-5.5', 'claude-sonnet-4'). "
+            "When empty, Cursor picks the recommended model for the user's "
+            "plan (the v0.10.0 'default' marker). Only consumed by "
+            "cursor-cloud dispatches; ignored for other --cli adapters. "
+            "派发到 Cursor 云端时使用的 model id;留空交由 Cursor 选择默认 model。"
+        ),
+    ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,
         "--events-dir",
@@ -384,6 +398,9 @@ def dispatch(
                 cloud_target,
             )
             cli = "cursor-cloud"
+
+        if model:
+            _apply_model_flag(extra, model, cli)
 
         if not cli:
             prefs = _load_dispatch_preferences_or_exit()
@@ -1677,6 +1694,47 @@ def _validate_cloud_target_flags(cloud_target: str, worker_name: str) -> None:
             err=True,
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+
+def _apply_model_flag(extra: dict[str, Any], model: str, cli: str) -> None:
+    """Translate the ``--model`` first-class flag into ``extra["model"]``.
+
+    v1.0.0 (Q-A1) — promotes the previously-stringly-typed
+    ``--cli-flag model=<id>`` extras key into a discoverable Typer flag.
+    The flag is only meaningful for cursor-cloud dispatches; non-cloud
+    adapters (cursor / claude / codex / ...) get a soft WARN and the
+    flag is dropped (the adapter would have ignored it anyway).
+
+    Conflict: when both ``--model`` and ``--cli-flag model=<X>`` are
+    supplied, the explicit ``--model`` flag wins, matching the precedent
+    set by ``--cloud-target`` over ``--cli-flag cloud_target=`` in v0.10.0.
+    A bilingual WARN is emitted in that case (No Silent Failures).
+
+    Empty-string ``model`` is a no-op (callers gate on truthiness before
+    calling), preserving the v0.10.0 ``"default"`` model fallback in
+    :func:`popolaloom.adapters.cursor_cloud._normalize_cloud_extra`.
+    """
+    if not model:
+        return
+    if cli and cli != "cursor-cloud":
+        logger.warning(
+            "--model=%r is only consumed by cursor-cloud dispatches; "
+            "ignored for --cli=%r (--model 仅对 cursor-cloud 有效, "
+            "已忽略当前 --cli=%s 的 --model 值)",
+            model,
+            cli,
+            cli,
+        )
+        return
+    existing = extra.get("model")
+    if existing is not None and existing != model:
+        logger.warning(
+            "--model=%r overrides --cli-flag model=%r "
+            "(--model 与 --cli-flag model= 冲突,以 --model 为准)",
+            model,
+            existing,
+        )
+    extra["model"] = model
 
 
 def _apply_cloud_preferences(

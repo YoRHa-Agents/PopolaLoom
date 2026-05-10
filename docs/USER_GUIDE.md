@@ -1163,6 +1163,23 @@ When `--cloud-target` is given AND `--cli` is empty, `cli="cursor-cloud"` is aut
 
 > The precedence is **per-task `--cloud-target` flag > `[user_preferences].default_cloud_target` > `"ask-each-time"`** (per [`DECISIONS.md` Q-6](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)). The resolver collapses to a single resolved `(target, worker_name)` pair before the dispatch leaves the CLI process.
 
+### Picking a model with `--model` (v1.0.0 GA, Q-A1)
+
+`popola dispatch --model <id>` is the discoverable form of the previously-stringly-typed `--cli-flag model=<id>` extras key. It is only consumed by `cursor-cloud` dispatches; non-cloud adapters get a soft WARN and the flag is dropped.
+
+```bash
+# Pick a specific Cursor cloud model
+popola dispatch --cloud-target=self-hosted --worker-name=my-worker \
+  --model gpt-5.5 \
+  "Refactor the caching layer and add unit tests"
+
+# Discover available model ids
+curl -sH "Authorization: Bearer $CURSOR_API_KEY" \
+  https://api.cursor.com/v1/models | jq '.models[].id'
+```
+
+Empty `--model` (the default) preserves the v0.10.0 `"default"` marker so Cursor picks the recommended model for the user's plan. When both `--model X` and `--cli-flag model=Y` are supplied, the explicit `--model` flag wins and a WARN is emitted (No Silent Failures). For the higher-fidelity controls (`--mode`, `--max-mode`, `--effort`, `--time-budget`, `--long-running`, `--auto-proceed-after-plan`, `--preset`), see [Path-B advanced controls (`--auth-mode=session-jwt`)](#path-b-advanced-controls---auth-modesession-jwt-v100-ga) below.
+
 ### No-fallback contract — what happens when the worker is missing
 
 When `--cloud-target=self-hosted` AND the named worker is **not registered with Cursor** (i.e. `GET /v0/private-workers` does NOT return a row whose `name == --worker-name`), `popola dispatch` exits **78** with a bilingual hint pointing at the actual fix:
