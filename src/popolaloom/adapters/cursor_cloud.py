@@ -373,6 +373,42 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
             "https://cursor.com/docs/integrations/github.md#permissions。"
         ),
     },
+    "integration_github_app_branch_not_found": {
+        # v0.9.9 F4: Cursor REST misclassifies a missing GitHub App as a 400
+        # ``validation_error`` whose message claims the *branch* cannot be
+        # verified, even when the branch exists. Routed to
+        # :class:`GithubAppMissingError` per Q-V099-7 so the operator hint
+        # surfaces the App-install fix (or the ``auto_create_pr=false``
+        # workaround) instead of the misleading "schema" hint emitted by
+        # the sibling :data:`validation_request_body` entry.
+        #
+        # Position: BEFORE ``validation_request_body`` so :func:`_score_entry`
+        # picks this entry on a regex match (+5 over the generic body hit).
+        "http": 400,
+        "code": ["validation_error"],
+        "message_pattern": (
+            r"(?i)failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository"
+        ),
+        "subclass": "GithubAppMissingError",
+        "retry": False,
+        "cli_exit": 78,
+        "hint_en": (
+            "This 'branch not found' error from Cursor REST almost always means "
+            "the Cursor GitHub App is not installed on the target org/repo "
+            "(rather than a genuinely missing branch). Install the App at "
+            "https://cursor.com/integrations/github (or visit "
+            "https://github.com/apps/cursor) and grant write access to the "
+            "repository, OR pass `auto_create_pr=false` to skip PR creation. "
+            "If your branch genuinely does not exist, double-check the spelling "
+            "— the `(?i)` regex matches both 'main' and 'Main' / smart quotes."
+        ),
+        "hint_zh": (
+            "此 'branch not found' 错误几乎总是表示 Cursor GitHub App 未安装到目标 "
+            "org/repo（而非分支真的不存在）。请到 "
+            "https://cursor.com/integrations/github 安装 App 并授予写权限，或使用 "
+            "`auto_create_pr=false` 跳过 PR 创建。若分支确实不存在，请检查拼写。"
+        ),
+    },
     "validation_request_body": {
         "http": [400, 422],
         "code": ["validation_error", "missing_body"],

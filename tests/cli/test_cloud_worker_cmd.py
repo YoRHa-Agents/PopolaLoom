@@ -57,10 +57,23 @@ def runner() -> CliRunner:
 def isolated_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
 ) -> Iterator[Path]:
-    """Hermetic ``$POPOLA_HOME`` + ``$HOME`` so worker paths can't bleed."""
+    """Hermetic ``$POPOLA_HOME`` + ``$HOME`` so worker paths can't bleed.
+
+    v0.9.9: pre-seeds ``credentials.toml`` with
+    ``account_class = "service_account"`` so the worker-dispatch pre-flight
+    gate (B2 / Q-V099-1 / Q-V099-8) does not refuse legacy fixtures that
+    intentionally exercise the dispatch happy-path. Tests that want to
+    exercise the gate write their own metadata file via
+    ``credentials.store_account_class(...)`` after this fixture runs.
+    """
     monkeypatch.setenv("POPOLA_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
     monkeypatch.chdir(tmp_path)
+    metadata = tmp_path / "credentials.toml"
+    metadata.write_text(
+        '[cursor]\naccount_class = "service_account"\n', encoding="utf-8"
+    )
+    metadata.chmod(0o600)
     yield tmp_path
 
 

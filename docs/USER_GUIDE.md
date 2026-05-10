@@ -6,11 +6,11 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.9.7)
+# PopolaLoom — User Guide (v0.9.9)
 
 <!-- updated: 2026-05-10 -->
 
-> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.7 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.7 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v0.9.7`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.7`; avoid the bare package-name form until the promotion patch lands.
+> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.9 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.9 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v0.9.9`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9`; avoid the bare package-name form until the promotion patch lands.
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
@@ -81,6 +81,17 @@ The end result: you can `popola dispatch "..."` from any terminal, close that te
 
 The full lifecycle: `dispatched → running → (interrupted ↔ running)* → completed / failed / canceled`. The `interrupted` state is set when a LangGraph node calls `await interrupt(prompt)`; the daemon emits `task.elicited` on the event bus with the prompt body and broadcasts to the 5 HITL channels.
 
+#### `popola status` — `pid_alive` field (v0.9.9 F2)
+
+`popola status <task_id>` (and the `--json` shape) gain a `pid_alive` boolean for `runtime=local` tasks still in `state=running` that have a known `pid`. `Popolad.get_status` runs an `os.kill(pid, 0)` probe before returning; on `ProcessLookupError` (the kernel has already reaped the pid but the supervisor wait-thread has not yet finalised the state) the daemon surfaces `pid_alive=false` in the JSON envelope AND emits a daemon-log WARN matching the pattern `status drift: task=<id> state=running but pid=<pid> already reaped; supervisor sync pending`. `PermissionError` (process exists but signal denied) and a successful signal both surface `pid_alive=true`.
+
+The field is intentionally **absent** for cloud-runtime tasks, terminal-state tasks, and running tasks without a known pid — old consumers that never look up `pid_alive` keep working unchanged (additive-only contract). The probe is WARN-only in v0.9.9; force-finalize once `pid_alive=false` is deferred to `BL-v0.10.0-supervisor-force-finalize` per Q-V099-4 (we keep `popola status` read-only on a patch release).
+
+```bash
+popola status cursor-5bd9294434b6 --json | jq '{state, exit_code, pid_alive}'
+# {"state":"running","exit_code":null,"pid_alive":false}      # drift visible — supervisor sync pending
+```
+
 ### Daemon management
 
 | Verb | Purpose | Example |
@@ -138,9 +149,9 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
   | bash -s -- install --scope=global --target=all
 
-# Same, tag-pinned for reproducibility (v0.9.6+ canonical recipe)
+# Same, tag-pinned for reproducibility (v0.9.9 canonical recipe)
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
-  | bash -s -- install --ref=v0.9.6
+  | bash -s -- install --ref=v0.9.9
 
 # After a clone — same script, local invocation
 ./install.sh install --scope=project --target=cursor
@@ -165,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 | `--scope=<global\|project>` | install / update / uninstall | Skill scope (default: `global`) |
 | `--target=<cursor\|claude\|codex\|copilot\|all>` | install / update / uninstall | Which IDE Skill (default: `all`) |
 | `--from=<git\|pypi\|PATH>` | install / update | Install source (**default in v0.9.6+: `git`**, tracks `main`; previously `pypi`) |
-| `--ref=<tag\|branch\|sha>` | install / update | (v0.9.6+ NEW) Append `@<ref>` to the GitHub URL — requires `--from=git`; e.g. `--ref=v0.9.6` |
+| `--ref=<tag\|branch\|sha>` | install / update | (v0.9.6+ NEW) Append `@<ref>` to the GitHub URL — requires `--from=git`; e.g. `--ref=v0.9.9` |
 | `--version=<X.Y.Z>` | install / update | Pin a PyPI version (requires `--from=pypi`) |
 | `--python=<bin>` | all | Python interpreter (default: search `python3.12 → python3.11 → python3 → python`) |
 | `--no-skills` | all | Skip the Skill install / uninstall step |
@@ -181,9 +192,9 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 | Value | Translates to |
 |---|---|
 | `git` (**default in v0.9.6+**) | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
-| `git` + `--ref=<ref>` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git@<ref>` (e.g. `--ref=v0.9.6` → `…@v0.9.6`) |
+| `git` + `--ref=<ref>` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git@<ref>` (e.g. `--ref=v0.9.9` → `…@v0.9.9`) |
 | `pypi` | PyPI path is deferred for v0.9.x; prefer `./install.sh install` until `BL-v0.9.x-PyPI` lands |
-| `pypi` + `--version=X.Y.Z` | Deferred for v0.9.x; use `./install.sh install --ref=v0.9.7` for the current release line |
+| `pypi` + `--version=X.Y.Z` | Deferred for v0.9.x; use `./install.sh install --ref=v0.9.9` for the current release line |
 | any other value (filesystem path) | `pip install <path>` (works for local clones, wheel files, and tarballs) |
 
 For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.whl` installs from a locally-built wheel. Contradictory inputs (`--ref` with `--from=pypi`, `--version=` without `--from=pypi`, `--ref` on the `uninstall` verb) fail loudly per the workspace No-Silent-Failures rule.
@@ -191,11 +202,11 @@ For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.w
 #### Examples
 
 ```bash
-# Canonical v0.9.6 install (default --from=git, tracks main)
+# Canonical v0.9.9 install (default --from=git, tracks main)
 ./install.sh install
 
-# Canonical tag-pinned v0.9.6 install (recommended for reproducibility)
-./install.sh install --ref=v0.9.6
+# Canonical tag-pinned v0.9.9 install (recommended for reproducibility)
+./install.sh install --ref=v0.9.9
 
 # Install only for Cursor at project scope (default --from=git applies)
 ./install.sh install --target=cursor --scope=project
@@ -214,7 +225,7 @@ For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.w
 
 # See exactly what would happen without touching disk
 ./install.sh install --dry-run
-./install.sh install --dry-run --ref=v0.9.6
+./install.sh install --dry-run --ref=v0.9.9
 ./install.sh uninstall --dry-run --yes
 ```
 
@@ -404,6 +415,22 @@ popola dispatch "..." --cli=cursor \
 
 Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapter versions); the value-parse rules raise on whitelist violations (No Silent Failures for typed knobs).
 
+### Live progress visibility (v0.9.9 F1)
+
+`cursor-agent agent --print --output-format text` (the default form `popola dispatch --cli=cursor` uses) **buffers stdout when stdout is not a TTY** — the supervisor PIPE we attach to the child is not, so on long prompts `popola attach <id> --follow` may show 0 events for 10+ minutes before the buffered stdout is flushed at process exit. v0.9.9 adds a 30-second stdout-silence timer (`Supervisor.spawn` → `_register_silence_timer`) that emits a single `process.note` event with `kind=stdout_silence` plus a branched operator-facing hint:
+
+- `cursor` + `output_format=text` (or unspecified) — *"cursor-agent 'text' output is buffered until exit; pass `--cli-flag output_format=stream-json` for live progress"* (verbatim from `feedback_for_v0.9.7.md:33-34`).
+- `cursor` + `output_format=stream-json` — *"first frame not yet emitted; large prompts can defer the first frame for 60s+"* (Q-V099-14).
+- Any other adapter — generic stdout-silence note.
+
+The recommended workaround for any long cursor task is therefore `popola dispatch ... --cli=cursor --cli-flag output_format=stream-json`. The timer fires at most once per task (cancelled on the first non-empty drain line AND on `_wait_and_finalize` exit); it never blocks dispatch.
+
+### Dispatch-time CLI footer + worker idle hint (v0.9.9 F3)
+
+`popola dispatch --cli=cursor` now appends a single follow-up line after the returned `task_id`: `view: popola attach <id> --follow (note: Cursor dashboard does not show local subprocess tasks)`. This is gated on `cli == "cursor"`; `cursor-cloud` and other adapters keep their existing single-line output. The footer addresses [`./.local/feedbacks/feedback_for_v0.9.7.md`](../.local/feedbacks/feedback_for_v0.9.7.md) §1c — operators no longer waste 10 minutes refreshing `https://cursor.com/agents` waiting for a local subprocess to appear there.
+
+`popola cloud worker status` gains a complementary idle hint: when `metrics.last_activity` is zero AND `readyz.claimed` is false, the renderer appends `note: 0 sessions claimed since worker started …` so operators can distinguish "worker dead" from "worker alive but idle". The hint is suppressed in `--json` mode and as soon as a claim signal is observed.
+
 ## Cloud Agent dispatch (v0.8.5+)
 
 > **v0.9.0 GA**: This section's CLI verb (`popola dispatch --cli=cursor-cloud`) and its flag spellings are part of the v0.9.x stable surface — see [API_STABILITY §2.1](API_STABILITY.md#21-cli-commands-and-flags). For a copy-paste-ready bootstrap, run [`./cloud-quickstart.sh`](../cloud-quickstart.sh).
@@ -527,11 +554,20 @@ Two representative bilingual hints (verbatim from the catalog so future drift is
 
 The other 14 entries cover `401 unauthorized`, `401 api_key_not_found`, `403 role_forbidden`, `403 feature_unavailable`, `404 agent_not_found`/`run_not_found`, `409 agent_busy` / `agent_archived` / `run_not_cancellable`, `410 stream_expired`, `400/422 validation_error`, two more 422 GitHub-App categories, `429 rate_limit_exceeded` (deferred to v0.8.8), and `5xx internal_error` / `upstream_error`. The full text + retry/backoff matrix lives in the [research note (local-only)](../.local/research/v0.8.6_sse/422-error-catalog.md) §3 and is reproduced into the Python `_ERROR_CATALOG` constant verbatim.
 
+#### Cursor REST GitHub-App-missing 400 misclassification (v0.9.9 F4)
+
+When the Cursor GitHub App is missing on the target organisation, Cursor REST does **not** return the documented 422 GitHub-App errors — it instead returns a misleading HTTP 400 `validation_error` whose message claims the *branch* cannot be verified, even when the branch exists. v0.9.9 adds a 17th `_ERROR_CATALOG` entry (`integration_github_app_branch_not_found`) that matches the message regex `(?i)failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository` against HTTP 400 `validation_error` and reuses `GithubAppMissingError` (no new exception subclass per Q-V099-7). The bilingual hint surfaces both the App install URL and the workaround:
+
+- **EN hint:** *Cursor REST refuses with "Failed to verify existence of branch …" when the Cursor GitHub App is not installed on the target org. Install at [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github) and confirm at [`https://github.com/apps/cursor`](https://github.com/apps/cursor); OR pass `--cli-flag auto_create_pr=false` to dispatch without PR creation.*
+- **ZH hint:** *目标 org 未装 Cursor GitHub App 时，Cursor REST 会以"Failed to verify existence of branch …"驳回。请在 [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github) 安装（在 [`https://github.com/apps/cursor`](https://github.com/apps/cursor) 确认）；或传入 `--cli-flag auto_create_pr=false` 跳过 PR 创建。*
+
+The new entry sits BEFORE the generic `validation_request_body` hit so the regex match wins on the +5 score in `_score_entry`.
+
 ### `popola init --target=cloud-only` (v0.9.0+)
 
 <!-- updated: 2026-05-09 -->
 
-> **Install prerequisite (v0.9.6 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.6 install via `./install.sh install` (canonical; v0.9.6 default `--from=git` tracks `main`) OR `./install.sh install --ref=v0.9.6` (canonical tag-pinned recipe) OR `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6` (manual fallback). v0.9.6 closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
+> **Install prerequisite (v0.9.9 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.9 install via `./install.sh install` (canonical; default `--from=git` tracks `main` since v0.9.6) OR `./install.sh install --ref=v0.9.9` (canonical tag-pinned recipe) OR `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9` (manual fallback). v0.9.6 closed [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
 
 
 `popola init --target=cloud-only` is the v0.9.0 W2.4 scaffold profile that drops a **minimal, cloud-dispatch-only project skeleton** — three files at the project root, no IDE skill installs, no `.local/` workspace, no local CLI shims, no local-tier HITL stubs. It is the right starting point when:
@@ -714,6 +750,22 @@ popola auth cursor clear --yes
 your shell / CI pipeline and clearing it via PopolaLoom would surprise
 existing scripts.
 
+### Cursor account class (v0.9.9 F5 + U1)
+
+v0.9.9 adds an `account_class` metadata field on `$POPOLA_HOME/credentials.toml` (default `unknown` for backward compat) so PopolaLoom can refuse worker-targeted dispatch under a key class that cannot land on the Cursor dashboard. The class is captured by `popola auth cursor set --account-class={personal|service-account|unknown}` (case-insensitive); on an interactive terminal an inline prompt asks for it when omitted, and non-interactive runs (`--no-prompt`, piped stdin, CI) default to `unknown`. The literal API key value never travels alongside the class label — the metadata persists under `[cursor].account_class` while the secret stays in the OS keyring (or the `cursor_api_key.env` fallback file documented below).
+
+```bash
+popola auth cursor set --validate --account-class=service-account     # explicit Enterprise
+popola auth cursor set --validate --account-class=personal            # personal user/team key
+popola auth cursor set --validate --no-prompt                         # CI; class defaults to 'unknown'
+```
+
+`popola cloud worker dispatch` (the popola-tracked worker-targeted REST path) refuses with **Exit 78** and a bilingual loud-fail when `account_class ∈ {personal, unknown}` (per Q-V099-1 + Wave Spike-0 BRANCH_B verdict). The verdict, recorded in `.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md`, is that as of 2026-05-10 Cursor REST has no documented schema for personal-key + worker dispatch with Dashboard visibility — `usePrivateWorker` + `labels` are only accepted by Self-Hosted Pool (Enterprise + service-account API key). The pre-flight gate offers three workarounds:
+
+- **`popola cloud worker handoff`** — emit a copy-paste-ready dashboard URL + prompt envelope; the human pastes into Cloud Agents UI (still no popola task id, but the run is dashboard-visible).
+- **`popola dispatch --cli=cursor`** — local subprocess; popola-tracked but not dashboard-visible.
+- **`@Cursor worker=<name>` chat trigger** — Slack / GitHub / Linear; dashboard-visible but no popola task id.
+
 ### `init --target=cloud-only --configure-cursor-auth`
 
 The cloud-only scaffold gained a `--configure-cursor-auth` flag in
@@ -797,6 +849,23 @@ succeeded; only credential persistence is degraded (best-effort).
 Headless containers without a SecretService backend hit the same
 fallback: install `--with-credentials`, then still rely on
 `CURSOR_API_KEY` because no real keyring backend is registered.
+
+#### `~/.popola/cursor_api_key.env` 0o600 fallback file (v0.9.9 U2)
+
+Closes the user's verbatim follow-up at [`feedback_for_v0.9.7.md:114-116`](../.local/feedbacks/feedback_for_v0.9.7.md). When the keyring is unavailable on the host (most headless Linux containers without a SecretService backend), `popola init --cursor-api-key VAL` and `popola init --cursor-api-key-file <path>` now persist the secret to a 0o600-protected fallback file at `~/.popola/cursor_api_key.env` containing `CURSOR_API_KEY=<value>\n`. Without this file the secret used to be silently dropped on hosts without a keyring — operators saw the key prompt accept their input, then `popola dispatch` from a fresh shell failed because the keyring lookup missed and no fallback persisted (Q-V099-11).
+
+```bash
+popola init --cursor-api-key "cr_..."
+# Secure Cursor API key storage (v0.9.5 init-time intake):
+#   WARN: OS keyring backend unavailable; the install path succeeded but
+#         credential storage was skipped.
+#   ...
+#   Wrote ~/.popola/cursor_api_key.env (mode 0o600)
+#   Run `source ~/.popola/cursor_api_key.env` in shells that need
+#   CURSOR_API_KEY, OR the daemon will auto-source on next start.
+```
+
+A fresh shell can `source ~/.popola/cursor_api_key.env` before running `popola dispatch`, OR rely on the daemon's new auto-source: `popolad` startup calls `credentials.load_env_fallback_into_environ` so a fresh `popola popolad start` after `popola init --cursor-api-key VAL` works end-to-end without any manual export. The pre-existing env-var precedence (slot #2 in [API_STABILITY §2.5](API_STABILITY.md#25-cursor-api-key-credential-resolver-v092)) keeps winning if the operator already has `CURSOR_API_KEY` in their shell — auto-source never overwrites a live env value (No Silent Failures).
 
 ### Security invariants (locked in v0.9.x)
 
@@ -976,6 +1045,21 @@ to launch a shared 'My Machines' worker (works with `agent login`).
 ```
 
 Exit code `77` (matches the cloud-auth code used by `popola cloud runs`). Set `CURSOR_API_KEY=<service-account-key>` (NOT a personal / user / team key — see Cursor's [service accounts](https://cursor.com/docs/account/enterprise/service-accounts) doc for details) and retry. My Machines mode (`popola cloud worker start` without `--pool`) works with the standard browser-login auth.
+
+### `popola cloud worker stop` (v0.9.9 F6)
+
+`popola cloud worker stop` is a NEW v0.9.9 verb that locates a running worker process by `--name` OR `--worker-dir`, sends `SIGTERM` to its process group, and escalates to `SIGKILL` if the worker has not exited within `--grace N` seconds (default `5.0`). The signal target is the **process group** (via `os.killpg(getpgid(pid), …)`) so the underlying `agent worker start` Node child receives the signal even though the Python wrapper no longer holds it as a direct subprocess; the same Wave C patch rewires `_run_subprocess` underneath `popola cloud worker start` to `subprocess.Popen(start_new_session=True)` + a SIGTERM/SIGINT pgroup-forwarder so killing the wrapper cascades cleanly. Closes [`feedback_for_v0.9.7.md`](../.local/feedbacks/feedback_for_v0.9.7.md) §5 ("orphan Node.js worker on `popola cloud worker start` stop").
+
+```bash
+popola cloud worker stop --worker-dir "$(pwd)" --grace 5
+# worker_stop: sending SIGTERM to worker pid=12345 pgid=12345 (grace=5.0s)
+# Stopped worker pid=12345 (signal=SIGTERM, exited within 0.4s)
+
+popola cloud worker stop --name popolaloom-myrepo-abc123 --grace 2
+# (escalates to SIGKILL after 2.0s if the worker is wedged)
+```
+
+> **Caveat (Q-V099-6 — verbatim from `--help`):** *Stops the worker even if a Cloud Agent session is currently claimed; compose with `popola cloud worker status --busy` to gate.* `stop` does not consult `readyz.claimed` itself; if you want a "wait until idle then stop" loop, drive it from your shell using `popola cloud worker status --json` first.
 
 ### Status payload
 

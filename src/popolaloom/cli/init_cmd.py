@@ -869,6 +869,25 @@ def _resolve_cursor_api_key_input(
     return None
 
 
+def _display_fallback_path(path: Path) -> str:
+    """Render ``path`` as ``~/...`` when it lives under :func:`Path.home`.
+
+    Helper for the v0.9.9 U2 fallback-file follow-up message
+    (Q-V099-11). Operators see ``~/.popola/cursor_api_key.env`` rather
+    than the absolute ``/home/<user>/.popola/...`` form so the printed
+    ``source`` instruction stays portable across machines and the
+    docs in ``USER_GUIDE.md`` can mirror the exact wording. Falls
+    back to ``str(path)`` when the path is not under
+    :func:`Path.home` (e.g. a test that pins ``$POPOLA_HOME`` at a
+    ``tmp_path`` outside the user's home).
+    """
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return f"~/{relative.as_posix()}"
+
+
 def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
     """Persist ``raw_key`` in the OS keyring without prompting (v0.9.5+).
 
@@ -893,6 +912,7 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
         compute_fingerprint,
         is_keyring_available,
         store_cursor_api_key,
+        write_env_fallback,
     )
 
     typer.echo("\nSecure Cursor API key storage (v0.9.5 init-time intake):")
@@ -923,6 +943,19 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
             "`.env` file (the env-var fallback is documented in "
             "credentials.py precedence #2).",
             err=True,
+        )
+        try:
+            fallback_path = write_env_fallback(raw_key)
+        except (OSError, ValueError) as exc:
+            typer.echo(
+                f"  ERROR: could not write fallback file: {exc}",
+                err=True,
+            )
+            return
+        typer.echo(
+            f"  Wrote fallback to {_display_fallback_path(fallback_path)} "
+            "(mode 0600). The popola daemon will auto-source it on "
+            f"startup; for fresh shells run: source {_display_fallback_path(fallback_path)}"
         )
         return
 
@@ -1009,6 +1042,7 @@ def _offer_cursor_credential_setup() -> None:
         compute_fingerprint,
         is_keyring_available,
         store_cursor_api_key,
+        write_env_fallback,
     )
 
     typer.echo("\nSecure Cursor API key storage (v0.9.2+):")
@@ -1028,6 +1062,33 @@ def _offer_cursor_credential_setup() -> None:
             "still misses — set `CURSOR_API_KEY` in your shell or a 0o600 "
             "`.env` file (the env-var fallback is documented in "
             "credentials.py precedence #2)."
+        )
+        try:
+            prompted_key = typer.prompt(
+                "  Paste your Cursor API key to cache it in "
+                "~/.popola/cursor_api_key.env (mode 0600), or press Enter to skip",
+                default="",
+                hide_input=True,
+                show_default=False,
+            )
+        except (typer.Abort, EOFError):
+            typer.echo("  Skipped. You can run `popola auth cursor set` later.")
+            return
+        prompted_key = (prompted_key or "").strip()
+        if not prompted_key:
+            typer.echo("  Skipped. You can run `popola auth cursor set` later.")
+            return
+        try:
+            fallback_path = write_env_fallback(prompted_key)
+        except (OSError, ValueError) as exc:
+            typer.echo(
+                f"  ERROR: could not write fallback file: {exc}",
+            )
+            return
+        typer.echo(
+            f"  Wrote fallback to {_display_fallback_path(fallback_path)} "
+            "(mode 0600). The popola daemon will auto-source it on "
+            f"startup; for fresh shells run: source {_display_fallback_path(fallback_path)}"
         )
         return
 

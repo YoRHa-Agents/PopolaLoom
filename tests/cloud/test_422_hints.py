@@ -111,8 +111,13 @@ def test_new_class_exposes_bilingual_hints_and_cli_exit(
     assert isinstance(raised, CursorCloudError)
 
 
-def test_catalog_has_exactly_16_entries_with_required_fields() -> None:
-    """AC (a): ``_ERROR_CATALOG`` mirrors the §4 YAML — 16 entries, full shape."""
+def test_catalog_has_exactly_17_entries_with_required_fields() -> None:
+    """AC (a): ``_ERROR_CATALOG`` mirrors the §4 YAML — 17 entries, full shape.
+
+    v0.9.9 Wave-B (B1) appended ``integration_github_app_branch_not_found``
+    so the canonical row count grew from 16 to 17 (closes
+    ``feedback_for_v0.9.7.md`` F4).
+    """
     expected_ids = {
         "unauthorized_invalid_key",
         "unauthorized_revoked",
@@ -127,6 +132,7 @@ def test_catalog_has_exactly_16_entries_with_required_fields() -> None:
         "integration_repo_allowlist",
         "integration_github_app_missing",
         "integration_github_app_perms",
+        "integration_github_app_branch_not_found",
         "validation_request_body",
         "rate_limit",
         "backend_5xx",

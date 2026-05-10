@@ -22,11 +22,11 @@ translation_url: /zh/QUICKSTART.html
 ## Step 1 — Install popolaloom
 
 ```bash
-# Current v0.9.7 release. The default installer path uses GitHub while PyPI promotion is deferred.
+# Current v0.9.9 release. The default installer path uses GitHub while PyPI promotion is deferred.
 ./install.sh install                                              # canonical (default --from=git, tracks main)
 
 # Optional reproducible tag pin:
-./install.sh install --ref=v0.9.7
+./install.sh install --ref=v0.9.9
 
 # Optional secure-credential extra (v0.9.7+):
 ./install.sh install --with-credentials
@@ -37,12 +37,12 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.7
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.9
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.9.7"
+popola version                       # → "popolaloom 0.9.9"
 ```
 
-If you specifically need a tag-pinned manual fallback outside the installer, use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.7`. Avoid the bare package-name form until the `BL-v0.9.x-PyPI` promotion patch lands.
+If you specifically need a tag-pinned manual fallback outside the installer, use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9`. Avoid the bare package-name form until the `BL-v0.9.x-PyPI` promotion patch lands.
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
 
@@ -59,11 +59,18 @@ Use this when you plan to dispatch Cursor Cloud Agents (`--cli=cursor-cloud`), u
 # Recommended: store the key in the OS keyring and validate it once.
 popola auth cursor set --validate
 
-# Headless-container fallback: rely on the environment slot instead.
+# Headless-container fallback (option A): rely on the environment slot.
 export CURSOR_API_KEY="cr_..."
+
+# Headless-container fallback (option B; v0.9.9+): let `popola init`
+# write a 0o600 fallback file at ~/.popola/cursor_api_key.env
+# (auto-sourced by `popola popolad start` from v0.9.9 onward).
+popola init --cursor-api-key "cr_..."
+source ~/.popola/cursor_api_key.env   # only needed for the SAME shell;
+                                       # popolad auto-sources at startup.
 ```
 
-`popola auth cursor set --validate` requires the optional keyring extra. The easiest path is `./install.sh install --with-credentials` on a fresh machine or `./install.sh update --with-credentials` on an existing install. In Linux containers without SecretService, the installer can add the Python keyring package but no OS backend exists, so keep using `CURSOR_API_KEY` or a `0o600` `.env` file.
+`popola auth cursor set --validate` requires the optional keyring extra. The easiest path is `./install.sh install --with-credentials` on a fresh machine or `./install.sh update --with-credentials` on an existing install. In Linux containers without SecretService, the installer can add the Python keyring package but no OS backend exists; v0.9.9 closes that gap by writing the secret to the 0o600 fallback file at `~/.popola/cursor_api_key.env` so `popola dispatch` from a fresh shell after `popola init --cursor-api-key VAL` works once you `source` the file (or rely on the daemon auto-source on next `popola popolad start`).
 
 ## Step 2 — Register the Skill into your IDEs
 
@@ -153,7 +160,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.9.7 ready
+# [quickstart] all 6 steps PASS — popolaloom v0.9.9 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.

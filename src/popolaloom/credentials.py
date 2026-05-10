@@ -67,6 +67,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -76,6 +77,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-check-only imports
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AccountClass",
     "CURSOR_API_KEY_ENV",
     "CredentialBackendError",
     "CredentialResolver",
@@ -85,16 +87,20 @@ __all__ = [
     "REDACTION_PLACEHOLDER",
     "compute_fingerprint",
     "fingerprint",
+    "get_account_class",
     "is_keyring_available",
     "load_credential_metadata",
+    "load_env_fallback_into_environ",
     "metadata_path",
     "redact",
     "redact_in_text",
     "resolve_cursor_api_key",
     "save_credential_metadata",
+    "store_account_class",
     "store_cursor_api_key",
     "delete_cursor_api_key",
     "credential_status",
+    "write_env_fallback",
 ]
 
 
@@ -121,6 +127,18 @@ REDACTION_PLACEHOLDER: Final[str] = "<REDACTED:CURSOR_API_KEY>"
 
 _METADATA_FILENAME: Final[str] = "credentials.toml"
 _METADATA_FILE_MODE: Final[int] = 0o600
+_ENV_FALLBACK_FILENAME: Final[str] = "cursor_api_key.env"
+"""Filename for the v0.9.9 U2 0600 fallback file (Q-V099-11).
+
+Stored at ``$POPOLA_HOME/cursor_api_key.env`` next to ``credentials.toml``
+so operators inspecting their ``~/.popola`` directory see both the
+metadata + the fallback secret slot in one place. The file is mode
+0600 (owner read/write only) — the same mode as the metadata file.
+"""
+
+_ENV_FALLBACK_FILE_MODE: Final[int] = 0o600
+"""Required mode for the v0.9.9 U2 fallback file (Q-V099-11). 0o600 = owner-only."""
+
 _FINGERPRINT_LEN: Final[int] = 12
 """How many hex chars of the SHA-256 to expose in status output.
 
@@ -128,6 +146,71 @@ _FINGERPRINT_LEN: Final[int] = 12
 "is the key I just set the same as the one stored?" question without
 leaking a useful chunk of the key itself.
 """
+
+
+_ACCOUNT_CLASS_KEY: Final[str] = "account_class"
+"""Metadata key under the ``[cursor]`` table holding the operator's
+declared API-key class (Q-V099-1; v0.9.9 F5 + U1 pre-flight gate).
+
+Values are :class:`AccountClass` members serialised by their string
+value (``"personal"`` / ``"service_account"`` / ``"unknown"``). Stored
+in plaintext alongside ``backend`` / ``last_set_at`` because the field
+is a non-secret routing hint — it tells
+:func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd` whether the
+configured key is allowed to drive the self-hosted worker REST surface
+(only ``service_account`` is per the Spike-0 SCHEMA_INVESTIGATION.md
+verdict; ``personal`` and ``unknown`` are blocked at pre-flight)."""
+
+
+# ── account class enum ──────────────────────────────────────────────────
+
+
+class AccountClass(StrEnum):
+    """Declared class of the operator's stored Cursor API key (v0.9.9+).
+
+    Drives the F5 + U1 pre-flight gate in
+    :func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd`. The
+    Spike-0 schema investigation
+    (``.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md``)
+    confirmed that Cursor REST has no documented schema (as of
+    2026-05-10) for routing ``POST /v1/agents`` to a self-hosted worker
+    under a personal key with Dashboard visibility — only
+    service-account / Enterprise pool keys are accepted. The enum is
+    additive and defaults to :data:`UNKNOWN` for backward compat with
+    existing ``credentials.toml`` files that pre-date v0.9.9.
+
+    Inherits from :class:`enum.StrEnum` (Python 3.11+) so
+    ``AccountClass.PERSONAL`` interpolates as ``"personal"`` in log
+    output and direct equality checks (``AccountClass.PERSONAL ==
+    "personal"``) hold without an explicit ``.value`` lookup. Same
+    pattern as :class:`popolaloom.cli.init_cmd.InitTarget` (ruff UP042
+    canonicalisation).
+    """
+
+    PERSONAL = "personal"
+    """Personal API key (Cursor Dashboard → Integrations → API key).
+
+    Cannot reach the self-hosted-worker REST routing fields under the
+    public 2026-05-10 schema; ``popola cloud worker dispatch`` refuses
+    pre-flight and points the operator at the My-Machines chat-trigger
+    workaround OR ``popola cloud worker handoff``."""
+
+    SERVICE_ACCOUNT = "service_account"
+    """Enterprise team service-account API key.
+
+    Required for ``--pool`` workers AND for ``popola cloud worker
+    dispatch`` per the Self-Hosted-Pool docs. The pre-flight gate lets
+    this class through unchanged."""
+
+    UNKNOWN = "unknown"
+    """Operator did not declare a class at ``popola auth cursor set`` time.
+
+    Backward-compat default for credentials.toml files that pre-date
+    v0.9.9 (the field is additive). Treated as ``personal`` by the
+    pre-flight gate (refused with the bilingual hint) — the operator
+    must re-run
+    ``popola auth cursor set --api-key VAL --account-class=...`` to
+    declare their key class."""
 
 
 # ── exceptions ───────────────────────────────────────────────────────────
@@ -257,6 +340,189 @@ def load_credential_metadata() -> dict[str, str]:
         for key, value in cursor_section.items()
         if isinstance(value, (str, int, float))
     }
+
+
+def _env_fallback_path() -> Path:
+    """Return the v0.9.9 U2 0600 fallback file path (Q-V099-11).
+
+    Returns ``$POPOLA_HOME/cursor_api_key.env`` (sibling of
+    ``credentials.toml``). The file is written by
+    :func:`write_env_fallback` (when the keyring backend is unavailable
+    and the operator passed ``popola init --cursor-api-key VAL``) and
+    read by :func:`load_env_fallback_into_environ` at daemon startup so
+    a fresh ``popola dispatch`` shell after init "just works" without
+    requiring the operator to ``source`` the file by hand.
+
+    The path is always returned (whether or not the file exists) so
+    callers can use it in stdout messages + ``os.stat`` checks.
+    """
+    return _popola_home() / _ENV_FALLBACK_FILENAME
+
+
+def write_env_fallback(raw_key: str) -> Path:
+    """Atomically write the v0.9.9 U2 0600 fallback file (Q-V099-11).
+
+    Writes ``CURSOR_API_KEY=<raw_key>\\n`` into
+    ``$POPOLA_HOME/cursor_api_key.env`` with mode ``0o600`` (owner-only)
+    using ``os.open(..., O_WRONLY|O_CREAT|O_TRUNC, 0o600)`` so the file
+    is *born* with the right permissions (avoids the race where a
+    plaintext file briefly exists with the umask default before a
+    follow-up ``chmod`` tightens it). ``O_TRUNC`` makes the call
+    idempotent: re-running ``popola init --cursor-api-key VAL2`` after
+    a previous ``--cursor-api-key VAL1`` replaces the file contents
+    entirely instead of appending.
+
+    The literal ``raw_key`` value never appears in stdout / stderr /
+    log output; the caller is responsible for emitting an
+    operator-facing line that names the file path + the ``source``
+    command (per ``init_cmd._persist_cursor_api_key_noninteractive``
+    branch in the same v0.9.9 patch).
+
+    The parent directory is created with mode 0o700 when missing
+    (mirrors :func:`save_credential_metadata`).
+
+    Args:
+        raw_key: the resolved Cursor API key (already stripped by
+            :func:`init_cmd._resolve_cursor_api_key_input`).
+
+    Returns:
+        :class:`pathlib.Path`: the absolute path of the file that was
+        written.
+
+    Raises:
+        OSError: if the file could not be opened or written, or if the
+            post-write ``os.stat`` reveals a mode other than 0o600
+            (defensive: a non-0o600 mode after our explicit
+            ``os.open(..., 0o600)`` call would indicate the OS or
+            file-system rejected the mode bits and is treated as a
+            hard failure per workspace rule "No Silent Failures" —
+            security-critical for a secret slot).
+    """
+    if not raw_key or not raw_key.strip():
+        raise ValueError("cursor api_key must be a non-empty string")
+    path = _env_fallback_path()
+    parent = path.parent
+    parent.mkdir(mode=0o700, parents=True, exist_ok=True)
+    payload = f"{CURSOR_API_KEY_ENV}={raw_key.strip()}\n".encode()
+    fd = os.open(
+        str(path),
+        os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
+        _ENV_FALLBACK_FILE_MODE,
+    )
+    try:
+        os.write(fd, payload)
+    finally:
+        os.close(fd)
+    actual_mode = os.stat(path).st_mode & 0o777
+    if actual_mode != _ENV_FALLBACK_FILE_MODE:
+        raise OSError(
+            f"cursor_api_key.env at {path} has unexpected mode "
+            f"{actual_mode:#o}; expected {_ENV_FALLBACK_FILE_MODE:#o} "
+            "(security-critical — refusing to leave a world/group-readable "
+            "secret on disk)"
+        )
+    return path
+
+
+def load_env_fallback_into_environ(*, logger: logging.Logger | None = None) -> bool:
+    """Load the v0.9.9 U2 0600 fallback file into ``os.environ`` (Q-V099-12).
+
+    Called from the daemon bootstrap (``popolaloom.daemon.main.main``)
+    early in startup so a fresh ``popola dispatch`` from any shell that
+    runs through the daemon picks up the operator's init-time
+    ``--cursor-api-key VAL`` without requiring a manual ``source`` of
+    ``~/.popola/cursor_api_key.env``.
+
+    Reads ``$POPOLA_HOME/cursor_api_key.env`` line-by-line and applies
+    every line of shape ``CURSOR_API_KEY=<value>`` to ``os.environ``
+    (single key for v0.9.9; the loop shape leaves room for future
+    expansion to multiple env vars without API churn). Lines that
+    don't match — including blank lines, ``#`` comments, and
+    malformed key/value rows — are skipped at WARN level (per
+    workspace rule "No Silent Failures": each rejection has an
+    explicit log entry pointing at the file + line number + literal
+    line text, but file *presence* is best-effort and never aborts
+    daemon startup).
+
+    Precedence rule (v0.9.9 Q-V099-12 lock): if ``CURSOR_API_KEY`` is
+    already set in the environment when this function runs, the
+    existing value WINS — the fallback file does NOT overwrite an
+    explicit operator-set env var. This keeps the env-var precedence
+    slot from :class:`CredentialResolver` consistent with the
+    :func:`resolve_cursor_api_key` chain (#2 env, #3 keyring) — the
+    fallback file plays the role of "auto-source on daemon startup",
+    not "highest-precedence override".
+
+    Args:
+        logger: optional :class:`logging.Logger` for WARN messages on
+            malformed lines. When ``None`` the module-level
+            :data:`logger` is used.
+
+    Returns:
+        ``True`` iff a value was loaded into ``os.environ`` from the
+        file; ``False`` when the file is absent OR every line was
+        skipped OR the env var was already set (precedence-preserving
+        no-op). Callers can use the return value as a smoke check
+        ("was the daemon's auto-source helpful for this start?").
+    """
+    log = logger if logger is not None else globals()["logger"]
+    path = _env_fallback_path()
+    if not path.is_file():
+        return False
+    if os.environ.get(CURSOR_API_KEY_ENV, "").strip():
+        log.debug(
+            "cursor_api_key.env at %s present but %s already set in environ; "
+            "env-var precedence wins (Q-V099-12)",
+            path,
+            CURSOR_API_KEY_ENV,
+        )
+        return False
+    try:
+        contents = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        log.warning(
+            "could not read cursor_api_key.env at %s: %s; daemon continues",
+            path,
+            exc,
+        )
+        return False
+    loaded = False
+    for lineno, raw_line in enumerate(contents.splitlines(), start=1):
+        line = raw_line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            log.warning(
+                "malformed cursor_api_key.env at %s line %d: %r",
+                path,
+                lineno,
+                raw_line,
+            )
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            log.warning(
+                "malformed cursor_api_key.env at %s line %d: %r",
+                path,
+                lineno,
+                raw_line,
+            )
+            continue
+        if key != CURSOR_API_KEY_ENV:
+            log.debug(
+                "cursor_api_key.env at %s line %d sets %r; only %s is "
+                "auto-loaded by the v0.9.9 daemon hook (skipping)",
+                path,
+                lineno,
+                key,
+                CURSOR_API_KEY_ENV,
+            )
+            continue
+        os.environ[CURSOR_API_KEY_ENV] = value
+        loaded = True
+    return loaded
 
 
 def save_credential_metadata(values: Mapping[str, str]) -> None:
@@ -656,6 +922,98 @@ def delete_cursor_api_key() -> tuple[bool, CredentialStatus]:
         except OSError as exc:  # pragma: no cover — defensive only
             logger.warning("failed to clear credentials metadata at %s: %s", metadata_file, exc)
     return removed, credential_status()
+
+
+# ── account class persistence (v0.9.9 F5 + U1) ──────────────────────────
+
+
+_ACCOUNT_CLASS_VALID_INPUT: Final[frozenset[str]] = frozenset(
+    {"personal", "service-account", "service_account", "unknown"}
+)
+"""Case-insensitive whitelist of accepted ``--account-class`` values.
+
+Includes both the dashed (``service-account``) and underscored
+(``service_account``) forms so the CLI choice flag and the on-disk
+TOML key (which uses the underscored form, matching Python's
+:class:`AccountClass` member name convention) round-trip cleanly.
+"""
+
+
+def store_account_class(value: str) -> None:
+    """Persist the operator's declared account class into ``credentials.toml``.
+
+    Validates ``value`` against the case-insensitive whitelist
+    ``{"personal", "service-account", "service_account", "unknown"}``
+    and normalises ``"service-account"`` → ``"service_account"`` so the
+    on-disk form matches :class:`AccountClass` member values verbatim.
+
+    Reuses :func:`load_credential_metadata` + :func:`save_credential_metadata`
+    so the existing ``[cursor]`` TOML table layout, the 0o600 file
+    mode, and the atomic-replace write are preserved. The operation is
+    additive — it never clears ``backend`` / ``last_set_at`` /
+    ``fingerprint`` (those belong to :func:`store_cursor_api_key`).
+
+    Args:
+        value: one of ``"personal"`` / ``"service-account"`` /
+            ``"service_account"`` / ``"unknown"``; case-insensitive.
+
+    Raises:
+        ValueError: when ``value`` is empty or outside the whitelist
+            (No Silent Failures — invalid CLI input must surface a
+            clean ``typer.BadParameter`` upstream rather than silently
+            recording an unrecognised class).
+    """
+    if value is None:
+        raise ValueError("account_class must be a non-empty string")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("account_class must be a non-empty string")
+    lowered = stripped.lower()
+    if lowered not in _ACCOUNT_CLASS_VALID_INPUT:
+        raise ValueError(
+            f"invalid account_class {value!r}; expected one of "
+            "{personal, service-account, service_account, unknown} "
+            "(case-insensitive)"
+        )
+    normalized = "service_account" if lowered == "service-account" else lowered
+    metadata = load_credential_metadata()
+    metadata[_ACCOUNT_CLASS_KEY] = normalized
+    save_credential_metadata(metadata)
+
+
+def get_account_class() -> AccountClass:
+    """Read the declared account class from ``credentials.toml``.
+
+    Returns :data:`AccountClass.UNKNOWN` when the metadata file is
+    absent (fresh install), the ``[cursor]`` table is empty, the
+    ``account_class`` key is missing (pre-v0.9.9 file — backward-compat
+    path), or the stored value is unrecognised (defensive: a
+    hand-edited TOML with ``account_class = "garbage"`` does not crash
+    the dispatch gate; it simply blocks via the UNKNOWN refusal path).
+
+    Used by :func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd`
+    for the F5 pre-flight gate. Pure read; never writes.
+    """
+    metadata = load_credential_metadata()
+    raw = metadata.get(_ACCOUNT_CLASS_KEY)
+    if not raw:
+        return AccountClass.UNKNOWN
+    candidate = str(raw).strip().lower()
+    if not candidate:
+        return AccountClass.UNKNOWN
+    if candidate == "service-account":
+        candidate = "service_account"
+    try:
+        return AccountClass(candidate)
+    except ValueError:
+        logger.warning(
+            "credentials.toml has unrecognised account_class %r at %s; "
+            "treating as UNKNOWN (re-run `popola auth cursor set "
+            "--account-class=...` to fix)",
+            raw,
+            metadata_path(),
+        )
+        return AccountClass.UNKNOWN
 
 
 def _utc_now_iso() -> str:

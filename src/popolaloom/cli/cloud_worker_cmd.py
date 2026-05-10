@@ -53,11 +53,14 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from types import FrameType
 from typing import Any, NoReturn, cast
 
 import httpx
@@ -81,6 +84,15 @@ _EXIT_POOL_REQUIRES_API_KEY: int = 77
 """Pool worker requested but ``CURSOR_API_KEY`` unset; mirrors
 ``_EXIT_CLOUD_AUTH_ERROR`` in ``cloud_cmd.py`` so scripts can branch on
 the same code regardless of which sub-verb hit the auth gap."""
+
+_EXIT_ACCOUNT_CLASS_GATE: int = 78
+"""Pre-flight gate (v0.9.9 F5 + U1) refused: the configured Cursor API
+key class cannot drive the self-hosted-worker REST surface. Mirrors
+the ``forbidden_plan_required`` / GitHub-App integration error
+``cli_exit=78`` in ``adapters/cursor_cloud._ERROR_CATALOG`` so any
+script branching on ``78 == "operator must change something about
+their account / config to proceed"`` keeps a coherent meaning across
+cloud sub-verbs."""
 
 
 # ── default constants ────────────────────────────────────────────────────
@@ -392,9 +404,56 @@ def _run_subprocess(argv: list[str]) -> int:
     monkeypatch a no-op recorder without spawning a real subprocess.
     Streams stdout / stderr to the parent terminal so operators see the
     upstream ``agent worker`` output verbatim (No Silent Failures).
+
+    v0.9.9 (F6 — closes ``feedback_for_v0.9.7.md:88-96``): the child is
+    spawned via :class:`subprocess.Popen` with ``start_new_session=True``
+    (calls :func:`os.setsid` between fork and exec) so the Node
+    ``agent worker start`` process becomes the leader of its own
+    process group. SIGTERM and SIGINT delivered to *this* Python
+    wrapper are then cascaded to the entire child group via
+    :func:`os.killpg`, which fixes the orphaning problem where
+    ``kill <wrapper-pid>`` against
+    ``nohup popola cloud worker start ... &`` left the Node child
+    re-parented to PID 1 and still connected to Cursor's cloud.
+
+    The 1-arg ``argv: list[str] -> int`` signature is **preserved**
+    (Q-V099-15) so the existing
+    :file:`tests/cli/test_cloud_worker_cmd.py` monkeypatches like
+    ``lambda argv: 0`` keep working unchanged. Signal handlers are
+    installed inside a ``try/finally`` so they are always restored
+    when this function returns — signal-handling code is
+    security-critical and we never want to leak a forwarder into
+    surrounding test runs or unrelated CLI flows.
     """
-    completed = subprocess.run(argv, check=False)  # noqa: S603
-    return completed.returncode
+    child = subprocess.Popen(argv, start_new_session=True)  # noqa: S603
+
+    def _forward(sig: int, _frame: FrameType | None) -> None:
+        """Re-deliver ``sig`` to the child's whole process group."""
+        try:
+            pgid = os.getpgid(child.pid)
+        except ProcessLookupError:
+            logger.debug(
+                "_run_subprocess: child pid=%d already gone before forwarding %s",
+                child.pid,
+                signal.Signals(sig).name,
+            )
+            return
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            logger.debug(
+                "_run_subprocess: pgid=%d already gone before forwarding %s",
+                pgid,
+                signal.Signals(sig).name,
+            )
+
+    previous_term = signal.signal(signal.SIGTERM, _forward)
+    previous_int = signal.signal(signal.SIGINT, _forward)
+    try:
+        return child.wait()
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 def _resolve_pool_env(env: dict[str, str]) -> dict[str, str]:
@@ -845,6 +904,161 @@ def worker_start_cmd(
     raise typer.Exit(code=rc)
 
 
+# ── stop verb ────────────────────────────────────────────────────────────
+
+
+_STOP_POLL_INTERVAL_S: float = 0.1
+"""Liveness-poll cadence (seconds) during the ``--grace`` SIGTERM
+window in :func:`worker_stop_cmd`. 100 ms keeps the perceived stop
+latency tight while bounding wakeups during long ``--grace`` waits;
+mirrors the ``_POLL_INTERVAL_S`` constant in :mod:`popolaloom.cli.popolad`.
+"""
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True iff signal 0 reaches ``pid`` (process exists + we have permission).
+
+    Mirrors :func:`popolaloom.cli.popolad._pid_alive` so the worker
+    stop path can poll for graceful exit without reaching across
+    modules. ``PermissionError`` means the process exists but is owned
+    by another uid (treat as alive); ``ProcessLookupError`` means the
+    pid is gone (treat as dead).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _find_worker_for_stop(
+    *, name: str | None, worker_dir: Path | None
+) -> LocalWorkerProcess | None:
+    """Locate a single running worker by ``--name`` OR ``--worker-dir``.
+
+    ``--worker-dir`` reuses :func:`_detect_running_workers_for_dir`
+    (which already normalises the path + filters by procfs cmdline).
+    ``--name`` scans every ``agent worker start`` cmdline via
+    :func:`_iter_proc_cmdlines` + :func:`_parse_worker_start_cmdline`
+    and returns the first parsed worker whose ``--name`` value matches.
+    Returns ``None`` when no match — caller emits the canonical
+    "no matching worker found" error and exits :data:`_EXIT_UNREACHABLE`.
+    The XOR rule (exactly one of the two flags) is enforced by the
+    caller before invoking this helper.
+    """
+    if worker_dir is not None:
+        matches = _detect_running_workers_for_dir(_resolve_worker_dir(worker_dir))
+        return matches[0] if matches else None
+    if name is not None:
+        for pid, argv in _iter_proc_cmdlines():
+            parsed = _parse_worker_start_cmdline(pid, argv)
+            if parsed is None:
+                continue
+            if parsed.name == name:
+                return parsed
+    return None
+
+
+@app.command(name="stop")
+def worker_stop_cmd(
+    name: str | None = typer.Option(  # noqa: B008
+        None,
+        "--name",
+        help=(
+            "Worker --name value to match against running "
+            "`agent worker start` cmdlines."
+        ),
+    ),
+    worker_dir: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--worker-dir",
+        help="Resolve the running worker via its --worker-dir.",
+    ),
+    grace: float = typer.Option(  # noqa: B008
+        5.0,
+        "--grace",
+        help=(
+            "Seconds to wait for graceful SIGTERM exit before escalating "
+            "to SIGKILL (default 5.0)."
+        ),
+    ),
+) -> None:
+    """Stop a running cloud worker (SIGTERM-then-SIGKILL after --grace seconds).
+
+    Stops the worker even if a Cloud Agent session is currently claimed; """ \
+        """compose with `popola cloud worker status --busy` to gate.
+    """
+    if name is None and worker_dir is None:
+        typer.echo(
+            "error: pass --name OR --worker-dir to identify the worker",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    worker = _find_worker_for_stop(name=name, worker_dir=worker_dir)
+    if worker is None:
+        typer.echo("error: no matching worker found", err=True)
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+
+    pid = worker.pid
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError as exc:
+        typer.echo(
+            f"error: worker pid={pid} disappeared before signal could be sent: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE) from exc
+
+    logger.info(
+        "worker_stop: sending SIGTERM to worker pid=%d pgid=%d (grace=%.1fs)",
+        pid,
+        pgid,
+        grace,
+    )
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError as exc:
+        typer.echo(
+            f"error: worker pid={pid} pgid={pgid} disappeared before SIGTERM "
+            f"could be delivered: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE) from exc
+
+    start = time.monotonic()
+    deadline = start + max(0.0, grace)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            elapsed = time.monotonic() - start
+            typer.echo(
+                f"Stopped worker pid={pid} (signal=SIGTERM, "
+                f"exited within {elapsed:.1f}s)"
+            )
+            return
+        time.sleep(_STOP_POLL_INTERVAL_S)
+
+    logger.warning(
+        "worker_stop: pid=%d did not exit within %.1fs grace; sending SIGKILL",
+        pid,
+        grace,
+    )
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        logger.info(
+            "worker_stop: pgid=%d already gone before SIGKILL fired",
+            pgid,
+        )
+    typer.echo(
+        f"Killed worker pid={pid} (signal=SIGKILL after {grace:.1f}s grace expiry)"
+    )
+
+
 # ── dispatch verb ────────────────────────────────────────────────────────
 
 
@@ -914,6 +1128,8 @@ def worker_dispatch_cmd(
     if not model.strip():
         typer.echo("error: --model must be non-empty", err=True)
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    _enforce_account_class_pre_flight_gate()
 
     resolved_worker_dir = _resolve_worker_dir(worker_dir)
     running = _detect_running_workers_for_dir(resolved_worker_dir)
@@ -996,6 +1212,98 @@ def _has_resolvable_api_key() -> bool:
     from popolaloom.credentials import resolve_cursor_api_key
 
     return resolve_cursor_api_key() is not None
+
+
+_PRE_FLIGHT_BILINGUAL_HINT: str = (
+    "error: popola cloud worker dispatch is unavailable for this Cursor API key class.\n"
+    "\n"
+    "Reason: Cursor REST has no documented schema (as of 2026-05-10) for routing\n"
+    "a POST /v1/agents run to a self-hosted worker under a personal API key with\n"
+    "Dashboard visibility. Service-account / Enterprise pool keys are the only\n"
+    "supported path; see SCHEMA_INVESTIGATION.md and\n"
+    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers.\n"
+    "\n"
+    "Workarounds:\n"
+    "1. popola cloud worker handoff --worker-id <uuid>\n"
+    "   Generates a copy-paste cursor.com/agents URL; the Dashboard run becomes\n"
+    "   visible after you paste the prompt in the browser.\n"
+    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
+    "   Local cursor-agent subprocess; faster, no browser, but does NOT show on\n"
+    "   cursor.com/agents (this is a documented v0.9.x limitation).\n"
+    "3. Mention \"@Cursor worker=<your-machine-name>\" in Slack / GitHub / Linear\n"
+    "   to trigger the My Machines worker via chat.\n"
+    "\n"
+    "To switch a key from personal to service-account: re-run\n"
+    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
+    "See https://cursor.com/docs/cloud-agent/self-hosted-pool for the\n"
+    "service-account provisioning flow.\n"
+    "\n"
+    "错误：当前 Cursor API key 类别不支持 popola cloud worker dispatch。\n"
+    "原因：截至 2026-05-10，Cursor REST 在 personal API key 下没有公开的\n"
+    "self-hosted-worker 路由 schema（仅 service-account / Enterprise pool keys\n"
+    "支持）。详见 SCHEMA_INVESTIGATION.md 与\n"
+    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers 。\n"
+    "\n"
+    "解决方案：\n"
+    "1. popola cloud worker handoff --worker-id <uuid>\n"
+    "   生成可复制的 cursor.com/agents 链接；浏览器粘贴 prompt 后即可在\n"
+    "   Dashboard 看到该任务。\n"
+    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
+    "   本机 cursor-agent 子进程；速度更快、无需浏览器，但不会出现在\n"
+    "   cursor.com/agents 看板上（v0.9.x 已知限制）。\n"
+    "3. 在 Slack / GitHub / Linear 中 @Cursor worker=<机器名> 通过 chat 触发\n"
+    "   My Machines worker。\n"
+    "\n"
+    "切换至 service-account 重新运行：\n"
+    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
+)
+"""Bilingual loud-fail hint emitted by the v0.9.9 F5 + U1 pre-flight gate.
+
+Wording locked by the L0 brief and the Spike-0 SCHEMA_INVESTIGATION.md
+verdict (BRANCH_B, 2026-05-10): personal / unknown-class API keys
+cannot drive ``POST /v1/agents`` self-hosted-worker routing under the
+documented public schema, so the gate refuses pre-flight and points
+operators at the three v0.9.x workarounds (handoff, local cursor-agent,
+chat trigger) plus the service-account upgrade path.
+
+The hint MUST contain ALL of: ``popola cloud worker handoff``,
+``popola dispatch --cli=cursor``, ``SCHEMA_INVESTIGATION.md``,
+``https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers``,
+and the Chinese fragment ``当前 Cursor API key 类别不支持`` — verified
+by ``tests/cli/test_cloud_worker_dispatch_account_class.py``.
+"""
+
+
+def _enforce_account_class_pre_flight_gate() -> None:
+    """Refuse ``popola cloud worker dispatch`` when the key class cannot route.
+
+    Reads :func:`popolaloom.credentials.get_account_class` (returns
+    :data:`AccountClass.UNKNOWN` for pre-v0.9.9 ``credentials.toml``
+    files OR when no metadata file exists yet — backward-compat path)
+    and enforces the Spike-0 BRANCH_B verdict from
+    ``.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md``:
+
+    * ``SERVICE_ACCOUNT`` → return; the v0.9.8 dispatch body shape
+      proceeds unchanged.
+    * ``PERSONAL`` / ``UNKNOWN`` → emit the bilingual loud-fail hint
+      to stderr, log a WARN entry per the workspace No-Silent-Failures
+      rule, and ``raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)``
+      (78). Operators upgrade by re-running
+      ``popola auth cursor set --account-class=service-account``.
+
+    Always loud-fails (no auto-fallback) per Q-V099-8.
+    """
+    from popolaloom.credentials import AccountClass, get_account_class
+
+    account_class = get_account_class()
+    if account_class == AccountClass.SERVICE_ACCOUNT:
+        return
+    logger.warning(
+        "worker_dispatch refused: account_class=%s",
+        account_class.value,
+    )
+    typer.echo(_PRE_FLIGHT_BILINGUAL_HINT, err=True)
+    raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)
 
 
 def _fail_pool_requires_api_key() -> NoReturn:
@@ -1109,6 +1417,67 @@ def worker_status_cmd(
         return
 
     _render_status_table(payload)
+
+    # v0.9.9 F3 (feedback_for_v0.9.7.md:52): when the worker process is
+    # alive (healthz responsive, /readyz returned, metrics scraped) but
+    # has never been routed a Cloud Agent session, surface a single
+    # idle-hint line so operators can distinguish "worker dead" (the
+    # _EXIT_UNREACHABLE path above) from "worker alive but no traffic
+    # yet". This is additive only — the rendered table is unchanged
+    # and the JSON path still returns early before this hint.
+    if _is_worker_idle(payload):
+        typer.echo(
+            "note: 0 sessions claimed since worker started "
+            "(the worker is healthy but has not been routed any task yet)"
+        )
+
+
+def _is_worker_idle(payload: dict[str, Any]) -> bool:
+    """Decide whether to print the v0.9.9 F3 worker idle-hint line.
+
+    Returns ``True`` iff the management server reported back AND
+    none of the available signals indicate the worker has ever
+    claimed a Cloud Agent session:
+
+    - ``readyz.claimed`` is not currently ``True`` (no live session
+      holding the worker right now);
+    - ``metrics.cursor_self_hosted_worker_session_active`` is 0 / None
+      (Prometheus gauge agrees: no live session);
+    - ``metrics.cursor_self_hosted_worker_last_activity_unix_seconds``
+      is ``0`` / missing (the activity heartbeat the worker emits on
+      every claim has never fired).
+
+    The idle-hint complements (does NOT replace) the existing
+    unreachable-path stderr hint at :meth:`worker_status_cmd`'s
+    ``httpx.HTTPError`` branch — that path already covers "worker
+    dead", this path covers "worker alive but never busy".
+    """
+    healthz = payload.get("healthz") or {}
+    readyz = payload.get("readyz") or {}
+    metrics_block = payload.get("metrics") or {}
+    metrics_values = metrics_block.get("values") or {}
+
+    healthz_status = healthz.get("status")
+    if healthz_status not in {"ok", "healthy"} and healthz_status is not None:
+        return False
+    if not isinstance(readyz, dict):
+        return False
+
+    if readyz.get("claimed") is True:
+        return False
+
+    session_active = metrics_values.get(
+        "cursor_self_hosted_worker_session_active"
+    )
+    if isinstance(session_active, (int, float)) and session_active > 0:
+        return False
+
+    last_activity = metrics_values.get(
+        "cursor_self_hosted_worker_last_activity_unix_seconds"
+    )
+    return not (
+        isinstance(last_activity, (int, float)) and last_activity > 0
+    )
 
 
 def _parse_health_body(status: int, body: str) -> dict[str, Any]:

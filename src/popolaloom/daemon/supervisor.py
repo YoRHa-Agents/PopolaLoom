@@ -60,6 +60,34 @@ agent --print`` 18000-char outputs). On timeout, the supervisor emits a
 (No Silent Failures — see R-007 in 09-iter1-self-eval.md §5)."""
 
 
+_SILENCE_TIMEOUT_SECS: float = 30.0
+"""Stdout-silence threshold before the supervisor emits a ``process.note``.
+
+v0.9.9 F1 (Q-V099-5 + Q-V099-14): when a child subprocess produces neither
+a stdout nor a stderr line within this window after :meth:`Supervisor.spawn`
+fans out the worker threads (t0 = ``process.started``, see Q-V099-5), the
+supervisor emits a single ``process.note`` event with ``kind=stdout_silence``
+plus a branched operator-facing hint:
+
+- ``cursor`` + ``output_format=text`` (or unknown) → verbatim feedback wording
+  from ``feedback_for_v0.9.7.md:33-34`` so ``popola attach --follow`` users
+  immediately know the long silence is the cursor-agent stdout buffer, not
+  a stuck task.
+- ``cursor`` + ``output_format=stream-json`` → "first frame not yet emitted"
+  hint per Q-V099-14, since stream-json is supposed to flush eagerly but
+  large prompts can still defer the first frame for 60s+.
+- Any other CLI (claude / codex / ...) → a generic stdout-silence note.
+
+The fire-once timer is cancelled by:
+
+- :meth:`_drain_stream` on the FIRST non-empty stdout / stderr line, AND
+- :meth:`_wait_and_finalize` after :meth:`subprocess.Popen.wait` returns
+  (so a fast-exiting task does not leak a delayed note after termination).
+
+Tests monkeypatch this constant to a small value (≈ 0.05s) so the silence
+path runs in milliseconds without sleeping a real 30s window."""
+
+
 class Supervisor:
     """Spawns and monitors per-task subprocesses, streaming output to event log.
 
@@ -90,6 +118,20 @@ class Supervisor:
         the count only grows), and we use it for ``stream.truncated`` event
         ``actual_lines`` reporting on join timeout (R-007 fix).
         """
+        self._silence_state: dict[
+            str, tuple[threading.Event, threading.Timer]
+        ] = {}
+        """Per-task stdout-silence timer + cancel-event tuples (v0.9.9 F1).
+
+        Shape: ``{task_id: (silence_event, silence_timer)}``. The
+        :class:`threading.Event` is set by the cancel paths
+        (:meth:`_drain_stream` first-line, :meth:`_wait_and_finalize`
+        exit-before-fire) so the timer's emit callback can short-circuit
+        on a race; the :class:`threading.Timer` is kept so the cancel
+        paths can also call :meth:`threading.Timer.cancel` and stop the
+        underlying timer thread cleanly. Entries are popped exactly once
+        by :meth:`_cancel_silence_timer` (No Silent Failures — duplicate
+        cancel calls are idempotent and never re-emit)."""
         self._state_store: StateStore | None = state_store
 
     @property
@@ -202,6 +244,19 @@ class Supervisor:
         stdout_thread.start()
         stderr_thread.start()
         wait_thread.start()
+
+        # v0.9.9 F1 (Q-V099-5 + Q-V099-14): register the stdout-silence
+        # timer AFTER the worker threads start so a first-line cancel
+        # race is structurally impossible (the timer can only fire once
+        # the drain threads are already running and may have set the
+        # cancel event). The timer is cancelled by `_drain_stream` on
+        # the first non-empty stdout/stderr line and by
+        # `_wait_and_finalize` after `proc.wait()` returns.
+        self._register_silence_timer(
+            task_id=task_id,
+            cmd=cmd,
+            event_log=event_log,
+        )
 
         return pid
 
@@ -533,6 +588,12 @@ class Supervisor:
 
         v0.2.0: per-stream line counter 维护在 ``self._line_counts[task_id]``
         以便 wait thread 在 join 超时时知道实际写了多少行 (R-007).
+
+        v0.9.9 F1: the FIRST non-empty line on either stream cancels the
+        stdout-silence timer registered by :meth:`spawn`; this is why
+        the cancellation hook lives in the drain loop rather than at
+        ``proc.wait`` time (a chatty subprocess that prints once at t=0
+        must not trip the silence note even if it then runs for hours).
         """
         try:
             for raw_line in iter(stream.readline, ""):
@@ -546,6 +607,8 @@ class Supervisor:
                 counts = self._line_counts.get(task_id)
                 if counts is not None:
                     counts[stream_name] = counts.get(stream_name, 0) + 1
+                if line:
+                    self._cancel_silence_timer(task_id)
         except Exception as exc:
             logger.exception("Stream drain failed for task %s (%s)", task_id, stream_name)
             event_log.append(
@@ -585,6 +648,10 @@ class Supervisor:
             exit_code = proc.wait()
         except Exception as exc:  # noqa: BLE001
             logger.exception("proc.wait failed for task %s", task_id)
+            # v0.9.9 F1: even on a surprise wait failure, cancel the
+            # silence timer first so we don't fire a misleading note
+            # after the supervisor has already given up on the child.
+            self._cancel_silence_timer(task_id)
             terminal_type, terminal_data = self._resolve_terminal_event(
                 task_id=task_id,
                 pid=proc.pid,
@@ -596,6 +663,15 @@ class Supervisor:
             if on_exit is not None:
                 self._safe_on_exit(on_exit, task_id, -1)
             return
+
+        # v0.9.9 F1: clean exit-before-fire path. proc.wait returned, so
+        # any silence timer still pending would (a) be racy with the
+        # imminent terminal event emit below and (b) fire a misleading
+        # "still working" hint after the task has already finished.
+        # Cancellation is idempotent with the per-task state dict, so
+        # if `_drain_stream` already cancelled (chatty subprocess) this
+        # is a no-op.
+        self._cancel_silence_timer(task_id)
 
         stdout_thread.join(timeout=_DRAIN_JOIN_TIMEOUT_S)
         if stdout_thread.is_alive():
@@ -739,6 +815,95 @@ class Supervisor:
         except Exception:  # noqa: BLE001 - 回调失败不影响事件已写入
             logger.exception("on_exit callback failed for task %s", task_id)
 
+    def _register_silence_timer(
+        self,
+        *,
+        task_id: str,
+        cmd: list[str],
+        event_log: EventLog,
+    ) -> None:
+        """Arm the v0.9.9 F1 stdout-silence timer for ``task_id``.
+
+        Reads :data:`_SILENCE_TIMEOUT_SECS` at registration time so
+        tests can monkeypatch the constant before calling
+        :meth:`spawn` and run the silence path in milliseconds. The
+        timer thread is daemonised so it never blocks interpreter exit.
+        """
+        silence_event = threading.Event()
+        timer = threading.Timer(
+            _SILENCE_TIMEOUT_SECS,
+            self._emit_silence_note,
+            kwargs={
+                "task_id": task_id,
+                "cmd": list(cmd),
+                "silence_event": silence_event,
+                "event_log": event_log,
+                "elapsed_seconds": _SILENCE_TIMEOUT_SECS,
+            },
+        )
+        timer.daemon = True
+        with self._lock:
+            self._silence_state[task_id] = (silence_event, timer)
+        timer.start()
+
+    def _cancel_silence_timer(self, task_id: str) -> None:
+        """Cancel + clear the F1 silence timer for ``task_id`` (idempotent).
+
+        Safe to call from any thread (drain, wait, or the test harness).
+        Pops the per-task entry so subsequent calls are pure no-ops; the
+        underlying :class:`threading.Timer` is also cancelled to release
+        its scheduling thread immediately rather than waiting for the
+        natural timeout.
+        """
+        with self._lock:
+            state = self._silence_state.pop(task_id, None)
+        if state is None:
+            return
+        silence_event, timer = state
+        silence_event.set()
+        timer.cancel()
+
+    def _emit_silence_note(
+        self,
+        *,
+        task_id: str,
+        cmd: list[str],
+        silence_event: threading.Event,
+        event_log: EventLog,
+        elapsed_seconds: float,
+    ) -> None:
+        """Timer callback — emit ``process.note`` unless cancelled in flight.
+
+        Re-checks the cancel event under the per-supervisor lock to win
+        the race against a drain-thread first-line cancel that arrived
+        microseconds before the timer fired (Q-V099-14: at most one
+        ``process.note`` per task lifecycle).
+        """
+        if silence_event.is_set():
+            return
+        with self._lock:
+            state = self._silence_state.pop(task_id, None)
+        if state is None:
+            return
+        silence_event.set()
+
+        cli_name = _detect_cli_name_from_cmd(cmd)
+        output_format = (
+            _detect_cursor_output_format_from_cmd(cmd)
+            if cli_name == "cursor"
+            else None
+        )
+        hint = _silence_hint_for(cli_name, output_format)
+        event_log.append(
+            "process.note",
+            {
+                "task_id": task_id,
+                "kind": "stdout_silence",
+                "elapsed_seconds": elapsed_seconds,
+                "hint": hint,
+            },
+        )
+
     def join(self, task_id: str, timeout: float | None = None) -> bool:
         """Block until all worker threads of ``task_id`` finish.
 
@@ -762,3 +927,92 @@ def _get_session_id(pid: int) -> int | None:
         return os.getsid(pid)
     except (OSError, AttributeError):
         return None
+
+
+_CURSOR_TEXT_HINT: str = (
+    "cursor-agent 'text' output is buffered until exit; "
+    "pass --cli-flag output_format=stream-json for live progress"
+)
+"""v0.9.9 F1 / Q-V099-14 text-mode hint.
+
+Verbatim from ``feedback_for_v0.9.7.md:33-34`` so the operator-facing
+``process.note`` payload matches exactly the wording the user proposed.
+Module-level constant so tests can assert by reference rather than by
+copy-paste-prone string literal."""
+
+
+_CURSOR_STREAM_JSON_HINT: str = (
+    "cursor-agent is working; first stream-json frame not yet emitted "
+    "(this can take 60s+ for large prompts)"
+)
+"""v0.9.9 F1 / Q-V099-14 stream-json hint.
+
+Stream-json is supposed to flush eagerly, but large prompts can defer
+the first frame past the 30s silence threshold; the alternative wording
+makes it clear that the silence does NOT mean the buffered-text bug —
+it just means no frame yet."""
+
+
+def _detect_cli_name_from_cmd(cmd: list[str]) -> str | None:
+    """Map ``cmd[0]`` basename to the popola adapter ``cli`` name.
+
+    Used by the F1 silence-timer to pick the branched hint without
+    plumbing ``cli`` through :meth:`Supervisor.spawn` (the existing
+    callers in :mod:`popolaloom.daemon.server` do not currently pass
+    a ``cli`` keyword, and this owned-files patch keeps them out of
+    scope). The mapping is intentionally narrow: only ``cursor-agent``
+    is special-cased because only the cursor adapter has the buffered-
+    text quirk that motivated F1; every other adapter falls through
+    to the generic note via :func:`_silence_hint_for`.
+
+    Returns:
+        ``"cursor"`` when ``cmd[0]`` (or its basename) is
+        ``cursor-agent``; the basename string for any other CLI; or
+        ``None`` when the command list is empty (defensive — callers
+        always pass a non-empty argv but the type allows the case).
+    """
+    if not cmd:
+        return None
+    binary = os.path.basename(cmd[0])
+    if binary == "cursor-agent":
+        return "cursor"
+    return binary or None
+
+
+def _detect_cursor_output_format_from_cmd(cmd: list[str]) -> str | None:
+    """Extract ``--output-format <fmt>`` from a cursor-agent argv (or ``None``).
+
+    The cursor adapter always emits ``--output-format <fmt>`` (see
+    :class:`popolaloom.adapters.cursor.CursorAdapter.build_command`);
+    a missing / malformed flag is treated as "unknown" so the F1
+    branched-hint logic falls back to the text-mode wording, matching
+    the adapter's own default of ``output_format="text"``.
+    """
+    try:
+        idx = cmd.index("--output-format")
+    except ValueError:
+        return None
+    if idx + 1 >= len(cmd):
+        return None
+    return cmd[idx + 1]
+
+
+def _silence_hint_for(cli_name: str | None, output_format: str | None) -> str:
+    """Pick the F1 branched silence-hint per Q-V099-14.
+
+    - cursor + ``stream-json`` → "first frame not yet emitted" wording.
+    - cursor + anything else (or missing) → verbatim feedback wording.
+    - any other CLI (or unknown) → generic stdout-silence note.
+
+    Returns the operator-facing hint string used as the
+    ``process.note`` event's ``data.hint`` field.
+    """
+    if cli_name == "cursor":
+        if output_format == "stream-json":
+            return _CURSOR_STREAM_JSON_HINT
+        return _CURSOR_TEXT_HINT
+    label = cli_name if cli_name else "process"
+    return (
+        f"{label} stdout has been silent for 30s; "
+        "this can be normal for long-running tasks"
+    )

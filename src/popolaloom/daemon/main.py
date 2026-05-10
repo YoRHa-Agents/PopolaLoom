@@ -42,6 +42,7 @@ from typing import Any, Final
 
 import uvicorn
 
+from popolaloom import credentials
 from popolaloom.adapters.cursor_cloud import BackoffConfig
 from popolaloom.daemon.rpc import create_app
 
@@ -1496,6 +1497,17 @@ async def main(
     9. On exit (graceful or exception), remove PID + socket files.
     """
     _configure_logging(level=getattr(logging, log_level.upper(), logging.INFO))
+
+    # v0.9.9 U2 (Q-V099-12): auto-source ``~/.popola/cursor_api_key.env`` so a
+    # fresh ``popola dispatch`` shell after ``popola init --cursor-api-key VAL``
+    # picks up the operator's secret without requiring a manual ``source``.
+    # The helper is best-effort: an absent file or an existing
+    # ``CURSOR_API_KEY`` env var are no-ops (env-var precedence wins);
+    # malformed lines log a WARN and the daemon continues.
+    if credentials.load_env_fallback_into_environ(logger=logger):
+        logger.info(
+            "cursor_api_key.env auto-sourced into environ (v0.9.9 U2 fallback)"
+        )
 
     socket_path = socket_path or get_socket_path()
     events_dir = events_dir or get_events_dir()
