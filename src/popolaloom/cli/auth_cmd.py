@@ -35,10 +35,13 @@ from __future__ import annotations
 
 import json
 import logging
+import sys
 from typing import NoReturn
 
+import click
 import typer
 
+from popolaloom import credentials as _credentials_mod
 from popolaloom.credentials import (
     CURSOR_API_KEY_ENV,
     CredentialBackendError,
@@ -130,6 +133,101 @@ def _fail_no_keyring(*, action: str) -> NoReturn:
     raise typer.Exit(code=_EXIT_BACKEND_UNAVAILABLE)
 
 
+_ACCOUNT_CLASS_CHOICES: tuple[str, ...] = ("personal", "service-account", "unknown")
+"""User-facing labels accepted by ``--account-class``.
+
+Mirrors the case-insensitive whitelist enforced by
+:func:`popolaloom.credentials.store_account_class`. ``service-account`` is
+normalised to ``service_account`` (the on-disk + :class:`AccountClass`
+member form) inside :func:`_normalize_account_class`.
+"""
+
+
+def _normalize_account_class(raw: str) -> str:
+    """Validate + normalise a raw ``--account-class`` value (case-insensitive).
+
+    Returns the canonical on-disk form (``personal`` /
+    ``service_account`` / ``unknown``) suitable for forwarding to
+    :func:`popolaloom.credentials.store_account_class`. Raises
+    :class:`typer.BadParameter` (Click rejects with a non-zero exit and
+    the standard "Invalid value" usage line) when ``raw`` is empty or
+    outside the whitelist — surfaces the bad input loudly per the
+    workspace No Silent Failures rule.
+    """
+    if raw is None or not raw.strip():
+        raise typer.BadParameter(
+            f"--account-class must be one of {{{', '.join(_ACCOUNT_CLASS_CHOICES)}}}"
+        )
+    lowered = raw.strip().lower()
+    if lowered not in _ACCOUNT_CLASS_CHOICES:
+        raise typer.BadParameter(
+            f"invalid --account-class {raw!r}; "
+            f"expected one of {{{', '.join(_ACCOUNT_CLASS_CHOICES)}}} (case-insensitive)"
+        )
+    return "service_account" if lowered == "service-account" else lowered
+
+
+def _resolve_account_class_value(
+    *,
+    cli_value: str | None,
+    no_prompt: bool,
+) -> tuple[str, str]:
+    """Return ``(normalized_value, user_facing_value)`` for the account-class field.
+
+    Applies the v0.9.9 U1 contract:
+
+    * When ``cli_value`` is supplied (operator passed
+      ``--account-class=...``), normalise + return; never prompt.
+    * When ``--no-prompt`` is set OR stdin is not a TTY (CI / piped
+      input), default to ``"unknown"``; never prompt — keeps the
+      keyring-write success path unchanged for headless environments.
+    * Otherwise, prompt interactively; on
+      :class:`typer.Abort` / EOF / Ctrl-C, default to ``"unknown"`` so
+      the keyring-write still completes (the prompt is a routing-hint
+      capture, not a hard prerequisite).
+
+    Returns a 2-tuple of:
+      * normalized_value: the on-disk form (``personal`` /
+        ``service_account`` / ``unknown``); forwarded to
+        :func:`popolaloom.credentials.store_account_class`.
+      * user_facing_value: the value to echo in the
+        ``Recorded account_class=...`` confirmation line; same as the
+        normalized value (kept as a separate slot in case future
+        revisions diverge them).
+    """
+    if cli_value is not None:
+        normalized = _normalize_account_class(cli_value)
+        return normalized, normalized
+
+    stdin_is_tty = bool(getattr(sys.stdin, "isatty", lambda: False)())
+    if no_prompt or not stdin_is_tty:
+        return "unknown", "unknown"
+
+    typer.echo(
+        f"Account class? [{'/'.join(_ACCOUNT_CLASS_CHOICES)}] (default: unknown):"
+    )
+    try:
+        raw = typer.prompt("> ", default="unknown", show_default=False)
+    except (click.exceptions.Abort, typer.Abort, EOFError) as exc:
+        logger.debug(
+            "account-class prompt aborted (%s: %s); defaulting to 'unknown'",
+            type(exc).__name__,
+            exc,
+        )
+        return "unknown", "unknown"
+    if raw is None or not str(raw).strip():
+        return "unknown", "unknown"
+    try:
+        normalized = _normalize_account_class(str(raw))
+    except typer.BadParameter as exc:
+        typer.echo(
+            f"  warning: {exc.format_message()}; recording account_class=unknown",
+            err=True,
+        )
+        return "unknown", "unknown"
+    return normalized, normalized
+
+
 def _validate_api_key_with_cursor(api_key: str, *, timeout_s: float = 10.0) -> str | None:
     """Round-trip ``GET /v1/me`` to confirm Cursor accepts ``api_key``.
 
@@ -213,6 +311,29 @@ def cmd_set(  # noqa: PLR0913 — explicit flag matrix is part of the contract
         "--json",
         help="Emit a JSON status envelope on stdout instead of human text.",
     ),
+    account_class: str | None = typer.Option(
+        None,
+        "--account-class",
+        help=(
+            "Declare the API-key class for the v0.9.9 worker-dispatch "
+            "pre-flight gate (case-insensitive). One of "
+            "{personal, service-account, unknown}. When omitted on an "
+            "interactive terminal an inline prompt asks for the class; "
+            "non-interactive runs (--no-prompt, piped stdin, or CI) "
+            "default to 'unknown'. The value persists into "
+            "$POPOLA_HOME/credentials.toml under [cursor].account_class "
+            "and never travels alongside the secret itself."
+        ),
+    ),
+    no_prompt: bool = typer.Option(
+        False,
+        "--no-prompt",
+        help=(
+            "Skip every interactive prompt (including the v0.9.9 "
+            "account-class capture). When set without --account-class, "
+            "account_class defaults to 'unknown'."
+        ),
+    ),
 ) -> None:
     """Persist a Cursor API key into the OS keyring.
 
@@ -266,6 +387,11 @@ def cmd_set(  # noqa: PLR0913 — explicit flag matrix is part of the contract
             typer.echo(f"error: {validation_error}", err=True)
             raise typer.Exit(code=_EXIT_AUTH_VALIDATE_FAILED)
 
+    resolved_class, user_facing_class = _resolve_account_class_value(
+        cli_value=account_class,
+        no_prompt=no_prompt,
+    )
+
     try:
         status = store_cursor_api_key(raw)
     except CredentialBackendError as exc:
@@ -275,15 +401,23 @@ def cmd_set(  # noqa: PLR0913 — explicit flag matrix is part of the contract
         typer.echo(f"error: {exc}", err=True)
         raise typer.Exit(code=_EXIT_INVALID_ARGS) from exc
 
+    try:
+        _credentials_mod.store_account_class(resolved_class)
+    except ValueError as exc:
+        typer.echo(f"error: {exc}", err=True)
+        raise typer.Exit(code=_EXIT_INVALID_ARGS) from exc
+
     if json_out:
         payload = status.to_json_dict()
         payload["validated"] = validate
+        payload["account_class"] = user_facing_class
         typer.echo(json.dumps(payload, sort_keys=True))
     else:
         typer.echo(
             "Cursor API key stored in the OS keyring "
             f"(backend: {status.backend_name}, fingerprint: {status.fingerprint})."
         )
+        typer.echo(f"  Recorded account_class={user_facing_class}")
         if from_env:
             typer.echo(
                 "  Tip: you can now `unset CURSOR_API_KEY` for this shell — "

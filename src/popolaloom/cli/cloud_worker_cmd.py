@@ -82,6 +82,15 @@ _EXIT_POOL_REQUIRES_API_KEY: int = 77
 ``_EXIT_CLOUD_AUTH_ERROR`` in ``cloud_cmd.py`` so scripts can branch on
 the same code regardless of which sub-verb hit the auth gap."""
 
+_EXIT_ACCOUNT_CLASS_GATE: int = 78
+"""Pre-flight gate (v0.9.9 F5 + U1) refused: the configured Cursor API
+key class cannot drive the self-hosted-worker REST surface. Mirrors
+the ``forbidden_plan_required`` / GitHub-App integration error
+``cli_exit=78`` in ``adapters/cursor_cloud._ERROR_CATALOG`` so any
+script branching on ``78 == "operator must change something about
+their account / config to proceed"`` keeps a coherent meaning across
+cloud sub-verbs."""
+
 
 # ── default constants ────────────────────────────────────────────────────
 
@@ -915,6 +924,8 @@ def worker_dispatch_cmd(
         typer.echo("error: --model must be non-empty", err=True)
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
+    _enforce_account_class_pre_flight_gate()
+
     resolved_worker_dir = _resolve_worker_dir(worker_dir)
     running = _detect_running_workers_for_dir(resolved_worker_dir)
     worker = running[0] if running else None
@@ -996,6 +1007,98 @@ def _has_resolvable_api_key() -> bool:
     from popolaloom.credentials import resolve_cursor_api_key
 
     return resolve_cursor_api_key() is not None
+
+
+_PRE_FLIGHT_BILINGUAL_HINT: str = (
+    "error: popola cloud worker dispatch is unavailable for this Cursor API key class.\n"
+    "\n"
+    "Reason: Cursor REST has no documented schema (as of 2026-05-10) for routing\n"
+    "a POST /v1/agents run to a self-hosted worker under a personal API key with\n"
+    "Dashboard visibility. Service-account / Enterprise pool keys are the only\n"
+    "supported path; see SCHEMA_INVESTIGATION.md and\n"
+    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers.\n"
+    "\n"
+    "Workarounds:\n"
+    "1. popola cloud worker handoff --worker-id <uuid>\n"
+    "   Generates a copy-paste cursor.com/agents URL; the Dashboard run becomes\n"
+    "   visible after you paste the prompt in the browser.\n"
+    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
+    "   Local cursor-agent subprocess; faster, no browser, but does NOT show on\n"
+    "   cursor.com/agents (this is a documented v0.9.x limitation).\n"
+    "3. Mention \"@Cursor worker=<your-machine-name>\" in Slack / GitHub / Linear\n"
+    "   to trigger the My Machines worker via chat.\n"
+    "\n"
+    "To switch a key from personal to service-account: re-run\n"
+    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
+    "See https://cursor.com/docs/cloud-agent/self-hosted-pool for the\n"
+    "service-account provisioning flow.\n"
+    "\n"
+    "错误：当前 Cursor API key 类别不支持 popola cloud worker dispatch。\n"
+    "原因：截至 2026-05-10，Cursor REST 在 personal API key 下没有公开的\n"
+    "self-hosted-worker 路由 schema（仅 service-account / Enterprise pool keys\n"
+    "支持）。详见 SCHEMA_INVESTIGATION.md 与\n"
+    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers 。\n"
+    "\n"
+    "解决方案：\n"
+    "1. popola cloud worker handoff --worker-id <uuid>\n"
+    "   生成可复制的 cursor.com/agents 链接；浏览器粘贴 prompt 后即可在\n"
+    "   Dashboard 看到该任务。\n"
+    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
+    "   本机 cursor-agent 子进程；速度更快、无需浏览器，但不会出现在\n"
+    "   cursor.com/agents 看板上（v0.9.x 已知限制）。\n"
+    "3. 在 Slack / GitHub / Linear 中 @Cursor worker=<机器名> 通过 chat 触发\n"
+    "   My Machines worker。\n"
+    "\n"
+    "切换至 service-account 重新运行：\n"
+    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
+)
+"""Bilingual loud-fail hint emitted by the v0.9.9 F5 + U1 pre-flight gate.
+
+Wording locked by the L0 brief and the Spike-0 SCHEMA_INVESTIGATION.md
+verdict (BRANCH_B, 2026-05-10): personal / unknown-class API keys
+cannot drive ``POST /v1/agents`` self-hosted-worker routing under the
+documented public schema, so the gate refuses pre-flight and points
+operators at the three v0.9.x workarounds (handoff, local cursor-agent,
+chat trigger) plus the service-account upgrade path.
+
+The hint MUST contain ALL of: ``popola cloud worker handoff``,
+``popola dispatch --cli=cursor``, ``SCHEMA_INVESTIGATION.md``,
+``https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers``,
+and the Chinese fragment ``当前 Cursor API key 类别不支持`` — verified
+by ``tests/cli/test_cloud_worker_dispatch_account_class.py``.
+"""
+
+
+def _enforce_account_class_pre_flight_gate() -> None:
+    """Refuse ``popola cloud worker dispatch`` when the key class cannot route.
+
+    Reads :func:`popolaloom.credentials.get_account_class` (returns
+    :data:`AccountClass.UNKNOWN` for pre-v0.9.9 ``credentials.toml``
+    files OR when no metadata file exists yet — backward-compat path)
+    and enforces the Spike-0 BRANCH_B verdict from
+    ``.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md``:
+
+    * ``SERVICE_ACCOUNT`` → return; the v0.9.8 dispatch body shape
+      proceeds unchanged.
+    * ``PERSONAL`` / ``UNKNOWN`` → emit the bilingual loud-fail hint
+      to stderr, log a WARN entry per the workspace No-Silent-Failures
+      rule, and ``raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)``
+      (78). Operators upgrade by re-running
+      ``popola auth cursor set --account-class=service-account``.
+
+    Always loud-fails (no auto-fallback) per Q-V099-8.
+    """
+    from popolaloom.credentials import AccountClass, get_account_class
+
+    account_class = get_account_class()
+    if account_class == AccountClass.SERVICE_ACCOUNT:
+        return
+    logger.warning(
+        "worker_dispatch refused: account_class=%s",
+        account_class.value,
+    )
+    typer.echo(_PRE_FLIGHT_BILINGUAL_HINT, err=True)
+    raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)
 
 
 def _fail_pool_requires_api_key() -> NoReturn:

@@ -67,6 +67,7 @@ import hashlib
 import logging
 import os
 from dataclasses import dataclass
+from enum import StrEnum
 from pathlib import Path
 from typing import TYPE_CHECKING, Final
 
@@ -76,6 +77,7 @@ if TYPE_CHECKING:  # pragma: no cover — type-check-only imports
 logger = logging.getLogger(__name__)
 
 __all__ = [
+    "AccountClass",
     "CURSOR_API_KEY_ENV",
     "CredentialBackendError",
     "CredentialResolver",
@@ -85,6 +87,7 @@ __all__ = [
     "REDACTION_PLACEHOLDER",
     "compute_fingerprint",
     "fingerprint",
+    "get_account_class",
     "is_keyring_available",
     "load_credential_metadata",
     "load_env_fallback_into_environ",
@@ -93,6 +96,7 @@ __all__ = [
     "redact_in_text",
     "resolve_cursor_api_key",
     "save_credential_metadata",
+    "store_account_class",
     "store_cursor_api_key",
     "delete_cursor_api_key",
     "credential_status",
@@ -142,6 +146,71 @@ _FINGERPRINT_LEN: Final[int] = 12
 "is the key I just set the same as the one stored?" question without
 leaking a useful chunk of the key itself.
 """
+
+
+_ACCOUNT_CLASS_KEY: Final[str] = "account_class"
+"""Metadata key under the ``[cursor]`` table holding the operator's
+declared API-key class (Q-V099-1; v0.9.9 F5 + U1 pre-flight gate).
+
+Values are :class:`AccountClass` members serialised by their string
+value (``"personal"`` / ``"service_account"`` / ``"unknown"``). Stored
+in plaintext alongside ``backend`` / ``last_set_at`` because the field
+is a non-secret routing hint — it tells
+:func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd` whether the
+configured key is allowed to drive the self-hosted worker REST surface
+(only ``service_account`` is per the Spike-0 SCHEMA_INVESTIGATION.md
+verdict; ``personal`` and ``unknown`` are blocked at pre-flight)."""
+
+
+# ── account class enum ──────────────────────────────────────────────────
+
+
+class AccountClass(StrEnum):
+    """Declared class of the operator's stored Cursor API key (v0.9.9+).
+
+    Drives the F5 + U1 pre-flight gate in
+    :func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd`. The
+    Spike-0 schema investigation
+    (``.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md``)
+    confirmed that Cursor REST has no documented schema (as of
+    2026-05-10) for routing ``POST /v1/agents`` to a self-hosted worker
+    under a personal key with Dashboard visibility — only
+    service-account / Enterprise pool keys are accepted. The enum is
+    additive and defaults to :data:`UNKNOWN` for backward compat with
+    existing ``credentials.toml`` files that pre-date v0.9.9.
+
+    Inherits from :class:`enum.StrEnum` (Python 3.11+) so
+    ``AccountClass.PERSONAL`` interpolates as ``"personal"`` in log
+    output and direct equality checks (``AccountClass.PERSONAL ==
+    "personal"``) hold without an explicit ``.value`` lookup. Same
+    pattern as :class:`popolaloom.cli.init_cmd.InitTarget` (ruff UP042
+    canonicalisation).
+    """
+
+    PERSONAL = "personal"
+    """Personal API key (Cursor Dashboard → Integrations → API key).
+
+    Cannot reach the self-hosted-worker REST routing fields under the
+    public 2026-05-10 schema; ``popola cloud worker dispatch`` refuses
+    pre-flight and points the operator at the My-Machines chat-trigger
+    workaround OR ``popola cloud worker handoff``."""
+
+    SERVICE_ACCOUNT = "service_account"
+    """Enterprise team service-account API key.
+
+    Required for ``--pool`` workers AND for ``popola cloud worker
+    dispatch`` per the Self-Hosted-Pool docs. The pre-flight gate lets
+    this class through unchanged."""
+
+    UNKNOWN = "unknown"
+    """Operator did not declare a class at ``popola auth cursor set`` time.
+
+    Backward-compat default for credentials.toml files that pre-date
+    v0.9.9 (the field is additive). Treated as ``personal`` by the
+    pre-flight gate (refused with the bilingual hint) — the operator
+    must re-run
+    ``popola auth cursor set --api-key VAL --account-class=...`` to
+    declare their key class."""
 
 
 # ── exceptions ───────────────────────────────────────────────────────────
@@ -853,6 +922,98 @@ def delete_cursor_api_key() -> tuple[bool, CredentialStatus]:
         except OSError as exc:  # pragma: no cover — defensive only
             logger.warning("failed to clear credentials metadata at %s: %s", metadata_file, exc)
     return removed, credential_status()
+
+
+# ── account class persistence (v0.9.9 F5 + U1) ──────────────────────────
+
+
+_ACCOUNT_CLASS_VALID_INPUT: Final[frozenset[str]] = frozenset(
+    {"personal", "service-account", "service_account", "unknown"}
+)
+"""Case-insensitive whitelist of accepted ``--account-class`` values.
+
+Includes both the dashed (``service-account``) and underscored
+(``service_account``) forms so the CLI choice flag and the on-disk
+TOML key (which uses the underscored form, matching Python's
+:class:`AccountClass` member name convention) round-trip cleanly.
+"""
+
+
+def store_account_class(value: str) -> None:
+    """Persist the operator's declared account class into ``credentials.toml``.
+
+    Validates ``value`` against the case-insensitive whitelist
+    ``{"personal", "service-account", "service_account", "unknown"}``
+    and normalises ``"service-account"`` → ``"service_account"`` so the
+    on-disk form matches :class:`AccountClass` member values verbatim.
+
+    Reuses :func:`load_credential_metadata` + :func:`save_credential_metadata`
+    so the existing ``[cursor]`` TOML table layout, the 0o600 file
+    mode, and the atomic-replace write are preserved. The operation is
+    additive — it never clears ``backend`` / ``last_set_at`` /
+    ``fingerprint`` (those belong to :func:`store_cursor_api_key`).
+
+    Args:
+        value: one of ``"personal"`` / ``"service-account"`` /
+            ``"service_account"`` / ``"unknown"``; case-insensitive.
+
+    Raises:
+        ValueError: when ``value`` is empty or outside the whitelist
+            (No Silent Failures — invalid CLI input must surface a
+            clean ``typer.BadParameter`` upstream rather than silently
+            recording an unrecognised class).
+    """
+    if value is None:
+        raise ValueError("account_class must be a non-empty string")
+    stripped = value.strip()
+    if not stripped:
+        raise ValueError("account_class must be a non-empty string")
+    lowered = stripped.lower()
+    if lowered not in _ACCOUNT_CLASS_VALID_INPUT:
+        raise ValueError(
+            f"invalid account_class {value!r}; expected one of "
+            "{personal, service-account, service_account, unknown} "
+            "(case-insensitive)"
+        )
+    normalized = "service_account" if lowered == "service-account" else lowered
+    metadata = load_credential_metadata()
+    metadata[_ACCOUNT_CLASS_KEY] = normalized
+    save_credential_metadata(metadata)
+
+
+def get_account_class() -> AccountClass:
+    """Read the declared account class from ``credentials.toml``.
+
+    Returns :data:`AccountClass.UNKNOWN` when the metadata file is
+    absent (fresh install), the ``[cursor]`` table is empty, the
+    ``account_class`` key is missing (pre-v0.9.9 file — backward-compat
+    path), or the stored value is unrecognised (defensive: a
+    hand-edited TOML with ``account_class = "garbage"`` does not crash
+    the dispatch gate; it simply blocks via the UNKNOWN refusal path).
+
+    Used by :func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd`
+    for the F5 pre-flight gate. Pure read; never writes.
+    """
+    metadata = load_credential_metadata()
+    raw = metadata.get(_ACCOUNT_CLASS_KEY)
+    if not raw:
+        return AccountClass.UNKNOWN
+    candidate = str(raw).strip().lower()
+    if not candidate:
+        return AccountClass.UNKNOWN
+    if candidate == "service-account":
+        candidate = "service_account"
+    try:
+        return AccountClass(candidate)
+    except ValueError:
+        logger.warning(
+            "credentials.toml has unrecognised account_class %r at %s; "
+            "treating as UNKNOWN (re-run `popola auth cursor set "
+            "--account-class=...` to fix)",
+            raw,
+            metadata_path(),
+        )
+        return AccountClass.UNKNOWN
 
 
 def _utc_now_iso() -> str:
