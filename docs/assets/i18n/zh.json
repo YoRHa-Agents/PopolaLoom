@@ -42,7 +42,19 @@
   "docs.release_notes": "Release Notes（v0.8.0+ 单文件持续更新）",
   "docs.changelog": "CHANGELOG —— v0.0.1 → v0.8.x 完整历史",
   "status.heading": "项目状态",
-  "status.lead": "v0.8.4 —— 统一安装脚本：install.sh 一行起动 pip install + popola skill install + popolad + doctor；新增 popola skill uninstall 子命令，把 install / update / uninstall 在 cursor / claude / codex / copilot × global / project 维度闭环。Hands-off envelope 保持稳定；MIT 许可。",
+  "status.lead": "v0.9.7 延续 v0.9.0 GA 稳定边界，并把公开文档刷新到 cloud worker、安全 key 存储和 Cloud HITL γ 的当前形态。Cursor Cloud dispatch、self-hosted worker handoff、multi-run attach、跨 PR relay 和文件化 handoff 现在共用一套清晰表述。推荐安装路径是 ./install.sh install，需要 OS keyring 时使用 ./install.sh install --with-credentials。",
   "footer.tagline": "织 agent 之机。",
-  "notice.en_only": "本页面暂仅有英文版 —— 仅 header / footer / 着陆页支持中文。"
+  "notice.en_only": "本页面暂仅有英文版 —— 仅 header / footer / 着陆页支持中文。",
+  "nav.design": "设计",
+  "feature.cloud.title": "Cloud + self-hosted worker（v0.8.5–v0.9.3）",
+  "feature.cloud.body": "可以派发到 Cursor Cloud、订阅 cloud run，也可以用 popola cloud worker 把本机注册成 worker；status / attach 语义仍由 popola 统一。",
+  "feature.credentials.title": "安全凭据存储（v0.9.2+）",
+  "feature.credentials.body": "popola auth cursor set --validate 把 Cursor API key 写入系统 keyring；v0.9.7 增加 ./install.sh install --with-credentials 来安装可选后端。",
+  "design_ideas.heading": "核心设计思想",
+  "design_ideas.loom": "织机，而不是路由器：多条 agent 线索通过 dispatch、信封文件和 replay-by-id 编成一张可审计的布。",
+  "design_ideas.sidecar": "边车 daemon：popolad 承担进程生命周期、SQLite 状态、事件日志、cloud polling 和 HITL，终端消失也不影响任务。",
+  "design_ideas.boundary": "自动化可依赖的边界：v0.9.0+ 锁定 CLI 动词、daemon RPC、--json schema 和配置段名，实验面显式标注。",
+  "design_ideas.link": "阅读完整设计哲学 →",
+  "docs.demo_page": "Demo Page —— 场景卡片和终端录屏式命令流",
+  "docs.design_ideas": "设计思想 —— 织机背后的七个架构选择"
 }

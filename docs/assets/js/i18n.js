@@ -1,11 +1,12 @@
-/* PopolaLoom v0.8.4 — client-side i18n switcher (vanilla, no deps).
+/* PopolaLoom v0.9.7 — client-side i18n switcher (vanilla, no deps).
  *
  * Strategy: localStorage-persisted lang state + per-page fetch of JSON dict
  * + DOM textContent rewrite over [data-i18n="key"] attributes. No router
  * push, no URL mutation, no page reload — pure DOM update.
  *
  * Fallback chain: current-lang dict → EN dict → key literal (so missing
- * keys are visible in dev, never silently empty).
+ * keys are visible in dev, never silently empty). Chrome dictionaries live in
+ * assets/i18n/{en,zh}.json and include nav.design for the design page.
  */
 (function () {
   'use strict';

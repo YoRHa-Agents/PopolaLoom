@@ -16,7 +16,7 @@ listed workaround does not unblock you.
 
 ## v0.9.0 — `popola init --target=cloud-only` scaffold expectations (Q-D-4 偏离默认)
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-10 -->
 
 **Limitation.** `popola init --target=cloud-only` (Q-D-4 偏离默认; first
 shipped in v0.9.0 GA) writes a deliberately minimal 3-file project
@@ -64,13 +64,13 @@ feedback warrants a hybrid `--target=cloud-only --skill=cursor` shape.
 
 ## v0.9.0 — install canonical-path during PyPI deferral (Q-D-5 偏离默认)
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-10 -->
 
 **Limitation.** v0.9.0 GA is GitHub-Release-only; PyPI publish is
 deferred to a v0.9.x patch (`BL-v0.9.x-PyPI` in
 `.local/feedbacks/TRACKER.md`). The `./install.sh install` script
-currently defaults to `--from=pypi` (per its v0.8.4 stable surface),
-so `./install.sh install` AND `pip install popolaloom` (no `git+`)
+currently defaults to `--from=pypi` (per its prior stable surface),
+so `./install.sh install` and the bare package-name installer path
 both resolve to the **previous v0.8.x stable line** until the v0.9.x
 PyPI patch lands.
 
@@ -78,7 +78,7 @@ PyPI patch lands.
 
 - `./install.sh install` (default flags) succeeds but `popola version`
   prints `popolaloom 0.8.x` instead of `popolaloom 0.9.0`.
-- `pip install popolaloom` (no `git+`) resolves to the latest PyPI
+- The bare package-name installer path resolves to the latest PyPI
   release, which is currently v0.8.x.
 - `./install.sh install --from=git --version=v0.9.0` is rejected with
   the validation error `--version=X.Y.Z requires --from=pypi`.
@@ -98,7 +98,7 @@ pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0
 
 The PyPI promotion patch (`BL-v0.9.x-PyPI`) will land a follow-on
 RELEASE_NOTES top-of-file callout + CHANGELOG `### Added` entry; once
-published, both `pip install popolaloom` and `./install.sh install`
+published, both the bare package-name installer path and `./install.sh install`
 (default) will resolve to v0.9.x normally.
 
 **Design references.**

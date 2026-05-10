@@ -1,16 +1,61 @@
 ---
 layout: default
 title: Demo
-description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.8.4.
+description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.9.7.
 lang: en
 translation_url: /zh/DEMO.html
 ---
 
 # PopolaLoom — Product Demo
 
+<!-- updated: 2026-05-10 -->
+
 > One local sidecar daemon turns Cursor, Claude, Codex, Kimi, and Copilot
 > into a persistent task bus with auditable handoff files and human-in-the-loop
 > fanout.
+
+## Pick your scenario
+
+<div class="scenario-grid">
+  <a class="scenario-card" href="#local-single-cli">
+    <span class="scenario-card__badge">v0.1.0+</span>
+    <h3>Local single-CLI</h3>
+    <p>Install, init, dispatch to Cursor, and attach to the durable event stream.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+  <a class="scenario-card" href="#cross-cli-handoff">
+    <span class="scenario-card__badge">v0.7.0+</span>
+    <h3>Cross-CLI handoff</h3>
+    <p>Use the Markdown handoff envelope as the audit trail between agents.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+  <a class="scenario-card" href="#hitl-pause">
+    <span class="scenario-card__badge">v0.4.1+</span>
+    <h3>HITL pause</h3>
+    <p>Watch Lark, IDE, CLI, MCP, and Web race toward one atomic answer.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+  <a class="scenario-card" href="#cloud-agent">
+    <span class="scenario-card__badge">v0.8.5+</span>
+    <h3>Cloud Agent</h3>
+    <p>See where the Cursor Cloud path plugs into the same daemon bus.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+  <a class="scenario-card" href="#self-hosted-worker">
+    <span class="scenario-card__badge">v0.9.1+</span>
+    <h3>Self-hosted worker</h3>
+    <p>Start from the worker handoff mental model before opening the visual page.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+  <a class="scenario-card" href="#cross-pr-relay">
+    <span class="scenario-card__badge">v0.8.8+</span>
+    <h3>Cross-PR relay</h3>
+    <p>Connect relay history back to file-backed handoff and cloud runs.</p>
+    <span class="scenario-card__link">Jump to path</span>
+  </a>
+</div>
+
+For terminal-recording-style flows across all six scenarios, open the visual [`Demo Page`](demo-page.html).
 
 ## What this demo proves
 
@@ -22,10 +67,12 @@ agent CLIs already installed on your machine:
 3. **File-backed handoff** — every dispatch writes a Markdown envelope under `.local/.agent/handoff/`.
 4. **HITL fanout** — Lark, IDE, CLI, MCP, and Web channels race to provide one atomic answer.
 
+<a id="local-single-cli"></a>
+
 ## Five-minute path
 
 ```bash
-pip install popolaloom
+./install.sh install
 popola init
 popola popolad start
 popola dispatch "echo hello from popola" --cli=cursor
@@ -39,6 +86,9 @@ Expected shape:
 cursor-23e74ec18917
 Summary: 4/4 subsystems checked. 0 FAIL.
 ```
+
+<a id="cloud-agent"></a>
+<a id="self-hosted-worker"></a>
 
 ## Design and implementation flow
 
@@ -56,6 +106,8 @@ popola CLI / MCP tool
 The important implementation choice is that complex task context is a file
 contract, not an argv string. The daemon owns the file, task state, and event
 log; each agent CLI stays isolated and native.
+
+<a id="cross-cli-handoff"></a>
 
 ## Hands-off envelope walkthrough
 
@@ -133,6 +185,8 @@ $ popola handoff archive cursor-fix-the-bug-in-foo-py-3a7f9c1d cursor-1f0a2b8d4e
 - **Cross-CLI handoff** — the existing `relay()` primitive (cursor → claude → codex chain) gets a stable on-disk audit trail per hop via the v0.7.3 `to_handoff_envelope()` bridge.
 - **HITL feedback companion** — `popolaloom.handoff.FeedbackEnvelope` (Q7=yes, v0.7.3+) mirrors the dispatch envelope schema for HITL answers; foundation slice ships, live `popola feedback ... --persist` wiring scheduled for v0.8.x.
 
+<a id="hitl-pause"></a>
+
 ## HITL walkthrough
 
 When a LangGraph node needs human input, it calls `interrupt()` and the daemon
@@ -150,6 +204,8 @@ task.elicited
 The first response wins through `hitl/sync.py:mark_answered`; the state
 writeback emits `state.resumed`, and late responders see the already-answered
 result instead of racing the task twice.
+
+<a id="cross-pr-relay"></a>
 
 ## Historical appendix
 
@@ -268,7 +324,7 @@ v0.5.0:
 
 ```bash
 # 1. install (vendored ArkTower — no sibling clone required)
-$ pip install popolaloom
+$ pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.5.0
 Successfully installed popolaloom-0.5.0
 
 # 2. inspect detected IDEs (read-only — no writes)
