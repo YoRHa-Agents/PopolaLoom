@@ -14,6 +14,55 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 <!-- updated: 2026-05-10 -->
 
+## [0.9.8] — 2026-05-10
+
+**Theme**: Documentation surface refresh + interactive `/demo-page` + canonical "Core Design Ideas" chapter (`/design-ideas`). Strictly additive: no source-code edits under `src/popolaloom/**` (sole exceptions: the version bumps in `src/popolaloom/__init__.py`, `src/popolaloom/skills/{popola-loom,install-popola}/{SKILL.md,.popola-loom-version}` per the canonical-version lockstep enforced by `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`). Closes the documentation half of [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) §1c (the `runtime=local` / Cursor-Dashboard visibility gap got cross-referenced from the new `/design-ideas` Sidecar Daemon section + the README + USER_GUIDE local-dispatch sub-section).
+
+### Added
+
+- **`docs/demo-page.md` + `docs/zh/demo-page.md`** (NEW; `/demo-page.html` route) — interactive scenario-picker with 6 cards (Local single-CLI / Cross-CLI handoff / HITL pause / Cloud Agent dispatch / Self-hosted worker handoff / Cross-PR relay), each linking to a body `<section>` containing a `.terminal-block`-styled `<pre>` with the verbatim v0.9.8 popola CLI commands a user would type to reproduce the scenario. Idiomatic Chinese mirror, identical CLI commands.
+- **`docs/design-ideas.md` + `docs/zh/design-ideas.md`** (NEW; `/design-ideas.html` route) — exactly **7 H2 sections** (per the dispatch acceptance criterion) walking the loom (织机) metaphor, the daemon-as-sidecar (旁路 daemon) choice, file-backed handoff (信封持久化), 5-channel HITL fanout (五通道), the vendoring philosophy (`popolaloom._vendored.arktower`), the Skill = auto-discovery contract, and the v0.9.0+ GA stability boundary. Each section closes with a `> See: <code reference> + <docs reference>` blockquote so a reviewer can drill in. Idiomatic Chinese mirror.
+- **`docs/assets/css/nier-popola.css`** — `.scenario-grid` + `.scenario-card` + `.terminal-block` + `@keyframes caret-blink` rulesets (sections `/* 10. Scenario grid */` + `/* 11. Terminal block */`), all routed through the existing `--accent-primary` / `--code-bg` / `--bg-secondary` CSS custom properties so the dark-mode toggle keeps working without per-rule hardcoding.
+- **`docs/_includes/header.html`** — 4th primary-nav entry **"Design"** (between User Guide and Demo) → `/design-ideas.html`, with `data-i18n="nav.design"` and the existing `page.lang == 'zh'` conditional routing preserved.
+- **`docs/assets/i18n/{en,zh}.json` + `docs/assets/js/i18n.js`** — new `nav.design` key in both dictionaries, plus updates to existing keys for the 7-card feature grid + new `feature.cloud.*` + `feature.credentials.*` slots on `docs/index.md`.
+
+### Changed
+
+- **`README.md`** — 5-minute Quickstart code block now shows `popola auth cursor set --validate` (v0.9.2+) and `popola cloud worker start --worker-dir "$(pwd)"` (v0.9.1+) as next-step bullets; Architecture (TL;DR) box calls out `cloud_worker_cmd.py` + `credentials.py`; new **"Core design ideas at a glance"** subsection (3-paragraph elevator summary linking to `/design-ideas`).
+- **`docs/index.md`** — `status.lead` rewritten from a v0.8.4 summary to a v0.9.8 summary highlighting GA stability + cloud worker + Cloud HITL γ + secure credential storage; `feature-grid` lifted from 6 → 7 cards (replaced the `Hands-off envelope` card with `Cloud + Self-hosted worker (v0.8.5–v0.9.3)` and added a new `Secure credential storage (v0.9.2+)` card with stable `data-i18n` keys).
+- **`docs/QUICKSTART.md` + `docs/zh/QUICKSTART.md`** — version anchors `v0.9.6` → `v0.9.8`; **Step 1** install code block reorganised (canonical `./install.sh install` line + two indented bullets for `--ref=v0.9.8` and `--with-credentials`); brand-new **Step 1.5 — (optional) configure your Cursor API key** sub-section showing `popola auth cursor set --validate` as the recommended path and the `export CURSOR_API_KEY=...` shell-export as the headless-container fallback.
+- **`docs/USER_GUIDE.md` + `docs/zh/USER_GUIDE.md`** — H1 banner `v0.9.6` → `v0.9.8`; new TOC + body section **"`popola init` Interactive Intake (v0.9.5+)"** between Credentials & secure storage and Self-hosted worker handoff explaining the v0.9.5 init-time API key prompt, the `--no-cursor-key` opt-out, where the key gets stored, and the headless-container fallback. Existing Cloud HITL / Multi-run cloud agents / Cross-PR relay sections untouched (stable v0.9.0 GA).
+- **`docs/DEMO.md` + `docs/zh/DEMO.md`** — front-matter `description:` v0.8.4 → v0.9.8; new top-of-page **"Pick your scenario"** picker (6 cards, each anchored to the existing in-page sections); existing "Five-minute path" + "Hands-off envelope walkthrough" + "HITL walkthrough" + "Historical appendix" sections preserved verbatim, only re-ordered.
+- **`docs/_includes/footer.html`** — fallback default `v0.8.4` → `v0.9.8` (real Pages renders read `site.popola_version` from `_config.yml` which is also `0.9.8` now; this is just for safety on local previews where Liquid variables don't expand).
+- **`docs/API_STABILITY.md` + `docs/MIGRATION_v07_to_v09.md` + `docs/known-issues.md` + `docs/assets/js/{extras,theme}.js`** — additive consistency patches (version anchors, cross-references) so internal links keep resolving after the docs refresh.
+
+### Deferred to next patch
+
+The other five `feedback_for_v0.9.7.md` items (1a stdout-buffering observability gap, 1b `popola status` ↔ supervisor state-machine drift, 2 Cursor REST GitHub-App misclassification, 3 `popola cloud worker dispatch` schema reject under personal API key, 5 orphan Node.js worker on `popola cloud worker start` stop) are **not** addressed in v0.9.8 — they require source-code surgery in the supervisor / adapter / `_ERROR_CATALOG`, which is out of scope for a docs-only patch. Tracked for v0.9.9 / v0.10.0.
+
+### Version bumps
+
+- `src/popolaloom/__init__.py` — `__version__` `0.9.7` → `0.9.8`
+- `pyproject.toml` — `version = "0.9.7"` → `"0.9.8"`
+- `docs/_config.yml` — `popola_version: "0.9.7"` → `"0.9.8"`
+- `src/popolaloom/skills/popola-loom/SKILL.md` — frontmatter `version: 0.9.7` → `0.9.8`
+- `src/popolaloom/skills/popola-loom/.popola-loom-version` — `0.9.7` → `0.9.8`
+- `src/popolaloom/skills/install-popola/SKILL.md` — frontmatter `version: 0.9.7` → `0.9.8`
+- `src/popolaloom/skills/install-popola/.popola-loom-version` — `0.9.7` → `0.9.8`
+
+### Tests
+
+- `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` keeps the SKILL.md frontmatter aligned to the package version (passes after the lockstep bump).
+- `tests/docs/test_docs_contract.py` + `tests/docs/test_release_notes_callout.py` validate front-matter schemas + RELEASE_NOTES callout shape on the new `/demo-page` and `/design-ideas` pages.
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark and not real_cursor_cloud" -q --no-cov` continues to pass (no `src/popolaloom/**` logic changed beyond the version constant).
+
+### Files
+
+- **MOD source / skills**: `src/popolaloom/__init__.py`, `pyproject.toml`, `src/popolaloom/skills/popola-loom/{SKILL.md,.popola-loom-version}`, `src/popolaloom/skills/install-popola/{SKILL.md,.popola-loom-version}`.
+- **MOD docs**: `README.md`, `docs/_config.yml`, `docs/_includes/{header,footer}.html`, `docs/assets/css/nier-popola.css`, `docs/assets/i18n/{en,zh}.json`, `docs/assets/js/{i18n,extras,theme}.js`, `docs/index.md`, `docs/QUICKSTART.md`, `docs/USER_GUIDE.md`, `docs/DEMO.md`, `docs/API_STABILITY.md`, `docs/MIGRATION_v07_to_v09.md`, `docs/known-issues.md`, `docs/zh/{QUICKSTART,USER_GUIDE,DEMO}.md`.
+- **NEW docs**: `docs/demo-page.md`, `docs/design-ideas.md`, `docs/zh/demo-page.md`, `docs/zh/design-ideas.md`.
+- **MOD release artifacts**: `CHANGELOG.md` (this section), `RELEASE_NOTES.md` (overwritten per v0.7.0+ policy).
+
 ## [0.9.7] — 2026-05-10
 
 **Theme**: Drop the `pip install popolaloom[credentials]` hint from every WARN / error path; offer the same via the official installer instead. Closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) line 1 ("popola 不使用 pip 修正安装方式" + "init 阶段给出，本地需要能存储并加密"): the previous remediation lines pointed operators at a bare `pip install` command, which conflicted with the workspace rule about not surfacing pip directly. v0.9.7 introduces `./install.sh install --with-credentials` (rolls the optional `keyring>=25` extra into the same install) and rewrites three production WARN / error paths to point at it instead. Headless containers without a SecretService backend get an explicit fallback hint to set `CURSOR_API_KEY` in a 0o600 `.env` file (`credentials.py` precedence #2).
