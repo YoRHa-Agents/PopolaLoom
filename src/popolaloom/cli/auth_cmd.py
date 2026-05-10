@@ -99,17 +99,27 @@ app.add_typer(cursor_app, name="cursor")
 
 
 def _fail_no_keyring(*, action: str) -> NoReturn:
-    """Exit ``3`` with a remediation hint when the keyring extra is missing."""
+    """Exit ``3`` with a remediation hint when the keyring extra is missing.
+
+    v0.9.7 (closes ``feedback_for_v0.9.4.md`` line 1): the remediation
+    points at ``./install.sh install --with-credentials`` rather than a
+    raw ``pip install popolaloom[credentials]`` (per the workspace rule
+    "popola 不使用 pip 修正安装方式" — fix the install method, do not
+    surface bare pip commands to operators).
+    """
     typer.echo(
         f"error: cannot {action} because the OS keyring backend is unavailable.",
         err=True,
     )
     typer.echo(
-        "  - install the optional extra: `pip install popolaloom[credentials]`",
+        "  - re-run the installer with the credentials extra: "
+        "`./install.sh install --with-credentials` "
+        "(or `./install.sh update --with-credentials` on existing installs)",
         err=True,
     )
     typer.echo(
-        "  - or use the env var path: `export CURSOR_API_KEY=<key>`",
+        "  - or use the env var path: `export CURSOR_API_KEY=<key>` "
+        "(also picked up from a 0o600 `.env`)",
         err=True,
     )
     typer.echo(

@@ -494,8 +494,11 @@ def test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero(
     """When the keyring extra is unavailable, intake prints a hint w/o non-zero exit.
 
     The install path itself succeeded; credential persistence is
-    best-effort when the backend is missing. The hint points at
-    ``pip install popolaloom[credentials]`` and the env-var fallback.
+    best-effort when the backend is missing. v0.9.7 (closes
+    ``feedback_for_v0.9.4.md`` line 1): the hint must point at
+    ``./install.sh install --with-credentials`` and the ``CURSOR_API_KEY``
+    env-var fallback — NOT at a raw ``pip install`` (per the workspace
+    "popola 不使用 pip 修正安装方式" rule).
     """
     cwd, _ = isolated_home
     (cwd / ".cursor").mkdir()
@@ -504,8 +507,13 @@ def test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero(
     out = _combined_output(result)
     assert result.exit_code == 0, out
     assert "OS keyring backend unavailable" in out
-    assert "popolaloom[credentials]" in out
+    assert "./install.sh install --with-credentials" in out
     assert "CURSOR_API_KEY" in out
+    # v0.9.7: pip MUST NOT appear in the hint (per the workspace rule
+    # "popola 不使用 pip 修正安装方式" — fix the install method, do
+    # not point operators at a bare pip command).
+    assert "pip install" not in out
+    assert "popolaloom[credentials]" not in out
     # Auto-detect still installed cursor (the install path succeeded).
     assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
     # Raw key never echoed.
@@ -699,7 +707,11 @@ class TestPersistCursorApiKeyNoninteractive:
         out = capsys.readouterr()
         combined = out.out + out.err
         assert "OS keyring backend unavailable" in combined
-        assert "popolaloom[credentials]" in combined
+        # v0.9.7 (closes feedback_for_v0.9.4 line 1): point at the official
+        # installer, NOT at a raw pip command.
+        assert "./install.sh install --with-credentials" in combined
+        assert "pip install" not in combined
+        assert "popolaloom[credentials]" not in combined
         # The literal value must never appear in any output.
         assert "cr_x" not in combined
 

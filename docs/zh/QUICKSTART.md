@@ -131,5 +131,5 @@ bash examples/quickstart.sh
 - 最新发布说明：[`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)
 - 历史变更：[`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md)
 - 纯 Cloud Agent 启动：配置 Cursor API key（env var 或 keyring，见下条）后运行 `./cloud-quickstart.sh`。
-- 安全凭据存储（v0.9.2+）：`pip install 'popolaloom[credentials]'` 后用 `popola auth cursor set` 把 API key 存到操作系统 keyring，从此不需要每次 shell 都 `export`。`popola auth cursor status` 在不泄露原值的情况下查看解析状态。详见 [`USER_GUIDE.md#credentials--secure-storage-v092`](../USER_GUIDE.md#credentials--secure-storage-v092)。
+- 安全凭据存储（v0.9.2+）：推荐使用 `./install.sh install --with-credentials`（v0.9.7+）一键带上 `keyring>=25` extra；再用 `popola auth cursor set` 把 API key 存到操作系统 keyring，从此不需要每次 shell 都 `export`。已装好的环境用 `pip install 'popolaloom[credentials]'` 手动补装。`popola auth cursor status` 在不泄露原值的情况下查看解析状态。详见 [`USER_GUIDE.md#credentials--secure-storage-v092`](../USER_GUIDE.md#credentials--secure-storage-v092)。
 - self-hosted worker handoff：当你要把本机注册到 Cursor Cloud Agents UI 时，参考 [`USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091`](../USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091)；如果需要 popola 追踪的 task id，请继续使用 `--cli=cursor-cloud`。

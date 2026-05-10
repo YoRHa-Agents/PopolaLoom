@@ -903,16 +903,25 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
             err=True,
         )
         typer.echo(
-            "        Install the optional extra to enable secure storage:",
+            "        Re-run the installer with the credentials extra to "
+            "enable secure storage:",
             err=True,
         )
         typer.echo(
-            "          `pip install popolaloom[credentials]`",
+            "          `./install.sh install --with-credentials`",
             err=True,
         )
         typer.echo(
-            "        Until then, set CURSOR_API_KEY in your shell or "
-            ".env file (the env var is the documented fallback).",
+            "        (or `./install.sh update --with-credentials` on "
+            "existing installs).",
+            err=True,
+        )
+        typer.echo(
+            "        On a headless Linux container without a SecretService "
+            "backend the install path succeeds but the keyring lookup "
+            "still misses — set `CURSOR_API_KEY` in your shell or a 0o600 "
+            "`.env` file (the env-var fallback is documented in "
+            "credentials.py precedence #2).",
             err=True,
         )
         return
@@ -1005,13 +1014,20 @@ def _offer_cursor_credential_setup() -> None:
     typer.echo("\nSecure Cursor API key storage (v0.9.2+):")
     if not is_keyring_available():
         typer.echo(
-            "  WARN: OS keyring backend unavailable; install the optional "
-            "extra to enable secure storage:"
+            "  WARN: OS keyring backend unavailable; re-run the installer "
+            "with the credentials extra to enable secure storage:"
         )
-        typer.echo("        `pip install popolaloom[credentials]`")
+        typer.echo("        `./install.sh install --with-credentials`")
         typer.echo(
-            "        Until then, set CURSOR_API_KEY in your shell or "
-            ".env file (the env var is the documented fallback)."
+            "        (or `./install.sh update --with-credentials` on "
+            "existing installs)."
+        )
+        typer.echo(
+            "        On a headless Linux container without a SecretService "
+            "backend the install path succeeds but the keyring lookup "
+            "still misses — set `CURSOR_API_KEY` in your shell or a 0o600 "
+            "`.env` file (the env-var fallback is documented in "
+            "credentials.py precedence #2)."
         )
         return
 

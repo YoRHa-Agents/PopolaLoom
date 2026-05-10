@@ -172,7 +172,11 @@ def test_cloud_only_configure_cursor_auth_without_keyring_extra(
     assert (cwd / "popolad.toml").is_file()
     output = _combined_output(result)
     assert "keyring backend unavailable" in output.lower()
-    assert "popolaloom[credentials]" in output
+    # v0.9.7 (closes feedback_for_v0.9.4 line 1): the helper points operators
+    # at the canonical installer flag, NOT at a raw `pip install`.
+    assert "./install.sh install --with-credentials" in output
+    assert "pip install" not in output
+    assert "popolaloom[credentials]" not in output
 
 
 # ── --dry-run short-circuits the prompt ────────────────────────────────

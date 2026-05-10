@@ -414,7 +414,7 @@ Unknown KEYs are silently ignored by the adapter (forward-compat for newer adapt
 1. **Daemon** — identical to other adapters: `popola popolad start` (Unix socket RPC).
 2. **API key** — configure a Cursor Cloud Agents API key via either of the two stable precedence slots (v0.9.2+, see [API_STABILITY §2.5](API_STABILITY.md#25-cursor-api-key-credential-resolver-v092)):
    - **Env var (highest precedence)** — `export CURSOR_API_KEY="cr_..."`. This is the documented path for CI / ephemeral shells and remains backward-compatible with every v0.8.x guide.
-   - **OS keyring** — `popola auth cursor set` stores the secret in macOS Keychain / Windows Credential Manager / libsecret (Linux) so subsequent shell sessions resolve it automatically without re-export. Requires `pip install popolaloom[credentials]`.
+   - **OS keyring** — `popola auth cursor set` stores the secret in macOS Keychain / Windows Credential Manager / libsecret (Linux) so subsequent shell sessions resolve it automatically without re-export. Requires the optional `keyring>=25` dependency, easiest path: `./install.sh install --with-credentials` (v0.9.7+) — bundles the extra into the same install. Manual fallback: `pip install 'popolaloom[credentials]'`.
 
    PopolaLoom authenticates with Cursor's Cloud Agents REST using **HTTP Basic** (username = API key, password empty) through `CloudCursorClient`. See the [Credentials & secure storage](#credentials--secure-storage-v092) section below for the full flow.
 
@@ -664,6 +664,11 @@ into the keyring), or a hidden-input prompt (`typer.prompt(hide_input=True)`).
 
 ```bash
 # 1. Install the optional extra (one-time per machine)
+#    Canonical (v0.9.7+): bundles the extra into the same install
+./install.sh install --with-credentials
+#    On an existing install:
+./install.sh update --with-credentials
+#    Manual fallback (any popolaloom version):
 pip install 'popolaloom[credentials]'
 
 # 2. Store the key (interactive hidden-input prompt)
@@ -736,8 +741,10 @@ The flag is **opt-in** because:
 - `--dry-run` short-circuits the prompt entirely (never ask for a
   secret during a preview — No Silent Failures).
 - When the keyring extra is unavailable, the helper prints an
-  actionable hint pointing at `pip install popolaloom[credentials]`
-  + the env-var fallback rather than failing the whole scaffold.
+  actionable hint pointing at `./install.sh install --with-credentials`
+  (v0.9.7+; or `./install.sh update --with-credentials` on existing
+  installs) plus the `CURSOR_API_KEY` env-var / 0o600 `.env` fallback,
+  rather than failing the whole scaffold.
 
 The `popola init --interactive` wizard accepts the same flag and runs
 the helper after the IDE / `.local/` install plan is applied.
@@ -781,11 +788,16 @@ popola init --dry-run --cursor-api-key "cr_..."
 #   credential setup skipped during dry-run preview (--dry-run is set; secret persistence requires a real install)
 ```
 
-When `pip install popolaloom[credentials]` was not run, the helper
-prints an actionable hint pointing at the extra and the
-`CURSOR_API_KEY` env-var fallback, then returns without exiting
-non-zero — the install path itself succeeded; only credential
-persistence is degraded (best-effort).
+When the keyring extra is missing (i.e., the operator did not run
+`./install.sh install --with-credentials` and did not manually
+`pip install 'popolaloom[credentials]'`), the helper prints an
+actionable hint pointing at `./install.sh install --with-credentials`
+(v0.9.7+) plus the `CURSOR_API_KEY` env-var / 0o600 `.env` fallback,
+then returns without exiting non-zero — the install path itself
+succeeded; only credential persistence is degraded (best-effort).
+Headless containers without a SecretService backend hit the same
+fallback: install `--with-credentials`, then still rely on
+`CURSOR_API_KEY` because no real keyring backend is registered.
 
 ### Security invariants (locked in v0.9.x)
 

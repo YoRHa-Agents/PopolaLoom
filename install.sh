@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # install.sh — unified PopolaLoom + Skill installer / updater / uninstaller.
 #
-# Version: 0.9.6
+# Version: 0.9.7
 # License: MIT (matches the PopolaLoom package license)
 # Repo:    https://github.com/YoRHa-Agents/PopolaLoom
 #
-# This is the v0.9.6 single-shell-command installer that wraps the four
+# This is the v0.9.7 single-shell-command installer that wraps the four
 # manual steps from the install-popola Skill workflow:
 #
 #   1. pip install popolaloom (defaults to git URL — see below; or PyPI / local path)
@@ -21,6 +21,13 @@
 # no longer 404s on Chinese pip mirrors that don't carry popolaloom yet.
 # Pass ``--from=pypi --version=X.Y.Z`` to opt back into the PyPI path
 # once the promotion patch lands.
+#
+# v0.9.7 ``--with-credentials`` flag (closes feedback_for_v0.9.4 line 1):
+# appends the optional ``[credentials]`` extra (Python ``keyring>=25``) to
+# the resolved install spec so the OS-keyring path that ``popola init
+# --cursor-api-key`` exercises lands in the same install — no follow-up
+# ``pip install popolaloom[credentials]`` needed. Composes with all
+# ``--from`` modes via PEP 508 ``pkg[extras] @ <url>``.
 #
 # It also exposes the inverse path: ``install.sh uninstall`` removes the
 # Skill from every IDE then ``pip uninstall popolaloom`` (and, when
@@ -51,7 +58,7 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly POPOLA_INSTALL_SCRIPT_VERSION="0.9.6"
+readonly POPOLA_INSTALL_SCRIPT_VERSION="0.9.7"
 readonly POPOLA_PACKAGE_NAME="popolaloom"
 readonly POPOLA_GIT_URL="git+https://github.com/YoRHa-Agents/PopolaLoom.git"
 
@@ -77,6 +84,15 @@ PURGE=0
 ASSUME_YES=0
 DRY_RUN=0
 QUIET=0
+# v0.9.7 NEW (closes feedback_for_v0.9.4 line 1): when set, append the
+# popolaloom optional ``[credentials]`` extra to the resolved install spec
+# so the OS-keyring backend (``keyring>=25``) lands as part of the same
+# install. The flag composes with every --from source — pypi / git / local
+# path — using the PEP 508 ``pkg[extras] @ <url>`` form for git / path
+# (``pip install`` accepts the bare ``pkg[extras]`` and ``pkg[extras]==X.Y.Z``
+# spellings for pypi). Replaces the prior ``pip install popolaloom[credentials]``
+# remediation line that downstream WARN text used to recommend.
+WITH_CREDENTIALS=0
 
 # ── ANSI helpers (no escape sequences inside printf format strings —
 #    keeps quiet-mode output egrep-able and avoids weird stdout in pipes).
@@ -136,6 +152,19 @@ Options:
   --python=<bin>                Python interpreter to use (default: python3)
   --no-skills                   Skip Skill install/uninstall step
   --no-daemon                   Skip daemon start (install verb only)
+  --with-credentials            Install the optional ``[credentials]`` extra
+                                (Python ``keyring>=25``) so ``popola init
+                                --cursor-api-key`` can persist the Cursor API
+                                key into the OS keyring (macOS Keychain /
+                                Windows Credential Manager / libsecret) without
+                                a follow-up ``pip install``. Supported on
+                                ``--from=pypi`` and ``--from=git`` (PEP 508
+                                ``pkg[extras] @ <url>`` form for git / local
+                                paths). On a headless Linux container without
+                                a SecretService backend the keyring lookup
+                                still fails — fall back to the ``CURSOR_API_KEY``
+                                env var or a 0o600 ``.env`` file (per the
+                                ``credentials.py`` precedence chain).
   --purge                       (uninstall) also delete \$POPOLA_HOME (\${POPOLA_HOME:-\$HOME/.popola})
   --yes, -y                     Assume yes to interactive prompts
   --dry-run                     Print every command without executing
@@ -145,10 +174,12 @@ Options:
 Examples:
   install.sh install                                                 # default: git, tracks main
   install.sh install --ref=v0.9.6                                    # canonical tag-pinned install
+  install.sh install --with-credentials                              # also install OS-keyring extra (v0.9.7+)
   install.sh install --target=cursor --scope=project                 # Cursor-only, project scope
   install.sh install --from=pypi --version=0.9.6                     # PyPI fallback (only works once BL-v0.9.x-PyPI lands)
   install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.whl # local wheel
   install.sh update --target=cursor
+  install.sh update --with-credentials                               # add the keyring extra to an existing install
   install.sh uninstall --yes
   install.sh uninstall --yes --purge
 EOF
@@ -184,6 +215,9 @@ parse_flag() {
             ;;
         --no-daemon)
             NO_DAEMON=1
+            ;;
+        --with-credentials)
+            WITH_CREDENTIALS=1
             ;;
         --purge)
             PURGE=1
@@ -265,6 +299,14 @@ validate_args() {
     if [ -n "${REF}" ] && [ "${FROM}" != "git" ]; then
         die "--ref=<value> requires --from=git (got --from=${FROM})"
     fi
+
+    # v0.9.7 (closes feedback_for_v0.9.4 line 1): --with-credentials only
+    # makes sense for install / update — the uninstall path drops the package
+    # entirely. Fail loud per "No Silent Failures" so a stray flag does not
+    # silently no-op on the uninstall path.
+    if [ "${WITH_CREDENTIALS}" -eq 1 ] && [ "${VERB}" = "uninstall" ]; then
+        die "--with-credentials is not valid for the uninstall verb"
+    fi
 }
 
 # ── command runner ──────────────────────────────────────────────────────
@@ -342,25 +384,53 @@ detect_python() {
 # ── pip source resolver ─────────────────────────────────────────────────
 
 # Echoes the install spec to be passed to pip install / pip install --upgrade.
+#
+# v0.9.7 (closes feedback_for_v0.9.4 line 1): when --with-credentials is set
+# the optional ``[credentials]`` extra (Python ``keyring>=25``) is appended to
+# the resolved spec. PyPI accepts the inline ``pkg[extras]`` form; git URLs
+# and local paths are emitted in PEP 508 ``pkg[extras] @ <url>`` form so pip
+# parses extras + source uniformly. The previous downstream WARN text used to
+# tell operators to run a separate ``pip install popolaloom[credentials]`` —
+# this flag rolls that step into the same install.
 resolve_install_spec() {
+    local extras=""
+    if [ "${WITH_CREDENTIALS}" -eq 1 ]; then
+        extras="[credentials]"
+    fi
     case "${FROM}" in
         pypi)
             if [ -n "${PIN_VERSION}" ]; then
-                printf '%s==%s' "${POPOLA_PACKAGE_NAME}" "${PIN_VERSION}"
+                printf '%s%s==%s' "${POPOLA_PACKAGE_NAME}" "${extras}" "${PIN_VERSION}"
             else
-                printf '%s' "${POPOLA_PACKAGE_NAME}"
+                printf '%s%s' "${POPOLA_PACKAGE_NAME}" "${extras}"
             fi
             ;;
         git)
+            local git_url="${POPOLA_GIT_URL}"
             if [ -n "${REF}" ]; then
-                printf '%s@%s' "${POPOLA_GIT_URL}" "${REF}"
+                git_url="${git_url}@${REF}"
+            fi
+            if [ -n "${extras}" ]; then
+                # PEP 508: ``popolaloom[credentials] @ git+https://...``
+                # Modern pip (>=21) accepts this directly; the older
+                # ``#egg=popolaloom[credentials]`` form is deprecated.
+                printf '%s%s @ %s' "${POPOLA_PACKAGE_NAME}" "${extras}" "${git_url}"
             else
-                printf '%s' "${POPOLA_GIT_URL}"
+                printf '%s' "${git_url}"
             fi
             ;;
         *)
-            # Treat as a local filesystem path or .whl.
-            printf '%s' "${FROM}"
+            # Local filesystem path / non-git URL. PEP 508 also covers this:
+            # ``pkg[extras] @ file:///abs/path`` for wheels & sdists,
+            # ``pkg[extras] @ /abs/dir`` works for source dirs in modern pip.
+            # We emit the user-supplied path verbatim — relative paths are
+            # the operator's responsibility (pip's own error message is
+            # clearer than anything we could synthesise here).
+            if [ -n "${extras}" ]; then
+                printf '%s%s @ %s' "${POPOLA_PACKAGE_NAME}" "${extras}" "${FROM}"
+            else
+                printf '%s' "${FROM}"
+            fi
             ;;
     esac
 }
@@ -395,7 +465,7 @@ popola_installed() {
 # ── verbs ───────────────────────────────────────────────────────────────
 
 verb_install() {
-    log "PopolaLoom install — verb=install scope=${SCOPE} target=${TARGET} from=${FROM} ref=${REF:-(none)}"
+    log "PopolaLoom install — verb=install scope=${SCOPE} target=${TARGET} from=${FROM} ref=${REF:-(none)} with_credentials=${WITH_CREDENTIALS}"
 
     local py
     py="$(detect_python)"
@@ -430,7 +500,7 @@ verb_install() {
 }
 
 verb_update() {
-    log "PopolaLoom update — scope=${SCOPE} target=${TARGET} from=${FROM}"
+    log "PopolaLoom update — scope=${SCOPE} target=${TARGET} from=${FROM} ref=${REF:-(none)} with_credentials=${WITH_CREDENTIALS}"
 
     local py
     py="$(detect_python)"
