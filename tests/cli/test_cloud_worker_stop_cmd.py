@@ -542,15 +542,23 @@ def test_worker_stop_help_text_surfaces_q_v099_6_caveat(
     appear after normalisation; this is the operator-facing
     contract locked by Q-V099-6.
     """
+    import re
+
     from popolaloom.cli.main import app as root_app
 
     result = runner.invoke(
         root_app,
         ["cloud", "worker", "stop", "--help"],
-        env={"COLUMNS": "240"},
+        env={"COLUMNS": "240", "NO_COLOR": "1"},
     )
     assert result.exit_code == 0, _combined_output(result)
-    rendered = " ".join(_combined_output(result).split())
+    raw = _combined_output(result)
+    # CI matrix terminals re-inject ANSI color escapes even with NO_COLOR=1
+    # (rich/click default theme in some terminals); strip them before
+    # whitespace-normalised substring matching so the caveat assertion
+    # is robust across local + CI rendering.
+    ansi_escape = re.compile(r"\x1b\[[0-9;]*[A-Za-z]")
+    rendered = " ".join(ansi_escape.sub("", raw).split())
     summary = (
         "Stop a running cloud worker (SIGTERM-then-SIGKILL after --grace seconds)."
     )
