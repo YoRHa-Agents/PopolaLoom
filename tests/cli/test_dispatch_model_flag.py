@@ -23,7 +23,8 @@ import logging
 
 import pytest
 
-from popolaloom.cli.main import _apply_model_flag, app as main_app
+from popolaloom.cli.main import _apply_model_flag
+from popolaloom.cli.main import app as main_app
 
 
 def test_apply_model_flag_populates_extra_for_cursor_cloud() -> None:

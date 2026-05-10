@@ -31,10 +31,11 @@ import json
 import logging
 import os
 import time
+from collections.abc import Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass
 from pathlib import Path
-from typing import IO, Any, Iterator
+from typing import IO
 
 logger = logging.getLogger(__name__)
 

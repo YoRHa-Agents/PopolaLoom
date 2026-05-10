@@ -1987,7 +1987,7 @@ def _apply_path_b_flags(
                         )
                     )
                 )
-                for k in merged.keys()
+                for k in merged
             }
         )
         typer.echo(

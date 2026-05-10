@@ -357,7 +357,7 @@ class CursorCloudInternalClient:
         self._owns_client = http_client is None
         self._client = http_client or httpx.Client(timeout=timeout_s)
 
-    def __enter__(self) -> "CursorCloudInternalClient":
+    def __enter__(self) -> CursorCloudInternalClient:
         return self
 
     def __exit__(self, *_exc: object) -> None:
@@ -477,7 +477,9 @@ class CursorCloudInternalClient:
         *,
         timeout_s: float | None = None,
     ) -> StartComposerOutcome:
-        """Call ``POST /aiserver.v1.BackgroundComposerService/StartBackgroundComposerFromSnapshot``.
+        """Call the ``StartBackgroundComposerFromSnapshot`` Connect-RPC method.
+
+        See module docstring for the full endpoint URL + auth + wire-format details.
 
         Args:
             body: A pre-built request body (typically from

@@ -24,9 +24,10 @@ from popolaloom.cli.main import (
     _apply_path_b_flags,
     _apply_preset,
     _parse_time_budget,
+)
+from popolaloom.cli.main import (
     app as main_app,
 )
-
 
 # ── _parse_time_budget (Q-18) ───────────────────────────────────────
 
