@@ -367,6 +367,19 @@ def dispatch(
         typer.echo(json.dumps(payload, ensure_ascii=False))
     else:
         typer.echo(task_id)
+        # v0.9.9 F3 (feedback_for_v0.9.7.md:51): Cursor's web dashboard
+        # only lists Cloud Agent runs (cursor.com/agents); local
+        # subprocess tasks dispatched via --cli=cursor are invisible
+        # there. Surface the right local-observability path right at
+        # dispatch time so operators don't waste 10 minutes refreshing
+        # the dashboard. Gated on cli == "cursor": cursor-cloud and
+        # other adapters keep their existing single-line output.
+        if cli == "cursor":
+            typer.echo(
+                f"view: popola attach {task_id} --follow "
+                "(note: Cursor dashboard does not show local "
+                "subprocess tasks)"
+            )
 
 
 # ── status ────────────────────────────────────────────────────────────────
@@ -452,6 +465,13 @@ def status(
     for key in fields:
         value = info.get(key)
         table.add_row(key, "" if value is None else str(value))
+    # v0.9.9 F2 (Q-V099-4): surface ``pid_alive`` only when the daemon
+    # included it in the response (additive-only contract — the field is
+    # absent for cloud-runtime tasks, terminal-state tasks, or running
+    # tasks without a known pid). Defensive ``in`` check keeps older
+    # daemons (pre-v0.9.9) from rendering a confusing empty row.
+    if "pid_alive" in info:
+        table.add_row("pid_alive", str(info["pid_alive"]))
     _console_out.print(table)
 
     # v0.8.8 T2.2.2 (Q-C-7): default-visible WAITING line surfaced

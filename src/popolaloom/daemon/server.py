@@ -826,13 +826,50 @@ class Popolad:
 
         See :meth:`_task_summary` for the unified return shape.
 
+        v0.9.9 F2 (Q-V099-4): for local-runtime handles still in
+        :attr:`TaskState.RUNNING` with a known ``pid``, probe the
+        OS via ``os.kill(pid, 0)`` to detect status-vs-pid drift
+        (e.g. supervisor wait-thread has not yet reaped a process
+        that already exited). On ``ProcessLookupError`` we surface
+        ``pid_alive=False`` and emit a daemon-log WARN; on
+        ``PermissionError`` (process exists but we lack signal
+        permission) we surface ``pid_alive=True``. The probe is
+        WARN-only — force-finalize is deferred to v0.10.0
+        (``BL-v0.10.0-supervisor-force-finalize``).
+
+        ``pid_alive`` is intentionally **absent** from the returned
+        dict for cloud-runtime tasks, terminal-state tasks, and
+        running tasks without a known pid (additive-only contract
+        per AC #4 — old consumers that never look up the field
+        keep working unchanged).
+
         Raises:
             KeyError: 当 ``task_id`` 未注册。
         """
         handle = self._state.get(task_id)
         if handle is None:
             raise KeyError(f"task_id not found: {task_id}")
-        return self._task_summary(handle, full=True)
+        summary = self._task_summary(handle, full=True)
+        if (
+            handle.runtime == "local"
+            and handle.state == TaskState.RUNNING
+            and handle.pid is not None
+        ):
+            try:
+                os.kill(handle.pid, 0)
+            except ProcessLookupError:
+                summary["pid_alive"] = False
+                logger.warning(
+                    "status drift: task=%s state=running but pid=%d "
+                    "already reaped; supervisor sync pending",
+                    task_id,
+                    handle.pid,
+                )
+            except PermissionError:
+                summary["pid_alive"] = True
+            else:
+                summary["pid_alive"] = True
+        return summary
 
     def tail_events(self, task_id: str, since_index: int = 0) -> list[dict[str, Any]]:
         """Return CloudEvents envelopes from ``since_index`` onward.

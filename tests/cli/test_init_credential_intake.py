@@ -486,19 +486,30 @@ def test_dry_run_with_cloud_only_and_cursor_api_key_skips(
 # ── keyring backend unavailable: actionable hint, no raise ─────────────
 
 
-def test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero(
+def test_cursor_api_key_without_keyring_backend_writes_fallback_file_and_returns_zero(
     isolated_home: tuple[Path, Path],
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """When the keyring extra is unavailable, intake prints a hint w/o non-zero exit.
+    """When the keyring extra is unavailable, intake writes the v0.9.9 0600 fallback file.
 
-    The install path itself succeeded; credential persistence is
-    best-effort when the backend is missing. v0.9.7 (closes
-    ``feedback_for_v0.9.4.md`` line 1): the hint must point at
-    ``./install.sh install --with-credentials`` and the ``CURSOR_API_KEY``
-    env-var fallback — NOT at a raw ``pip install`` (per the workspace
-    "popola 不使用 pip 修正安装方式" rule).
+    Closes ``.local/feedbacks/feedback_for_v0.9.7.md:114-116`` (U2 ask
+    "另外初始化传入 secret 没能正确缓存，需要优化"). Q-V099-11 +
+    Q-V099-12 lock the new behavior: instead of silently dropping the
+    operator's ``--cursor-api-key VAL`` when the keyring is missing
+    (the v0.9.7 deliberate-bug-pinned behavior), v0.9.9 writes a
+    0600 fallback file at ``$POPOLA_HOME/cursor_api_key.env`` and
+    emits a follow-up line that names the file path and the
+    ``source`` command for fresh shells. The daemon auto-sources the
+    file at startup so ``popola dispatch`` "just works" without an
+    explicit ``source`` step.
+
+    This test replaces the v0.9.7 ``test_cursor_api_key_without_
+    keyring_backend_prints_hint_and_returns_zero`` (which asserted
+    only the WARN hint and the silent-discard exit code; v0.9.9
+    flips that to a positive-behavior assertion: the file MUST
+    exist with mode 0o600 and the literal payload
+    ``CURSOR_API_KEY=<raw_key>\\n``).
     """
     cwd, _ = isolated_home
     (cwd / ".cursor").mkdir()
@@ -506,9 +517,10 @@ def test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero(
     result = runner.invoke(init_app, ["--cursor-api-key", "cr_no_keyring"])
     out = _combined_output(result)
     assert result.exit_code == 0, out
+    # The WARN hint still fires (operator-facing diagnostic that the
+    # primary keyring path was unavailable).
     assert "OS keyring backend unavailable" in out
     assert "./install.sh install --with-credentials" in out
-    assert "CURSOR_API_KEY" in out
     # v0.9.7: pip MUST NOT appear in the hint (per the workspace rule
     # "popola 不使用 pip 修正安装方式" — fix the install method, do
     # not point operators at a bare pip command).
@@ -516,8 +528,30 @@ def test_cursor_api_key_without_keyring_backend_prints_hint_and_returns_zero(
     assert "popolaloom[credentials]" not in out
     # Auto-detect still installed cursor (the install path succeeded).
     assert (cwd / ".cursor" / "skills" / "popola-loom" / "SKILL.md").is_file()
-    # Raw key never echoed.
+    # Raw key never echoed (security invariant).
     assert "cr_no_keyring" not in out
+
+    # v0.9.9 U2 positive behavior: the fallback file exists with mode
+    # 0o600 and contains exactly ``CURSOR_API_KEY=<raw_key>\n``. The
+    # ``$POPOLA_HOME`` env var is set by ``isolated_home`` so we can
+    # locate the file deterministically without polluting the
+    # developer's real ``~/.popola``.
+    fallback_path = cred_mod._env_fallback_path()
+    assert fallback_path.is_file()
+    import os as _os
+    actual_mode = _os.stat(fallback_path).st_mode & 0o777
+    assert actual_mode == 0o600, f"expected mode 0o600, got {oct(actual_mode)}"
+    payload = fallback_path.read_text(encoding="utf-8")
+    assert payload == "CURSOR_API_KEY=cr_no_keyring\n"
+
+    # Operator-facing follow-up line: stdout MUST tell the operator
+    # the file path AND the ``source`` command so they can use it from
+    # fresh shells without re-reading USER_GUIDE.md.
+    assert "Wrote fallback to" in out
+    assert "cursor_api_key.env" in out
+    assert "mode 0600" in out
+    assert "source" in out
+    assert "auto-source" in out
 
 
 # ── direct unit test of _resolve_cursor_api_key_input ──────────────────
@@ -696,12 +730,28 @@ class TestHandleCredentialIntakeAfterInstall:
 class TestPersistCursorApiKeyNoninteractive:
     """Direct branch coverage for the v0.9.5 non-interactive persistence helper."""
 
-    def test_unavailable_keyring_prints_hint_returns_none(
+    def test_unavailable_keyring_writes_fallback_and_prints_hint(
         self,
         monkeypatch: pytest.MonkeyPatch,
         capsys: pytest.CaptureFixture[str],
+        tmp_path: Path,
     ) -> None:
+        """Keyring missing → v0.9.9 U2 fallback file is written + hint is printed.
+
+        Previously (v0.9.7) this test asserted the silent-discard
+        behavior — only the WARN hint was emitted and the literal
+        secret was dropped. Q-V099-11 + Q-V099-12 flip that to
+        "instead of silently discarding the secret, write
+        ``$POPOLA_HOME/cursor_api_key.env`` mode 0600 + emit the
+        operator-facing follow-up line + return". The hint is still
+        printed (operator-facing diagnostic that the *primary*
+        keyring path was unavailable) but the function now has a
+        positive observable effect on disk.
+        """
         monkeypatch.setattr(cred_mod, "_import_keyring", lambda: None)
+        # Pin POPOLA_HOME so the fallback file lands in tmp_path rather
+        # than the developer's real ``~/.popola``.
+        monkeypatch.setenv("POPOLA_HOME", str(tmp_path / "popola"))
         result = init_cmd._persist_cursor_api_key_noninteractive("cr_x")
         assert result is None
         out = capsys.readouterr()
@@ -714,6 +764,18 @@ class TestPersistCursorApiKeyNoninteractive:
         assert "popolaloom[credentials]" not in combined
         # The literal value must never appear in any output.
         assert "cr_x" not in combined
+        # v0.9.9 U2: the fallback file is written with mode 0o600 and
+        # contains the literal payload ``CURSOR_API_KEY=<raw_key>\n``.
+        fallback_path = cred_mod._env_fallback_path()
+        assert fallback_path.is_file()
+        import os as _os
+        actual_mode = _os.stat(fallback_path).st_mode & 0o777
+        assert actual_mode == 0o600
+        assert fallback_path.read_text(encoding="utf-8") == "CURSOR_API_KEY=cr_x\n"
+        # Operator-facing follow-up line names the file path + ``source``.
+        assert "Wrote fallback to" in combined
+        assert "cursor_api_key.env" in combined
+        assert "source" in combined
 
     def test_credential_backend_error_falls_back_with_message(
         self,

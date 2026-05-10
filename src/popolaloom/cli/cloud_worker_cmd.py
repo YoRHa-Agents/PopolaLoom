@@ -1110,6 +1110,67 @@ def worker_status_cmd(
 
     _render_status_table(payload)
 
+    # v0.9.9 F3 (feedback_for_v0.9.7.md:52): when the worker process is
+    # alive (healthz responsive, /readyz returned, metrics scraped) but
+    # has never been routed a Cloud Agent session, surface a single
+    # idle-hint line so operators can distinguish "worker dead" (the
+    # _EXIT_UNREACHABLE path above) from "worker alive but no traffic
+    # yet". This is additive only — the rendered table is unchanged
+    # and the JSON path still returns early before this hint.
+    if _is_worker_idle(payload):
+        typer.echo(
+            "note: 0 sessions claimed since worker started "
+            "(the worker is healthy but has not been routed any task yet)"
+        )
+
+
+def _is_worker_idle(payload: dict[str, Any]) -> bool:
+    """Decide whether to print the v0.9.9 F3 worker idle-hint line.
+
+    Returns ``True`` iff the management server reported back AND
+    none of the available signals indicate the worker has ever
+    claimed a Cloud Agent session:
+
+    - ``readyz.claimed`` is not currently ``True`` (no live session
+      holding the worker right now);
+    - ``metrics.cursor_self_hosted_worker_session_active`` is 0 / None
+      (Prometheus gauge agrees: no live session);
+    - ``metrics.cursor_self_hosted_worker_last_activity_unix_seconds``
+      is ``0`` / missing (the activity heartbeat the worker emits on
+      every claim has never fired).
+
+    The idle-hint complements (does NOT replace) the existing
+    unreachable-path stderr hint at :meth:`worker_status_cmd`'s
+    ``httpx.HTTPError`` branch — that path already covers "worker
+    dead", this path covers "worker alive but never busy".
+    """
+    healthz = payload.get("healthz") or {}
+    readyz = payload.get("readyz") or {}
+    metrics_block = payload.get("metrics") or {}
+    metrics_values = metrics_block.get("values") or {}
+
+    healthz_status = healthz.get("status")
+    if healthz_status not in {"ok", "healthy"} and healthz_status is not None:
+        return False
+    if not isinstance(readyz, dict):
+        return False
+
+    if readyz.get("claimed") is True:
+        return False
+
+    session_active = metrics_values.get(
+        "cursor_self_hosted_worker_session_active"
+    )
+    if isinstance(session_active, (int, float)) and session_active > 0:
+        return False
+
+    last_activity = metrics_values.get(
+        "cursor_self_hosted_worker_last_activity_unix_seconds"
+    )
+    return not (
+        isinstance(last_activity, (int, float)) and last_activity > 0
+    )
+
 
 def _parse_health_body(status: int, body: str) -> dict[str, Any]:
     """Parse a ``healthz`` / ``readyz`` body into a structured dict.
