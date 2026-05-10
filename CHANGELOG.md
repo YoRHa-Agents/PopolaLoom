@@ -10,7 +10,11 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
+(intentionally empty — accumulating for the next v0.9.x patch.)
+
 <!-- updated: 2026-05-10 -->
+
+## [0.9.7] — 2026-05-10
 
 **Theme**: Drop the `pip install popolaloom[credentials]` hint from every WARN / error path; offer the same via the official installer instead. Closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](.local/feedbacks/feedback_for_v0.9.4.md) line 1 ("popola 不使用 pip 修正安装方式" + "init 阶段给出，本地需要能存储并加密"): the previous remediation lines pointed operators at a bare `pip install` command, which conflicted with the workspace rule about not surfacing pip directly. v0.9.7 introduces `./install.sh install --with-credentials` (rolls the optional `keyring>=25` extra into the same install) and rewrites three production WARN / error paths to point at it instead. Headless containers without a SecretService backend get an explicit fallback hint to set `CURSOR_API_KEY` in a 0o600 `.env` file (`credentials.py` precedence #2).
 
