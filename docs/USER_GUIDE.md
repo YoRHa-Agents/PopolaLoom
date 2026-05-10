@@ -6,11 +6,11 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.9.7)
+# PopolaLoom — User Guide (v0.9.9)
 
 <!-- updated: 2026-05-10 -->
 
-> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.7 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.7 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v0.9.7`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.7`; avoid the bare package-name form until the promotion patch lands.
+> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.9 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.9 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v0.9.9`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9`; avoid the bare package-name form until the promotion patch lands.
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
@@ -149,9 +149,9 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
   | bash -s -- install --scope=global --target=all
 
-# Same, tag-pinned for reproducibility (v0.9.6+ canonical recipe)
+# Same, tag-pinned for reproducibility (v0.9.9 canonical recipe)
 curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/install.sh \
-  | bash -s -- install --ref=v0.9.6
+  | bash -s -- install --ref=v0.9.9
 
 # After a clone — same script, local invocation
 ./install.sh install --scope=project --target=cursor
@@ -176,7 +176,7 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 | `--scope=<global\|project>` | install / update / uninstall | Skill scope (default: `global`) |
 | `--target=<cursor\|claude\|codex\|copilot\|all>` | install / update / uninstall | Which IDE Skill (default: `all`) |
 | `--from=<git\|pypi\|PATH>` | install / update | Install source (**default in v0.9.6+: `git`**, tracks `main`; previously `pypi`) |
-| `--ref=<tag\|branch\|sha>` | install / update | (v0.9.6+ NEW) Append `@<ref>` to the GitHub URL — requires `--from=git`; e.g. `--ref=v0.9.6` |
+| `--ref=<tag\|branch\|sha>` | install / update | (v0.9.6+ NEW) Append `@<ref>` to the GitHub URL — requires `--from=git`; e.g. `--ref=v0.9.9` |
 | `--version=<X.Y.Z>` | install / update | Pin a PyPI version (requires `--from=pypi`) |
 | `--python=<bin>` | all | Python interpreter (default: search `python3.12 → python3.11 → python3 → python`) |
 | `--no-skills` | all | Skip the Skill install / uninstall step |
@@ -192,9 +192,9 @@ curl -fsSL https://raw.githubusercontent.com/YoRHa-Agents/PopolaLoom/main/instal
 | Value | Translates to |
 |---|---|
 | `git` (**default in v0.9.6+**) | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git` |
-| `git` + `--ref=<ref>` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git@<ref>` (e.g. `--ref=v0.9.6` → `…@v0.9.6`) |
+| `git` + `--ref=<ref>` | `pip install git+https://github.com/YoRHa-Agents/PopolaLoom.git@<ref>` (e.g. `--ref=v0.9.9` → `…@v0.9.9`) |
 | `pypi` | PyPI path is deferred for v0.9.x; prefer `./install.sh install` until `BL-v0.9.x-PyPI` lands |
-| `pypi` + `--version=X.Y.Z` | Deferred for v0.9.x; use `./install.sh install --ref=v0.9.7` for the current release line |
+| `pypi` + `--version=X.Y.Z` | Deferred for v0.9.x; use `./install.sh install --ref=v0.9.9` for the current release line |
 | any other value (filesystem path) | `pip install <path>` (works for local clones, wheel files, and tarballs) |
 
 For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.whl` installs from a locally-built wheel. Contradictory inputs (`--ref` with `--from=pypi`, `--version=` without `--from=pypi`, `--ref` on the `uninstall` verb) fail loudly per the workspace No-Silent-Failures rule.
@@ -202,11 +202,11 @@ For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.w
 #### Examples
 
 ```bash
-# Canonical v0.9.6 install (default --from=git, tracks main)
+# Canonical v0.9.9 install (default --from=git, tracks main)
 ./install.sh install
 
-# Canonical tag-pinned v0.9.6 install (recommended for reproducibility)
-./install.sh install --ref=v0.9.6
+# Canonical tag-pinned v0.9.9 install (recommended for reproducibility)
+./install.sh install --ref=v0.9.9
 
 # Install only for Cursor at project scope (default --from=git applies)
 ./install.sh install --target=cursor --scope=project
@@ -225,7 +225,7 @@ For example: `./install.sh install --from=./dist/popolaloom-0.9.6-py3-none-any.w
 
 # See exactly what would happen without touching disk
 ./install.sh install --dry-run
-./install.sh install --dry-run --ref=v0.9.6
+./install.sh install --dry-run --ref=v0.9.9
 ./install.sh uninstall --dry-run --yes
 ```
 
@@ -567,7 +567,7 @@ The new entry sits BEFORE the generic `validation_request_body` hit so the regex
 
 <!-- updated: 2026-05-09 -->
 
-> **Install prerequisite (v0.9.6 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.6 install via `./install.sh install` (canonical; v0.9.6 default `--from=git` tracks `main`) OR `./install.sh install --ref=v0.9.6` (canonical tag-pinned recipe) OR `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6` (manual fallback). v0.9.6 closes [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
+> **Install prerequisite (v0.9.9 current)** — `popola` must be on PATH before this scaffold can run. For v0.9.9 install via `./install.sh install` (canonical; default `--from=git` tracks `main` since v0.9.6) OR `./install.sh install --ref=v0.9.9` (canonical tag-pinned recipe) OR `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9` (manual fallback). v0.9.6 closed [`./.local/feedbacks/feedback_for_v0.9.4.md`](../.local/feedbacks/feedback_for_v0.9.4.md) lines 2-5: `./install.sh install` no longer 404s on Chinese pip mirrors that don't carry `popolaloom` yet. Pass `--from=pypi --version=0.9.x` only after the v0.9.x PyPI patch lands (Q-D-5 偏离默认: PyPI deferred to v0.9.x; see `BL-v0.9.x-PyPI` in TRACKER).
 
 
 `popola init --target=cloud-only` is the v0.9.0 W2.4 scaffold profile that drops a **minimal, cloud-dispatch-only project skeleton** — three files at the project root, no IDE skill installs, no `.local/` workspace, no local CLI shims, no local-tier HITL stubs. It is the right starting point when:
