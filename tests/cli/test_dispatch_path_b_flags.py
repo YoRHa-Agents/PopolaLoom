@@ -181,6 +181,8 @@ def test_apply_path_b_flags_preset_under_session_jwt_exits_until_wired() -> None
             preset="long-running-plan",
         )
     assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
+
+
 def test_apply_path_b_flags_invalid_auth_mode_exits_2() -> None:
     """Unknown --auth-mode → exit 2."""
     with pytest.raises(Exception) as exc_info:
@@ -197,8 +199,6 @@ def test_apply_path_b_flags_invalid_auth_mode_exits_2() -> None:
             preset="",
         )
     assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
-
-
 
 
 def test_apply_path_b_flags_non_cursor_cloud_cli_warns_and_drops(
