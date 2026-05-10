@@ -1794,18 +1794,6 @@ def _validate_cloud_target_flags(cloud_target: str, worker_name: str) -> None:
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
 
-# v1.0.0 (Q-13/Q-19) — REST-rejection contract for path-B-only flags.
-_PATH_B_ONLY_FLAGS: tuple[str, ...] = (
-    "--mode",
-    "--max-mode",
-    "--effort",
-    "--time-budget",
-    "--long-running",
-    "--auto-proceed-after-plan",
-    "--preset",
-)
-_VALID_AUTH_MODES: frozenset[str] = frozenset({"rest", "session-jwt"})
-
 # Q-17 LOCKED — built-in preset catalog. Each entry is a partial dict
 # of (mode, max_mode, effort, time_budget, long_running,
 # auto_proceed_after_plan); the resolver expands it into the equivalent
@@ -1926,24 +1914,33 @@ def _apply_path_b_flags(
     auto_proceed_after_plan: bool,
     preset: str,
 ) -> None:
-    """Translate the path-B Typer flags into ``extra``-keyed values.
+    """Validate Path-B Typer knobs before POST /dispatch (Q-13 / Q-19 / Q-22).
 
-    Per Q-19 (LOCKED), path-B-only flags REJECT (exit 2) when the user
-    has not explicitly enabled --auth-mode=session-jwt. The hint points
-    at the actual fix (``--auth-mode=session-jwt``).
+    ``--auth-mode=rest`` (default) rejects Path-B-exclusive flags because the
+    stable REST gateway does not accept those fields.
 
-    Per Q-13 (LOCKED), the default --auth-mode=rest preserves the
-    v0.10.0 stable surface; this helper is a no-op when no path-B flag
-    is set AND auth_mode==rest.
+    ``--auth-mode=session-jwt`` is **not wired** through ``popolad`` yet —
+    callers always receive exit code :data:`_EXIT_INVALID_ARGS` with a bilingual
+    hint recommending ``rest`` so we never enqueue extras that downstream
+    :func:`~popolaloom.adapters.cursor_cloud._normalize_cloud_extra` would
+    silently discard (No Silent Failures).
     """
-    if auth_mode not in _VALID_AUTH_MODES:
+    raw_auth = auth_mode.strip().replace("_", "-").lower()
+    if raw_auth == "jwt":
+        raw_auth = "session-jwt"
+    normalized_auth_modes = frozenset({"rest", "session-jwt"})
+    if raw_auth not in normalized_auth_modes:
         typer.echo(
-            f"error: --auth-mode={auth_mode!r} is not one of "
-            f"{sorted(_VALID_AUTH_MODES)}; "
-            f"(--auth-mode={auth_mode!r} 必须是 'rest' 或 'session-jwt')",
+            "error: --auth-mode="
+            f"{auth_mode!r} must be one of {sorted(normalized_auth_modes)} "
+            "(or the shorthand jwt). "
+            f"( --auth-mode 只能是 rest / session-jwt / jwt; "
+            f"当前为 {auth_mode!r} )",
             err=True,
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    auth_mode_normalized = raw_auth
 
     explicit: dict[str, Any] = {}
     if mode:
@@ -1960,19 +1957,21 @@ def _apply_path_b_flags(
         explicit["auto_proceed_after_plan"] = True
 
     merged = _apply_preset(extra, preset, explicit=explicit)
-    if not merged and auth_mode == "rest":
+    if not merged and auth_mode_normalized == "rest":
         return
 
-    if cli and cli not in {"cursor-cloud", ""}:
-        if merged:
+    if cli != "cursor-cloud":
+        if merged or auth_mode_normalized == "session-jwt":
             logger.warning(
-                "path-B flags ignored for --cli=%r; "
-                "(path-B 标志只对 cursor-cloud 有效,已忽略)",
+                "path-B flags (--auth-mode=session-jwt or Path-B knobs) apply only "
+                "to cursor-cloud dispatches; ignoring for --cli=%r "
+                "(Path-B/session-jwt 仅作用于 cursor-cloud,已在 --cli=%s 忽略)",
+                cli,
                 cli,
             )
         return
 
-    if merged and auth_mode == "rest":
+    if merged and auth_mode_normalized == "rest":
         flag_list = sorted(
             {
                 "--mode" if k == "mode" else (
@@ -2001,16 +2000,16 @@ def _apply_path_b_flags(
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
-    if not merged:
-        return
-
-    if "time_budget" in merged and isinstance(merged["time_budget"], str):
-        merged["time_budget_s"] = _parse_time_budget(merged["time_budget"])
-        merged.pop("time_budget", None)
-
-    extra["auth_mode"] = auth_mode
-    for k, v in merged.items():
-        extra[k] = v
+    if auth_mode_normalized == "session-jwt":
+        typer.echo(
+            "error: --auth-mode=session-jwt is not wired into popolad yet "
+            "(cursor-cloud supervisor still uses POST /v1/agents / REST). "
+            "Use --auth-mode=rest, or omit Path-B knobs. "
+            "(--auth-mode=session-jwt / Path-B RPC 暂未接入派发器,"
+            "请改用 --auth-mode=rest)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
 
 def _apply_model_flag(extra: dict[str, Any], model: str, cli: str) -> None:
