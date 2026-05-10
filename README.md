@@ -22,25 +22,34 @@ It is the multi-task / multi-CLI sibling of [DevolaFlow](https://github.com/YoRH
 - **8-dim self-eval baseline** (`popola eval run`) — PopolaLoom-nines composite over `dispatch_isolation / cycle_convergence / hitl_latency / attach_correctness / cross_cli_handoff / single_threaded_writes / event_log_completeness / hitl_handleability`, with per-dimension evidence pipelines.
 - **MCP-native** — exposes 9 dispatch / inspect / HITL verbs over stdio (`popola_submit / popola_list / popola_status / popola_attach_stream / popola_cancel / popola_relay / popola_supervise / popola_supply_feedback / popola_inject_subtask`) so any MCP-aware IDE can call them as tools.
 
+### Core design ideas at a glance
+
+PopolaLoom is a **loom** (织机), not just a router: it pulls many agent-CLI strands into one durable run graph, then tightens them into auditable task state. The user-facing verb is `dispatch` because the loom yanks one strand into motion; the project-facing verb is `weave` because the value is the fabric created across Cursor, Claude, Codex, Kimi, Copilot, Lark, and MCP.
+
+The daemon is a local **sidecar** (`popolad`) because task lifetime cannot belong to whichever terminal happened to launch a prompt. A UDS socket, SQLite task pool, wait-thread supervisor, and NDJSON event log let `attach`, `status`, `cancel`, cloud polling, and HITL all read the same durable state after terminal close, SSH disconnect, or daemon restart.
+
+Every handoff is file-backed, every human answer is state-backed, and every host agent learns the CLI through the Skill auto-discovery contract. That is why PopolaLoom vendors ArkTower under `popolaloom._vendored.arktower`, degrades Lark to local NDJSON when the out-of-band channel is absent, and treats the v0.9.0+ CLI / RPC / JSON boundary as automation-grade infrastructure. Deep version: [`docs/design-ideas.md`](docs/design-ideas.md).
+
 ## 5-minute Quickstart
 
 <!-- updated: 2026-05-10 -->
 
 ```bash
-# v0.9.6 install — Q-D-5 偏离默认 carries forward: PyPI deferred to v0.9.x; see BL-v0.9.x-PyPI in TRACKER.
-# v0.9.6 flips the install.sh default from --from=pypi to --from=git so a fresh
-# ./install.sh install works without PyPI (closes feedback_for_v0.9.4 lines 2-5).
+# v0.9.7 install — GitHub Release path remains canonical while PyPI promotion is deferred.
 ./install.sh install                 # canonical (default --from=git, tracks main)
-./install.sh install --ref=v0.9.6    # canonical tag-pinned (recommended for v0.9.6)
-# OR (manual fallback):
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6
+./install.sh install --ref=v0.9.7    # reproducible tag-pinned install
+./install.sh install --with-credentials  # optional: include OS-keyring extra (v0.9.7+)
 
 popola init                          # auto-detect Cursor / Claude / Codex / Copilot
+popola auth cursor set --validate    # optional: secure Cursor Cloud API key (v0.9.2+)
 popola popolad start                 # boot the UDS daemon
 popola dispatch "echo hello popola" --cli=cursor
 popola list                          # see active tasks
 popola attach <task_id> --follow     # tail SSE event stream
 popola doctor                        # 4-subsystem health check
+
+# Optional next step for teams using Cursor self-hosted workers (v0.9.1+):
+popola cloud worker start --worker-dir "$(pwd)"
 ```
 
 Or run the automated 6-step local-CLI smoke (now includes `popola init --dry-run` at Step 0):
@@ -71,7 +80,7 @@ For the long version with explanations, see [`docs/QUICKSTART.md`](docs/QUICKSTA
 | `popola popolad {start,stop,status}` | Daemon lifecycle | `popola popolad start` |
 | `popola init [<ide>] [--global / --project]` | Multi-IDE Skill installer (idempotent) | `popola init cursor --global` |
 | `popola init --interactive` | Human-driven setup wizard (v0.5.5+) | `popola init --interactive` |
-| `popola auth cursor {set,status,clear}` | Secure Cursor API key storage in the OS keyring (v0.9.2+; install the optional extra via `./install.sh install --with-credentials` v0.9.7+ or `pip install 'popolaloom[credentials]'`) | `popola auth cursor set --validate` |
+| `popola auth cursor {set,status,clear}` | Secure Cursor API key storage in the OS keyring (v0.9.2+; install the optional extra via `./install.sh install --with-credentials` v0.9.7+ or `./install.sh update --with-credentials` on existing installs) | `popola auth cursor set --validate` |
 | `popola doctor [--strict] [--json]` | 4-subsystem health (skill / daemon / lark / arktower) | `popola doctor --strict` |
 | `popola eval run --output PATH` | 8-dim PopolaLoom-nines self-eval | `popola eval run -o /tmp/nines.toml` |
 | `popola version` | Print `popolaloom <version>` | `popola version` |
@@ -224,8 +233,10 @@ Cursor / Claude / Codex / Copilot IDE  ─┐
    ↑ (popola init writes here)          ┘                              ├─→ popolad daemon (UDS)
                                                                        │      ├─ ArkTower task pool (vendored, SQLite)
 $ popola CLI  ────────────────────────────────────────────────────────┘      ├─ LangGraph subgraph + interrupt()
-$ lark-cli (out: +send --card) ←─── HITL renderer + Lark notifier ◄───┐      ├─ NDJSON event log (CloudEvents)
-$ lark-cli event consume (in)  ───→ LarkSupervisor ──────────────────┤      └─ 8-dim self-eval runner
+  ├─ popola auth cursor ───────────────→ credentials.py (OS keyring / env)    ├─ NDJSON event log (CloudEvents)
+  └─ popola cloud worker ──────────────→ cloud_worker_cmd.py → Cursor worker  ├─ cloud poller + cursor-cloud runs
+$ lark-cli (out: +send --card) ←─── HITL renderer + Lark notifier ◄───┐      └─ 8-dim self-eval runner
+$ lark-cli event consume (in)  ───→ LarkSupervisor ──────────────────┘
                                                                        └────────► popola doctor (skill / daemon / lark / arktower)
 ```
 
@@ -281,7 +292,7 @@ git clone https://github.com/YoRHa-Agents/PopolaLoom.git && cd PopolaLoom
 pip install -e ".[dev]"
 ```
 
-> Once v0.9.x publishes to PyPI (`BL-v0.9.x-PyPI`), `pip install popolaloom` will work directly. **For v0.9.6 users, use the git URL above** — `pip install popolaloom` (no `git+`) currently resolves to the previous v0.8.x line.
+> Once v0.9.x publishes to PyPI (`BL-v0.9.x-PyPI`), the bare package-name installer path will work directly. **For v0.9.7 users, use `./install.sh install` or the git URL above** — the bare package-name path currently resolves to the previous v0.8.x line.
 
 ### Cloud-only install (v0.9.0+)
 
@@ -311,7 +322,7 @@ export PATH="$HOME/.local/bin:$PATH"
 echo 'export PATH="$HOME/.local/bin:$PATH"' >> ~/.bashrc
 ```
 
-After pip install, register the Skill into every IDE you use via the existing `popola init` wizard (works alongside `install.sh`):
+After installation, register the Skill into every IDE you use via the existing `popola init` wizard (works alongside `install.sh`):
 
 ```bash
 popola init                  # auto-detect Cursor / Claude / Codex / Copilot
@@ -472,7 +483,7 @@ Full architecture (5-channel broadcast → first-responder wins → state.resume
 
 ## Sibling project
 
-PopolaLoom and [ArkTower](https://github.com/YoRHa-Agents/ArkTower) live under the `YoRHa-Agents` org. Since v0.5.0 PopolaLoom **vendors** ArkTower's relevant subset (TaskService / EventBus / SqliteTaskRepository / 4 schema migrations) under `popolaloom._vendored.arktower` so `pip install popolaloom` works on a fresh machine without an ArkTower clone. Refresh procedure: see [`VENDORING.md`](VENDORING.md).
+PopolaLoom and [ArkTower](https://github.com/YoRHa-Agents/ArkTower) live under the `YoRHa-Agents` org. Since v0.5.0 PopolaLoom **vendors** ArkTower's relevant subset (TaskService / EventBus / SqliteTaskRepository / 4 schema migrations) under `popolaloom._vendored.arktower` so `./install.sh install` works on a fresh machine without an ArkTower clone. Refresh procedure: see [`VENDORING.md`](VENDORING.md).
 
 PopolaLoom's per-task quality framework counterpart is [DevolaFlow](https://github.com/YoRHa-Agents/DevolaFlow) — the two Skills coexist (you can install both into the same IDE), and PopolaLoom can dispatch tasks that internally use the DevolaFlow per-task gates / convergence loops.
 

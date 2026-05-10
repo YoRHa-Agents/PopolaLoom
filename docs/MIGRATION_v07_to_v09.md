@@ -1,12 +1,18 @@
+---
+layout: default
+title: Migration Guide v0.7.x to v0.9.0
+description: Operator-facing migration guide for PopolaLoom v0.7.x to v0.9.0 GA.
+---
+
 # PopolaLoom Migration Guide — v0.7.x → v0.9.0
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-10 -->
 
 > **Scope**: every operator-visible change between v0.7.0 and v0.9.0 GA
 > — schema shifts, default-flips, new `popolad.toml` sections, CLI
 > verbs / flags, and concrete recipes for code that pinned to a v0.7.x
 > behaviour.
-> **Last updated**: 2026-05-09
+> **Last updated**: 2026-05-10
 
 This guide is the operator-side companion to
 [`docs/API_STABILITY.md`](API_STABILITY.md) (v0.9.x SemVer contract);
@@ -51,7 +57,7 @@ walking the chain release-by-release.
   `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0`
   (canonical, tag-pinned) **or** `./install.sh install --from=git`
   (auto-tracks main; post-tag = v0.9.0). The default
-  `./install.sh install` and `pip install popolaloom` both currently
+  `./install.sh install` and the bare package-name installer path both currently
   resolve to the prior v0.8.x stable line; that surface returns to
   v0.9.x only after the PyPI patch lands.
 
@@ -163,7 +169,7 @@ Chronological list; each row anchors to its CHANGELOG entry.
 | v0.7.2 | `Popolad.dispatch_with_envelope` canonical entry; `popola handoff list/show/archive` CLI; dual-channel injection. | [§0.7.2](../CHANGELOG.md) |
 | v0.7.3 | `popola dispatch --replay <handoff_id>`; `FeedbackEnvelope`; `to_handoff_envelope` bridge for legacy relay. | [§0.7.3](../CHANGELOG.md) |
 | v0.8.0–v0.8.3 | Docs-only chain: handoff envelope stable promotion; NieR-Popola GitHub Pages site (bilingual zh/en + day/night); UX polish; i18n. | [§0.8.0–0.8.3](../CHANGELOG.md) (PR #9) |
-| v0.8.4 | `install.sh` unified bash installer; `popola skill uninstall` Typer verb. | [§0.8.4](../CHANGELOG.md) |
+| v0.8.x | `install.sh` unified bash installer; `popola skill uninstall` Typer verb. | [§0.8.4](../CHANGELOG.md) |
 | v0.8.5 | `--cli=cursor-cloud` adapter; `TaskState.QUEUED` / `STARTING`; cloud HITL bridge (`POST /hitl/cloud/{request,wait,answer}`). | [§0.8.5](../CHANGELOG.md) (PR #13) |
 | v0.8.6 | SSE ingest (`cloud.sse.*`); `runtime` column; 16-entry bilingual error hint catalog; `--no-stream` escape hatch; manual `cloud-smoke` CI. | [§0.8.6](../CHANGELOG.md) (PR #14) |
 | v0.8.7 | `popolaloom_cloud_hitl_request` MCP tool; `cloud_hitl_request_card_v1` Lark card; `[hitl.cloud]` config; idempotency dedup; mis-route defense. | [§0.8.7](../CHANGELOG.md) (PR #15) |
@@ -239,7 +245,7 @@ Three loader-locked booleans cannot be `false`:
 
 | Version | Change | Type |
 | --- | --- | --- |
-| v0.8.4 | New: `popola skill uninstall --target=<...>` Typer verb. | additive |
+| v0.8.x | New: `popola skill uninstall --target=<...>` Typer verb. | additive |
 | v0.8.5 | New: `--cli=cursor-cloud` value for `popola dispatch --cli`. | additive |
 | v0.8.6 | New: `popola list --no-runtime` (opt-out of default-on column). | escape hatch |
 | v0.8.6 | New: `popola attach --no-stream` (opt-out of default-on SSE). | escape hatch |
@@ -349,7 +355,7 @@ popola relay cursor-fix-bug-3a7f9c1d --dry-run
   TRACKER) — v0.9.0 is GitHub-Release-only. For v0.9.0 install via
   `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.0`
   (canonical) or `./install.sh install --from=git` (alternate). The
-  default `./install.sh install` and `pip install popolaloom` paths
+  default `./install.sh install` and bare package-name installer paths
   currently resolve to the prior v0.8.x stable line.
 - **β real-traffic verification deferred** (`BL-v0.8.7-1`) — γ Worker
   stdio MCP ships first-class; `popola doctor --cloud --mode beta`
@@ -407,5 +413,5 @@ Five steps to walk a v0.7.x deployment up to v0.9.0 GA.
 - [`docs/known-issues.md`](known-issues.md) — operator-visible limits.
 - [`docs/USER_GUIDE.md`](USER_GUIDE.md) — walkthrough through v0.8.8.
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-10 -->
 

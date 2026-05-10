@@ -1,3 +1,9 @@
+---
+layout: default
+title: API Stability Boundary
+description: PopolaLoom v0.9.x stable and experimental API surface.
+---
+
 # PopolaLoom API Stability Boundary — v0.9.x
 
 <!-- updated: 2026-05-10 -->
@@ -270,7 +276,7 @@ precedence chain is part of the v0.9.x stable surface:
 | - | ---- | ------ | ----- |
 | 1 | Explicit override | `resolve_cursor_api_key(override=...)` | Test-only / library-injection hook (`CredentialResolver(override=...)`). Production CLI does NOT expose this — operators use slot 2 or 3. |
 | 2 | Environment variable | `CURSOR_API_KEY` | Highest-precedence operator-facing slot. Whitespace-only values are ignored (treated as unset; No Silent Failures). |
-| 3 | OS keyring | `popolaloom.cursor` / username `default` | Populated by `popola auth cursor set` (or the v0.9.2+ `init --target=cloud-only --configure-cursor-auth` prompt). Backend is the active OS keychain (macOS Keychain, Windows Credential Manager, libsecret on Linux, KWallet, etc.); requires `pip install popolaloom[credentials]`. |
+| 3 | OS keyring | `popolaloom.cursor` / username `default` | Populated by `popola auth cursor set` (or the v0.9.2+ `init --target=cloud-only --configure-cursor-auth` prompt). Backend is the active OS keychain (macOS Keychain, Windows Credential Manager, libsecret on Linux, KWallet, etc.); requires `./install.sh install --with-credentials` on a fresh install or `./install.sh update --with-credentials` on an existing install. |
 | 4 | Missing | n/a | Returns `None`; the CLI surfaces a remediation message naming all three slots. |
 
 **Stable contract (v0.9.x)**:
