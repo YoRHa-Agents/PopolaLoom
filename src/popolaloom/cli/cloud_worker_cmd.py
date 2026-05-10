@@ -53,11 +53,14 @@ import os
 import re
 import shlex
 import shutil
+import signal
 import subprocess
+import time
 from collections.abc import Iterator
 from dataclasses import dataclass
 from hashlib import sha256
 from pathlib import Path
+from types import FrameType
 from typing import Any, NoReturn, cast
 
 import httpx
@@ -401,9 +404,56 @@ def _run_subprocess(argv: list[str]) -> int:
     monkeypatch a no-op recorder without spawning a real subprocess.
     Streams stdout / stderr to the parent terminal so operators see the
     upstream ``agent worker`` output verbatim (No Silent Failures).
+
+    v0.9.9 (F6 — closes ``feedback_for_v0.9.7.md:88-96``): the child is
+    spawned via :class:`subprocess.Popen` with ``start_new_session=True``
+    (calls :func:`os.setsid` between fork and exec) so the Node
+    ``agent worker start`` process becomes the leader of its own
+    process group. SIGTERM and SIGINT delivered to *this* Python
+    wrapper are then cascaded to the entire child group via
+    :func:`os.killpg`, which fixes the orphaning problem where
+    ``kill <wrapper-pid>`` against
+    ``nohup popola cloud worker start ... &`` left the Node child
+    re-parented to PID 1 and still connected to Cursor's cloud.
+
+    The 1-arg ``argv: list[str] -> int`` signature is **preserved**
+    (Q-V099-15) so the existing
+    :file:`tests/cli/test_cloud_worker_cmd.py` monkeypatches like
+    ``lambda argv: 0`` keep working unchanged. Signal handlers are
+    installed inside a ``try/finally`` so they are always restored
+    when this function returns — signal-handling code is
+    security-critical and we never want to leak a forwarder into
+    surrounding test runs or unrelated CLI flows.
     """
-    completed = subprocess.run(argv, check=False)  # noqa: S603
-    return completed.returncode
+    child = subprocess.Popen(argv, start_new_session=True)  # noqa: S603
+
+    def _forward(sig: int, _frame: FrameType | None) -> None:
+        """Re-deliver ``sig`` to the child's whole process group."""
+        try:
+            pgid = os.getpgid(child.pid)
+        except ProcessLookupError:
+            logger.debug(
+                "_run_subprocess: child pid=%d already gone before forwarding %s",
+                child.pid,
+                signal.Signals(sig).name,
+            )
+            return
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            logger.debug(
+                "_run_subprocess: pgid=%d already gone before forwarding %s",
+                pgid,
+                signal.Signals(sig).name,
+            )
+
+    previous_term = signal.signal(signal.SIGTERM, _forward)
+    previous_int = signal.signal(signal.SIGINT, _forward)
+    try:
+        return child.wait()
+    finally:
+        signal.signal(signal.SIGTERM, previous_term)
+        signal.signal(signal.SIGINT, previous_int)
 
 
 def _resolve_pool_env(env: dict[str, str]) -> dict[str, str]:
@@ -852,6 +902,161 @@ def worker_start_cmd(
 
     rc = _spawn_worker_subprocess(argv, pool=pool)
     raise typer.Exit(code=rc)
+
+
+# ── stop verb ────────────────────────────────────────────────────────────
+
+
+_STOP_POLL_INTERVAL_S: float = 0.1
+"""Liveness-poll cadence (seconds) during the ``--grace`` SIGTERM
+window in :func:`worker_stop_cmd`. 100 ms keeps the perceived stop
+latency tight while bounding wakeups during long ``--grace`` waits;
+mirrors the ``_POLL_INTERVAL_S`` constant in :mod:`popolaloom.cli.popolad`.
+"""
+
+
+def _pid_alive(pid: int) -> bool:
+    """Return True iff signal 0 reaches ``pid`` (process exists + we have permission).
+
+    Mirrors :func:`popolaloom.cli.popolad._pid_alive` so the worker
+    stop path can poll for graceful exit without reaching across
+    modules. ``PermissionError`` means the process exists but is owned
+    by another uid (treat as alive); ``ProcessLookupError`` means the
+    pid is gone (treat as dead).
+    """
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    return True
+
+
+def _find_worker_for_stop(
+    *, name: str | None, worker_dir: Path | None
+) -> LocalWorkerProcess | None:
+    """Locate a single running worker by ``--name`` OR ``--worker-dir``.
+
+    ``--worker-dir`` reuses :func:`_detect_running_workers_for_dir`
+    (which already normalises the path + filters by procfs cmdline).
+    ``--name`` scans every ``agent worker start`` cmdline via
+    :func:`_iter_proc_cmdlines` + :func:`_parse_worker_start_cmdline`
+    and returns the first parsed worker whose ``--name`` value matches.
+    Returns ``None`` when no match — caller emits the canonical
+    "no matching worker found" error and exits :data:`_EXIT_UNREACHABLE`.
+    The XOR rule (exactly one of the two flags) is enforced by the
+    caller before invoking this helper.
+    """
+    if worker_dir is not None:
+        matches = _detect_running_workers_for_dir(_resolve_worker_dir(worker_dir))
+        return matches[0] if matches else None
+    if name is not None:
+        for pid, argv in _iter_proc_cmdlines():
+            parsed = _parse_worker_start_cmdline(pid, argv)
+            if parsed is None:
+                continue
+            if parsed.name == name:
+                return parsed
+    return None
+
+
+@app.command(name="stop")
+def worker_stop_cmd(
+    name: str | None = typer.Option(  # noqa: B008
+        None,
+        "--name",
+        help=(
+            "Worker --name value to match against running "
+            "`agent worker start` cmdlines."
+        ),
+    ),
+    worker_dir: Path | None = typer.Option(  # noqa: B008
+        None,
+        "--worker-dir",
+        help="Resolve the running worker via its --worker-dir.",
+    ),
+    grace: float = typer.Option(  # noqa: B008
+        5.0,
+        "--grace",
+        help=(
+            "Seconds to wait for graceful SIGTERM exit before escalating "
+            "to SIGKILL (default 5.0)."
+        ),
+    ),
+) -> None:
+    """Stop a running cloud worker (SIGTERM-then-SIGKILL after --grace seconds).
+
+    Stops the worker even if a Cloud Agent session is currently claimed; """ \
+        """compose with `popola cloud worker status --busy` to gate.
+    """
+    if name is None and worker_dir is None:
+        typer.echo(
+            "error: pass --name OR --worker-dir to identify the worker",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    worker = _find_worker_for_stop(name=name, worker_dir=worker_dir)
+    if worker is None:
+        typer.echo("error: no matching worker found", err=True)
+        raise typer.Exit(code=_EXIT_UNREACHABLE)
+
+    pid = worker.pid
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError as exc:
+        typer.echo(
+            f"error: worker pid={pid} disappeared before signal could be sent: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE) from exc
+
+    logger.info(
+        "worker_stop: sending SIGTERM to worker pid=%d pgid=%d (grace=%.1fs)",
+        pid,
+        pgid,
+        grace,
+    )
+    try:
+        os.killpg(pgid, signal.SIGTERM)
+    except ProcessLookupError as exc:
+        typer.echo(
+            f"error: worker pid={pid} pgid={pgid} disappeared before SIGTERM "
+            f"could be delivered: {exc}",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_UNREACHABLE) from exc
+
+    start = time.monotonic()
+    deadline = start + max(0.0, grace)
+    while time.monotonic() < deadline:
+        if not _pid_alive(pid):
+            elapsed = time.monotonic() - start
+            typer.echo(
+                f"Stopped worker pid={pid} (signal=SIGTERM, "
+                f"exited within {elapsed:.1f}s)"
+            )
+            return
+        time.sleep(_STOP_POLL_INTERVAL_S)
+
+    logger.warning(
+        "worker_stop: pid=%d did not exit within %.1fs grace; sending SIGKILL",
+        pid,
+        grace,
+    )
+    try:
+        os.killpg(pgid, signal.SIGKILL)
+    except ProcessLookupError:
+        logger.info(
+            "worker_stop: pgid=%d already gone before SIGKILL fired",
+            pgid,
+        )
+    typer.echo(
+        f"Killed worker pid={pid} (signal=SIGKILL after {grace:.1f}s grace expiry)"
+    )
 
 
 # ── dispatch verb ────────────────────────────────────────────────────────
