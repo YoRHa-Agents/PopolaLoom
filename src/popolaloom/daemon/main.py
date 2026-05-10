@@ -37,6 +37,7 @@ import signal
 import sys
 import tomllib
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
 from typing import Any, Final
 
@@ -246,6 +247,74 @@ the messages match verbatim.
 """
 
 
+# ── popolad.toml [user_preferences] loader (v0.9.10) ─────────────────────
+
+USER_PREF_VALID_RUNTIMES: Final[frozenset[str]] = frozenset(
+    {"local", "cloud", "ask-each-time"}
+)
+"""Accepted values for ``[user_preferences].default_runtime``."""
+
+USER_PREF_VALID_CLOUD_TARGETS: Final[frozenset[str]] = frozenset(
+    {"self-hosted", "cursor-managed"}
+)
+"""Accepted entries for ``cloud_target_priority`` (order-sensitive).
+
+Deprecated in v0.10.0 (DECISIONS Q-5): superseded by the single-value
+:data:`USER_PREF_VALID_DEFAULT_CLOUD_TARGET` field. Kept for one minor
+release with a one-time deprecation WARN so existing operator TOML files
+keep loading.
+"""
+
+USER_PREF_VALID_DEFAULT_CLOUD_TARGET: Final[frozenset[str]] = frozenset(
+    {"self-hosted", "cursor-managed", "ask-each-time"}
+)
+"""Accepted values for ``[user_preferences].default_cloud_target`` (Q-5).
+
+Single-value successor to the legacy ``cloud_target_priority`` list; the
+``ask-each-time`` sentinel preserves the v0.9.x interactive-prompt semantic
+for operators who do not want to pin a default cloud target.
+"""
+
+USER_PREF_VALID_LOCAL_CLIS: Final[frozenset[str]] = frozenset(
+    {"cursor", "claude", "codex", "copilot"}
+)
+"""Accepted local CLI adapter names for preferences."""
+
+_USER_PREF_KNOWN_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "default_runtime",
+        "cloud_target_priority",
+        "default_cloud_target",
+        "default_local_cli",
+        "fallback_chain",
+        "hitl_enabled",
+        "follow_devola_flow",
+        "prompt_each_dispatch",
+        "last_set_at",
+        "last_set_by",
+    }
+)
+"""All keys recognised under ``[user_preferences]``.
+
+Unlike the cloud v0.8.8 blocks, this section is user-authored by the init
+wizard and CI flags. Unknown keys are therefore rejected so typos do not
+silently change dispatch behavior.
+"""
+
+
+_CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED: bool = False
+"""Process-lifetime flag gating the one-time ``cloud_target_priority`` WARN.
+
+Per DECISIONS Q-5 / PLAN B1 AC 6, the legacy list-of-targets
+``cloud_target_priority`` is read-only-with-deprecation-warn during the
+v0.10.x window. The WARN fires only when (a) the operator's TOML
+explicitly sets ``cloud_target_priority`` and (b) ``default_cloud_target``
+is still at its ``"ask-each-time"`` default (i.e. the operator has not
+yet migrated). The flag is module-level so the WARN fires at most once
+per process; tests reset it via ``monkeypatch`` between scenarios.
+"""
+
+
 @dataclass(frozen=True)
 class CloudHITLConfig:
     """Validated ``[hitl.cloud]`` section of ``popolad.toml``.
@@ -362,11 +431,39 @@ class CloudConfig:
 
 
 @dataclass(frozen=True)
+class UserPreferencesConfig:
+    """Validated ``[user_preferences]`` section of ``popolad.toml``.
+
+    The whole section is optional: :class:`PopoladConfig` stores ``None`` when
+    it is absent so v0.9.9 dispatch behavior (``--cli`` required) is preserved.
+    When the section is present, per-key defaults apply.
+
+    The ``default_cloud_target`` field (v0.10.0, DECISIONS Q-5) is the
+    single-value successor to ``cloud_target_priority`` (now deprecated).
+    Both fields are loaded for the v0.10.x window; the dispatch resolver
+    consults ``default_cloud_target`` first and falls back to
+    ``cloud_target_priority[0]`` only when the new field is at its default.
+    """
+
+    default_runtime: str = "local"
+    cloud_target_priority: tuple[str, ...] = ("self-hosted", "cursor-managed")
+    default_cloud_target: str = "ask-each-time"
+    default_local_cli: str = "cursor"
+    fallback_chain: tuple[str, ...] = ()
+    hitl_enabled: bool = True
+    follow_devola_flow: bool = False
+    prompt_each_dispatch: bool = False
+    last_set_at: str = ""
+    last_set_by: str = ""
+
+
+@dataclass(frozen=True)
 class PopoladConfig:
     """Top-level ``popolad.toml`` schema as consumed by the daemon."""
 
     hitl: HITLConfig = field(default_factory=HITLConfig)
     cloud: CloudConfig = field(default_factory=CloudConfig)
+    user_preferences: UserPreferencesConfig | None = None
 
 
 def get_popolad_config_path() -> Path:
@@ -436,6 +533,67 @@ def _require_bool(
     return value
 
 
+def _require_str(
+    value: Any,
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> str:
+    """Validate that ``value`` is a TOML string."""
+    if not isinstance(value, str):
+        raise ValueError(
+            f"[{section}].{key} in {source} must be a string; got {value!r} "
+            f"(type {type(value).__name__})"
+        )
+    return value
+
+
+def _require_str_list(
+    value: Any,
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> list[str]:
+    """Validate that ``value`` is a TOML list of strings."""
+    if not isinstance(value, list):
+        raise ValueError(
+            f"[{section}].{key} in {source} must be a list of strings; "
+            f"got {type(value).__name__}"
+        )
+    out: list[str] = []
+    for idx, item in enumerate(value):
+        if not isinstance(item, str):
+            raise ValueError(
+                f"[{section}].{key}[{idx}] in {source} must be a string; "
+                f"got {item!r} (type {type(item).__name__})"
+            )
+        out.append(item)
+    return out
+
+
+def _require_iso_string(
+    value: Any,
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> str:
+    """Validate an optional ISO-8601 timestamp string."""
+    text = _require_str(value, section=section, key=key, source=source)
+    if not text:
+        return text
+    try:
+        datetime.fromisoformat(text.replace("Z", "+00:00"))
+    except ValueError as exc:
+        raise ValueError(
+            f"[{section}].{key} in {source} must be an ISO-8601 string; "
+            f"got {text!r}"
+        ) from exc
+    return text
+
+
 def _warn_unknown_keys(
     section_name: str,
     section: dict[str, Any],
@@ -458,6 +616,21 @@ def _warn_unknown_keys(
             source,
             ", ".join(extras),
             ", ".join(sorted(known)),
+        )
+
+
+def _reject_unknown_keys(
+    section_name: str,
+    section: dict[str, Any],
+    known: frozenset[str],
+    source: Path,
+) -> None:
+    """Reject keys not in ``known`` (used for strict user-facing config)."""
+    extras = sorted(set(section) - known)
+    if extras:
+        raise ValueError(
+            f"[{section_name}] in {source}: unknown key(s) {', '.join(extras)}; "
+            f"known keys: {', '.join(sorted(known))}"
         )
 
 
@@ -560,6 +733,7 @@ def load_popolad_config(path: Path | None = None) -> PopoladConfig:
     backoff_cfg = _load_cloud_backoff(raw, source=p)
     relay_cfg = _load_cloud_relay(raw, source=p)
     busy_cfg = _load_cloud_busy_strategy(raw, source=p)
+    user_preferences_cfg = _load_user_preferences(raw, source=p)
 
     return PopoladConfig(
         hitl=HITLConfig(
@@ -574,7 +748,183 @@ def load_popolad_config(path: Path | None = None) -> PopoladConfig:
             relay=relay_cfg,
             busy_strategy=busy_cfg,
         ),
+        user_preferences=user_preferences_cfg,
     )
+
+
+def _load_user_preferences(
+    raw: dict[str, Any],
+    *,
+    source: Path,
+) -> UserPreferencesConfig | None:
+    """Parse + validate optional ``[user_preferences]``.
+
+    Missing section returns ``None`` to preserve the v0.9.9 CLI contract.
+    A present empty section returns defaults, and every present key is strictly
+    typed/enum-validated so malformed preferences fail loudly.
+    """
+    if "user_preferences" not in raw:
+        return None
+    section = raw["user_preferences"]
+    if not isinstance(section, dict):
+        raise ValueError(
+            f"[user_preferences] in {source} must be a table; "
+            f"got {type(section).__name__}"
+        )
+
+    _reject_unknown_keys(
+        "user_preferences", section, _USER_PREF_KNOWN_KEYS, source
+    )
+
+    default_runtime = _require_str(
+        section.get("default_runtime", "local"),
+        section="user_preferences",
+        key="default_runtime",
+        source=source,
+    )
+    if default_runtime not in USER_PREF_VALID_RUNTIMES:
+        raise ValueError(
+            f"[user_preferences].default_runtime in {source} must be one of "
+            f"{sorted(USER_PREF_VALID_RUNTIMES)}; got {default_runtime!r}"
+        )
+
+    cloud_target_priority = _require_str_list(
+        section.get("cloud_target_priority", ["self-hosted", "cursor-managed"]),
+        section="user_preferences",
+        key="cloud_target_priority",
+        source=source,
+    )
+    for idx, item in enumerate(cloud_target_priority):
+        if item not in USER_PREF_VALID_CLOUD_TARGETS:
+            raise ValueError(
+                f"[user_preferences].cloud_target_priority[{idx}] in {source} "
+                f"must be one of {sorted(USER_PREF_VALID_CLOUD_TARGETS)}; "
+                f"got {item!r}"
+            )
+
+    default_cloud_target = _require_str(
+        section.get("default_cloud_target", "ask-each-time"),
+        section="user_preferences",
+        key="default_cloud_target",
+        source=source,
+    )
+    if default_cloud_target not in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
+        raise ValueError(
+            f"[user_preferences].default_cloud_target in {source} must be one "
+            f"of {sorted(USER_PREF_VALID_DEFAULT_CLOUD_TARGET)}; "
+            f"got {default_cloud_target!r}"
+        )
+
+    default_local_cli = _require_str(
+        section.get("default_local_cli", "cursor"),
+        section="user_preferences",
+        key="default_local_cli",
+        source=source,
+    )
+    if default_local_cli not in USER_PREF_VALID_LOCAL_CLIS:
+        raise ValueError(
+            f"[user_preferences].default_local_cli in {source} must be one of "
+            f"{sorted(USER_PREF_VALID_LOCAL_CLIS)}; got {default_local_cli!r}"
+        )
+
+    fallback_chain = _require_str_list(
+        section.get("fallback_chain", []),
+        section="user_preferences",
+        key="fallback_chain",
+        source=source,
+    )
+    for idx, item in enumerate(fallback_chain):
+        if item not in USER_PREF_VALID_LOCAL_CLIS:
+            raise ValueError(
+                f"[user_preferences].fallback_chain[{idx}] in {source} "
+                f"must be one of {sorted(USER_PREF_VALID_LOCAL_CLIS)}; "
+                f"got {item!r}"
+            )
+
+    hitl_enabled = _require_bool(
+        section.get("hitl_enabled", True),
+        section="user_preferences",
+        key="hitl_enabled",
+        source=source,
+    )
+    follow_devola_flow = _require_bool(
+        section.get("follow_devola_flow", False),
+        section="user_preferences",
+        key="follow_devola_flow",
+        source=source,
+    )
+    prompt_each_dispatch = _require_bool(
+        section.get("prompt_each_dispatch", False),
+        section="user_preferences",
+        key="prompt_each_dispatch",
+        source=source,
+    )
+    last_set_at = _require_iso_string(
+        section.get("last_set_at", ""),
+        section="user_preferences",
+        key="last_set_at",
+        source=source,
+    )
+    last_set_by = _require_str(
+        section.get("last_set_by", ""),
+        section="user_preferences",
+        key="last_set_by",
+        source=source,
+    )
+
+    # v0.10.0 DECISIONS Q-5 / PLAN B1 AC 6: deprecation WARN for the legacy
+    # `cloud_target_priority` field. Fires exactly once per process — only
+    # when (a) the operator's TOML explicitly sets `cloud_target_priority`
+    # (so we don't pester users on fresh installs) AND (b) the operator has
+    # NOT yet migrated (i.e. `default_cloud_target` is still at default).
+    global _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED
+    if (
+        not _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED
+        and "cloud_target_priority" in section
+        and default_cloud_target == "ask-each-time"
+    ):
+        logger.warning(
+            "cloud_target_priority is deprecated as of v0.10.0; "
+            "use default_cloud_target instead"
+        )
+        _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED = True
+
+    return UserPreferencesConfig(
+        default_runtime=default_runtime,
+        cloud_target_priority=tuple(cloud_target_priority),
+        default_cloud_target=default_cloud_target,
+        default_local_cli=default_local_cli,
+        fallback_chain=tuple(fallback_chain),
+        hitl_enabled=hitl_enabled,
+        follow_devola_flow=follow_devola_flow,
+        prompt_each_dispatch=prompt_each_dispatch,
+        last_set_at=last_set_at,
+        last_set_by=last_set_by,
+    )
+
+
+def user_preferences_to_toml_dict(
+    config: UserPreferencesConfig,
+) -> dict[str, Any]:
+    """Return a TOML-serializable ``[user_preferences]`` dict.
+
+    v0.10.0 (DECISIONS Q-5 / PLAN B1 AC 5) added ``default_cloud_target``
+    alongside the legacy ``cloud_target_priority`` list — both are
+    serialized for the v0.10.x window so a freshly-written TOML file can
+    be re-loaded round-trip without losing fields.
+    """
+    return {
+        "default_runtime": config.default_runtime,
+        "cloud_target_priority": list(config.cloud_target_priority),
+        "default_cloud_target": config.default_cloud_target,
+        "default_local_cli": config.default_local_cli,
+        "fallback_chain": list(config.fallback_chain),
+        "hitl_enabled": config.hitl_enabled,
+        "follow_devola_flow": config.follow_devola_flow,
+        "prompt_each_dispatch": config.prompt_each_dispatch,
+        "last_set_at": config.last_set_at,
+        "last_set_by": config.last_set_by,
+    }
 
 
 def _load_cloud_backoff(raw: dict[str, Any], *, source: Path) -> BackoffConfig:

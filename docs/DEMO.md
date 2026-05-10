@@ -1,14 +1,14 @@
 ---
 layout: default
 title: Demo
-description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v0.9.7.
+description: Product walkthrough, example outputs, design rationale, and implementation flow for PopolaLoom v1.0.0-pre.1.
 lang: en
 translation_url: /zh/DEMO.html
 ---
 
 # PopolaLoom — Product Demo
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
 
 > One local sidecar daemon turns Cursor, Claude, Codex, Kimi, and Copilot
 > into a persistent task bus with auditable handoff files and human-in-the-loop

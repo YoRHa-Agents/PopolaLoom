@@ -8,7 +8,9 @@ translation_url: /QUICKSTART.html
 
 # PopolaLoom — 5 分钟快速开始
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
+
+> 当前版本：**v1.0.0-pre.1**（2026-05-11）。完整变更请参考 [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md)：env-shape pivot、删除 v0.9.9 account_class gate、新 `--cloud-target` / `--worker-name` flag。
 
 > 从安装到看到第一个 `popola list` 任务，只需要一条本地 daemon 线和一个 agent CLI。完整参考见 [`USER_GUIDE.md`](USER_GUIDE.md)。
 
@@ -22,11 +24,11 @@ translation_url: /QUICKSTART.html
 ## Step 1 — 安装
 
 ```bash
-# 当前 v0.9.7 release。默认安装路径走 GitHub；PyPI promotion 仍延后。
+# 当前 v1.0.0-pre.1 release。默认安装路径走 GitHub；PyPI promotion 仍延后。
 ./install.sh install                                              # 推荐：默认 --from=git，跟随 main
 
 # 可选：固定到 release tag，便于复现
-./install.sh install --ref=v0.9.7
+./install.sh install --ref=v1.0.0-pre.1
 
 # 可选：同时装上 OS keyring extra（v0.9.7+）
 ./install.sh install --with-credentials
@@ -37,12 +39,12 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # 验证
-python -c "import popolaloom; print(popolaloom.__version__)"   # -> 0.9.7
+python -c "import popolaloom; print(popolaloom.__version__)"   # -> 1.0.0-pre.1
 which popola
-popola version                                                 # -> "popolaloom 0.9.7"
+popola version                                                 # -> "popolaloom 1.0.0-pre.1"
 ```
 
-如果你确实需要绕过安装脚本、直接指定 release tag，可以用 `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.7`。在 `BL-v0.9.x-PyPI` promotion patch 落地前，不建议使用裸包名安装。
+如果你确实需要绕过安装脚本、直接指定 release tag，可以用 `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1`。在 `BL-v0.9.x-PyPI` promotion patch 落地前，不建议使用裸包名安装。
 
 如果安装后提示 `popola: command not found`，通常是 shell 没有包含 `~/.local/bin`：
 
@@ -136,7 +138,7 @@ popola doctor --json
 
 ```bash
 bash examples/quickstart.sh
-# [quickstart] all 6 steps PASS — popolaloom v0.9.7 ready
+# [quickstart] all 6 steps PASS — popolaloom v1.0.0-pre.1 ready
 ```
 
 脚本默认使用临时 `$POPOLA_HOME`，不会污染真实的 `~/.popola`。

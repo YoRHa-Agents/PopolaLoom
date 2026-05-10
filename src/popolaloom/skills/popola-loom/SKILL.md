@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.9.9
+version: 1.0.0-pre.1
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -10,10 +10,10 @@ metadata:
   cliHelp: "popola --help"
 tier: 1
 token_estimate: 3300
-last_updated: "2026-05-10"
+last_updated: "2026-05-11"
 ---
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11; v1.0.0-pre.1 docs/skill sync -->
 
 
 # PopolaLoom Skill
@@ -437,6 +437,18 @@ popola cloud worker dispatch "..." --worker-dir "$(pwd)" \
 
 完整文档：[USER_GUIDE §Self-hosted worker handoff](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091)。
 
+### Workflow 11 — Dispatch with user preferences (v0.9.10+, experimental)
+
+Repeatable dispatch defaults without shell aliases:
+
+```bash
+popola init --interactive
+popola dispatch "summarize repo state" --use-preferences
+popola dispatch "review migration plan" --profile daily-driver --json
+```
+
+Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.0.0 stable.
+
 ## Configuration
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
@@ -456,32 +468,38 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 | `LARK_PRIORITY_BOT_ID` | 出口卡用哪个 bot 发（multi-bot setup） | (unset → 默认 bot) |
 | `CURSOR_API_KEY` | Cursor Cloud Agents REST Basic 用户名 (= API key)，密码空 | (unset → `--cli=cursor-cloud` 不可用 / `CursorCloudAdapter.is_available()==False`) |
 
+### User preferences (v0.9.10+, experimental)
+
+`[user_preferences]` is an **experimental until v1.0.0 stable** routing/profile schema. Typical keys: `default_cli`, `default_cwd`, `confirm_before_cloud`, `prefer_streaming`, `handoff_tags`, and `[user_preferences.dispatch] timeout_seconds` / `extra_cli_flags`. Never store secrets here.
+
+```toml
+[user_preferences]
+default_cli = "cursor"
+confirm_before_cloud = true
+[user_preferences.dispatch]
+timeout_seconds = 120
+```
+
 > **Lark gating**：当 `lark-cli` 不在 PATH **或** `LARK_HITL_TARGET_OPEN_ID` unset 时，daemon 静默退化为只发本地事件 + 写本机 NDJSON（不抛异常，per the No Silent Failures + degrade-gracefully 双约束）。
 
 ## Reference
 
-- **Repo / README**：[github.com/YoRHa-Agents/PopolaLoom](https://github.com/YoRHa-Agents/PopolaLoom) — 5 分钟 quickstart、架构 ASCII 图、5/5 self-bootstrap scenario 矩阵。
-- **Architecture diagram**：repo 内 `docs/DEMO.md`（截图 + 完整会话 walkthrough）。
-- **Spec + ADRs**：repo 内 `.local/memory/specs/popolaloom/`（spec.md / implementation-plan.md / v0.5.0-plan.md / adrs/）。
-- **MCP verbs（IDE Agent integration）**：9-verb stdio 桥（`popola_submit` / `popola_list` / `popola_status` / `popola_attach_stream` / `popola_supply_feedback` / `popola_cancel` / `popola_inject_subtask` / `popola_relay` / `popola_supervise`）— 见 `src/popolaloom/mcp/tools.py`。
-- **Sibling project**：[ArkTower](https://github.com/YoRHa-Agents/ArkTower) — 任务池 / FSM / EventBus / SQL migrations 提供方（v0.5.0 起 vendored 进 `popolaloom._vendored.arktower`，`pip install popolaloom` 不再需要 ArkTower 单独 clone）。
-- **Related Skill**：[devola-flow](https://github.com/YoRHa-Agents/DevolaFlow) — 单 agent 任务质量 / 4-layer hierarchy / convergence-loop framework；PopolaLoom 是它的多任务 / 多 CLI 编排互补层（你可以同时装两个 Skill）。
-- **Repo 内 examples**：`examples/quickstart.sh`（5 步自动 smoke）、`examples/quickstart-skill.md`（v0.5.0 Stage S5 起的长版 SKILL example）。
+- **Repo / README**：[github.com/YoRHa-Agents/PopolaLoom](https://github.com/YoRHa-Agents/PopolaLoom)。
+- **Docs**：`docs/USER_GUIDE.md` / `docs/DEMO.md` / `docs/API_STABILITY.md`。
+- **MCP verbs**：9-verb stdio bridge in `src/popolaloom/mcp/tools.py`.
+- **Related**：[ArkTower](https://github.com/YoRHa-Agents/ArkTower) task pool + [devola-flow](https://github.com/YoRHa-Agents/DevolaFlow) single-agent quality framework.
 
 ## Version + upgrade
 
-- **Current**: v0.9.6 patch（2026-05-10，**stable since v0.9.0**）— Skill 前缀 (`name`/`version`/`description`) 进 v0.9.x SemVer-stable 锁；body 内容（含本 Workflow 编号）显式标 out-of-scope（[API_STABILITY §7](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#7-out-of-scope)）。`popola init` (Stage S2/S3 起) 自动写本 SKILL.md 到 `~/.cursor/skills/popola-loom/SKILL.md`、`~/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage 5 release task 在每次 minor 把 `__version__` 与本 frontmatter 同步 bump（`tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` 卡死 lockstep）。
+- **Current**: v1.0.0-pre.1（2026-05-11，**stable since v0.9.0**）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
 - **Install / Upgrade**:
   ```bash
-  ./install.sh install                # v0.9.6 起 default --from=git（canonical, tracks main）
-  ./install.sh install --ref=v0.9.6   # tag-pinned 等价于 git+...@v0.9.6
-  # 手动 fallback（PyPI 未发，Q-D-5 偏离默认 / BL-v0.9.x-PyPI）：
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.6
+  ./install.sh install
+  ./install.sh install --ref=v1.0.0-pre.1
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
-  popola init                            # 兜底：idempotent re-run
   ```
-  > v0.9.6 GitHub Release-only。`./install.sh install` 默认改走 `--from=git`，不再因 PyPI 镜像 404 而失败（`.local/feedbacks/feedback_for_v0.9.4.md` 第 2-5 行）。当 v0.9.x promote 到 PyPI（`BL-v0.9.x-PyPI`）后，`--from=pypi --version=0.9.x` 是 opt-in。
-- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
-- **Drift detection (v0.5.0+ Stage S4)**: `popola doctor` 走 5 项审计（Skill / Daemon / Lark-cli / ArkTower / IDE config），任一 ✗ 退 1，全 ✓ 退 0；脚本可信赖此 exit code。
-- **Idempotency**: 所有 `popola init <verb>` 二次执行打印 `SKIP <path> (already installed)` 不覆盖；要强制刷新走 `popola skill upgrade`。
-- **v0.7.x → v0.9.0 升级**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)（4 条 spec-locked recipes：A audit `TaskState` predicates；B fix `popola list` shell parsers；C port `POST /hitl/cloud/request` callers；D preserve v0.8.7 `popola relay` 默认行为通过 `[cloud.relay] mode = "confirm"`）。
+  > PyPI remains deferred for v0.9.x / v1.0.0-pre.x; default installer uses GitHub.
+- **Check / drift**: `popola version`, `cat ~/.cursor/skills/popola-loom/.popola-loom-version`, then `popola doctor`.
+- **Idempotency**: `popola init <verb>` skips existing installs; force refresh via `popola skill upgrade`.
+- **v0.7.x → v0.9.0**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。

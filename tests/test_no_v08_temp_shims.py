@@ -137,21 +137,42 @@ def test_no_v08_temp_markers_in_source() -> None:
     )
 
 
+_V010_DEPRECATION_ALLOWLIST: frozenset[str] = frozenset(
+    {
+        "src/popolaloom/adapters/cursor_cloud.py",
+    }
+)
+"""Files allowed to call ``warnings.warn(..., DeprecationWarning)`` in v0.10.0+.
+
+Per v0.10.0 DECISIONS Q-2 + Q-11 (`.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`),
+``cursor_cloud.py`` translates legacy v0.9.x ``use_private_worker``/``labels``/
+``worker_name``/``machine_name`` extras to the new ``env: AgentEnv`` shape
+during a one-minor-release deprecation window. The warning targets the
+v0.9.x → v0.10.0 transition (NOT a v0.8.x shim), so it is explicitly
+allowlisted; v1.1+ removes the alias entirely.
+"""
+
+
 def test_no_v08x_deprecation_warning_raises() -> None:
     """No ``warnings.warn(..., DeprecationWarning)`` raise targets a v0.8.x surface.
 
-    Future-targeted warnings (e.g. for v0.9.x → v0.10) are tolerated;
-    none exist as of v0.9.0 GA so the lint asserts zero raises.
+    Future-targeted warnings (e.g. for v0.9.x → v0.10) are tolerated via the
+    explicit ``_V010_DEPRECATION_ALLOWLIST``; any new file appearing in the
+    offender list must be reviewed (either: actually target v0.8.x → remove,
+    or: target v0.10.0+ legitimately → add to the allowlist).
     """
     offenders: list[str] = []
     for path in _walk_python_sources():
         text = path.read_text(encoding="utf-8")
         if _DEPRECATION_WARN_RE.search(text):
-            offenders.append(str(path.relative_to(SRC_ROOT.parent.parent)))
+            rel = str(path.relative_to(SRC_ROOT.parent.parent))
+            if rel not in _V010_DEPRECATION_ALLOWLIST:
+                offenders.append(rel)
 
     assert not offenders, (
         "v0.9.0 W2.2 release-gate: warnings.warn(..., DeprecationWarning) "
-        "raises remain:\n  " + "\n  ".join(offenders)
+        "raises remain (and are NOT on the v0.10.0 allowlist):\n  "
+        + "\n  ".join(offenders)
     )
 
 

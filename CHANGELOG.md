@@ -10,9 +10,151 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-(intentionally empty — accumulating for the next v0.9.x patch.)
+(intentionally empty — accumulating for the next v1.0.0-pre.x patch.)
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
+
+## [1.0.0-pre.1] — 2026-05-11
+
+**Theme**: Cloud dispatch clarity — pivot the Cursor Cloud Agents adapter to the live `env: {type, name?}` REST schema, delete the v0.9.9 `account_class` hard-fail gate, install a worker-existence pre-flight gate in its place, surface first-class `--cloud-target` / `--worker-name` flags on `popola dispatch`, and enforce the user's "no silent local fallback" contract end-to-end. Closes [`./.local/feedbacks/feedback_for_v0.10.0.md`](.local/feedbacks/feedback_for_v0.10.0.md) (the verbatim feedback that the cloud dispatch path must (a) produce a Cloud-Agents-Dashboard-visible run and (b) never silently fall back to a local subprocess). All twelve design questions are locked in [`./.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`](.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md) (Q-1..Q-12); each row below is the one-line summary of the corresponding decision.
+
+This is the first **`1.0.0-pre.x`** tag — a pre-release on the GA road. The `1.0.0` minor / patch lineage continues from v0.9.10 with no functional debt carried forward; v0.9.x users upgrade by running through the [Breaking changes](#breaking-changes) checklist and re-running `popola init --interactive` to pick up the new `default_cloud_target` preference.
+
+### Breaking changes
+
+The four breaking-change items below are the operator-facing contract shifts. **If you used `popola dispatch --cli=cursor-cloud` in v0.9.x, please read each row before upgrading.**
+
+- **Q-2 — Wire-shape pivot on `POST /v1/agents`** (`usePrivateWorker` / `labels.worker` → `env: {type, name?}`). The Cursor REST gateway 400s on the v0.9.x `usePrivateWorker:true` body shape (live probes 22/22 confirm). v1.0.0-pre.1 emits `env: {type:"machine"|"pool"|"cloud", name?}` instead. **Backward-compat alias** in `_normalize_cloud_extra` translates `--cli-flag use_private_worker=true` and `--cli-flag labels='{"worker":"X"}'` to the new shape with a `DeprecationWarning`; the alias is scheduled for removal in v1.1+. **You must migrate** any script that hand-built `usePrivateWorker:true` raw HTTP payloads to the new `env` shape; the `popola dispatch --cli-flag worker_name=X` escape hatch keeps working unchanged via the new `--cloud-target=self-hosted --worker-name=X` aliasing.
+- **Q-4 — `account_class` hard-fail pre-flight gate REMOVED**, replaced by a worker-existence pre-flight gate. The v0.9.9 `_enforce_account_class_pre_flight_gate()` (exit 78 on `account_class != service-account`) is **deleted**: it was based on the Spike-0 BRANCH_B verdict that personal API keys cannot drive self-hosted-worker dispatch — research/01's 22 successful 2xx probes (verdict `BRANCH_A_FEASIBLE`) **disconfirmed** that verdict. The new `_enforce_self_hosted_worker_exists()` gate replaces it at the same call site (same exit code 78); the failure mode it now surfaces is the real one operators care about ("operator typed `--worker-name=X` but no such worker is registered with Cursor"). **You must update** any CI script that grep'd for the v0.9.9 `account_class` exit-78 hint — the new bilingual hint contains the substring `popola cloud worker start --name <X> --worker-dir <repo-root>` and the Chinese fragment `Worker '<name>' 不存在`.
+- **Q-7 — No silent local fallback** when `cloud-target=self-hosted` and the named worker is missing. v0.9.x's failure-path UX could route a failing cloud dispatch to a `--cli=cursor` local subprocess; v1.0.0-pre.1 **never** silently re-routes (per the verbatim user feedback that "云端派发与本地执行是语义不同的两件事"). The new pre-flight gate exits 78 with a hint pointing at the actual fix (`popola cloud worker start --name <X> --worker-dir <repo-root>`), NOT at any local-CLI path. The legacy `[user_preferences].fallback_chain` is preserved for `default_runtime=local` flows; it is explicitly NOT consulted on cloud paths. **You must remove** any expectation that a missing worker "auto-falls-back" to local; if your team relied on that, install a real `popola cloud worker start` step earlier in your pipeline.
+- **Q-11 — Adapter API: `CloudCursorClient.create_agent` signature change** — the `use_private_worker: bool` and `labels: dict` keyword arguments are **deprecated** in favour of a typed `env: AgentEnv | None = None` parameter (`AgentEnv = TypedDict("AgentEnv", {type, name})`). Calls passing the old kwargs raise `DeprecationWarning` and are translated to the new shape; v1.1+ removes the kwargs entirely. **You must migrate** any direct adapter consumers (the Python public API, not the CLI) to pass `env={"type": "machine", "name": "X"}` instead of `use_private_worker=True, labels={"worker": "X"}`.
+
+### Q-1..Q-12 decision summaries (verbatim from `DECISIONS.md`)
+
+The full rationale, options, and reversal cost for each row lives in [`./.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`](.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md). The one-line summaries below carry the implementation delta for this release.
+
+- **Q-1 — API-key class detection**: chosen Option A — `GET /v1/me` is the canonical probe (the response carries the runtime-additive `userId | userFirstName | userLastName` trio for personal keys). The detection is **purely informational** in v1.0.0-pre.1: every code path that could route to either shape uses the env-field shape unconditionally (Q-2). Net-add `CloudCursorClient.me()` HTTP method.
+- **Q-2 — Routing field shape on `POST /v1/agents`**: chosen Option A — full pivot to `env: {type, name?}`; drop `usePrivateWorker` / `labels` from the request body for both API-key classes. One-release deprecation alias inside `_normalize_cloud_extra` covers the v0.9.x `--cli-flag use_private_worker=true` invocations. **(Breaking — see above.)**
+- **Q-3 — Worker discovery**: chosen Option A — REST `GET /v0/private-workers` (works for personal keys, per probe PROBE_07 / PROBE_44). Net-add `CloudCursorClient.list_workers()` + a new `_lookup_worker_by_name()` helper feeding the worker-existence pre-flight gate.
+- **Q-4 — Pre-flight gate semantics**: chosen Options A + B — **delete** the v0.9.9 `account_class` hard-fail gate; **install** a worker-existence pre-flight gate in its place. Same exit code (78) so script branching keeps working. **(Breaking — see above.)**
+- **Q-5 — Init UX for cloud-target selection**: chosen Option B — extend the existing `popola init --interactive` wizard with one new `default_cloud_target` question, gated on `default_runtime ∈ {cloud, ask-each-time}`. Preserves v0.9.9 muscle memory; net-add `default_cloud_target: str = "ask-each-time"` field on `UserPreferencesConfig`. The legacy `cloud_target_priority` list is read-only-with-deprecation-warn during the v1.0.0-pre.x window.
+- **Q-6 — Per-task override CLI**: chosen Option A — add explicit `--cloud-target` (`self-hosted` / `cursor-managed` / `ask-each-time`) and `--worker-name` Typer flags on `popola dispatch`. Auto-set `cli="cursor-cloud"` when `--cloud-target` is given AND `--cli` is empty. Backward-compat: `--cli-flag worker_name=X` and `--cli-flag use_private_worker=true` still work via the same extras dict (translated by Q-2's alias).
+- **Q-7 — No-fallback contract enforcement**: chosen Option A — verbatim user demand. When `cloud-target=self-hosted` and the named worker is missing, hard-exit non-zero with a bilingual hint pointing at the actual fix (`popola cloud worker start --name <X> --worker-dir <repo-root>`). **NEVER** silently re-route to `--cli=cursor` local. **(Breaking — see above.)**
+- **Q-8 — `branchName` / `autoGenerateBranch` handling**: chosen Option A — drop `autoGenerateBranch:false` from the body builder entirely (the Cursor gateway 400s on it; live-schema fix). Add `workOnCurrentBranch:true` (the actual accepted name) when `work_on_current_branch=True`. `--cli-flag autoGenerateBranch=...` is translated to a no-op with a `DeprecationWarning`.
+- **Q-9 — GitHub-App caveat handling**: chosen Option C (both) — extend the `_ERROR_CATALOG` regex for `integration_github_app_branch_not_found` to match the second message variant ("Failed to determine repository default branch"); add a `GET /v1/repositories` pre-flight when `repos[0].url` host is `github.com` so operators see a friendly hint **before** the dispatch attempt instead of after. Two new catalog entries (`repository_required` + `pr_resolution_failed`); catalog count goes from 16 → 18.
+- **Q-10 — `account_class` knob & keyring slot**: chosen Option A — keep `AccountClass` enum + `--account-class` CLI flag + TOML field (no API breakage) but add a **one-time deprecation WARN** on first non-`unknown` read. Removal targets v1.1+. Operators with `account_class` set in `credentials.toml` see one log line per process; the value is no longer consulted by any gate.
+- **Q-11 — Adapter API surface stability**: chosen Option A — drop `use_private_worker` / `labels` kwargs on `CloudCursorClient.create_agent` in favour of `env: AgentEnv | None = None`. One-release deprecation window with `DeprecationWarning` translation; v1.1+ removes the kwargs. New `AgentEnv = TypedDict("AgentEnv", {type, name})` near the top of `cursor_cloud.py`. **(Breaking — see above.)**
+- **Q-12 — Test strategy: live-network test gating**: chosen Options A + B + C — the existing `real_cursor_cloud` pytest mark gates the smoke set (Option A); a new `tests/cloud/test_real_cursor_cloud_env_shape_v0_10_0.py` adds the v0.10.0-specific smoke (Option B); the v1.0.0-pre.1 release-gate criteria document the live smoke as a release-gate checkbox (Option C). Live cost cap ≤ 20 API calls per test session.
+
+### Added
+
+- **`CloudCursorClient.me()` and `CloudCursorClient.list_workers()`** (NEW; v1.0.0-pre.1 — Q-1 + Q-3) — typed REST clients for `GET /v1/me` and `GET /v0/private-workers`. `me()` returns `{api_key_class, user_id, user_email}` — `api_key_class` is `"personal"` iff the response contains any of `userId | userFirstName | userLastName`. `list_workers()` returns a `list[WorkerInfo]` with keys `worker_id, name, is_in_use, active_bc_id, repo_url, user_id`.
+- **`AgentEnv` TypedDict** (NEW; v1.0.0-pre.1 — Q-2 + Q-11) — `class AgentEnv(TypedDict, total=False): type: Literal["cloud","pool","machine"]; name: str` near the top of `cursor_cloud.py`. Used by the new `create_agent(env=...)` parameter.
+- **`popolaloom.cloud.preflight` package + `check_self_hosted_worker_exists` / `check_github_app_installed` helpers** (NEW; v1.0.0-pre.1 — Q-3 + Q-9) — two pure functions, easily mockable, no `httpx` import; consumed by the worker-existence pre-flight gate (`cli/cloud_worker_cmd.py`) and the GitHub-App pre-flight inside `cursor_cloud.create_agent`.
+- **`UserPreferencesConfig.default_cloud_target` field** (NEW; v1.0.0-pre.1 — Q-5) — string in `{"self-hosted", "cursor-managed", "ask-each-time"}`, defaults to `"ask-each-time"`. Validated by `_load_user_preferences`; serialized by `user_preferences_to_toml_dict`. The legacy `cloud_target_priority` list is preserved with a one-time `WARN` on read when `default_cloud_target` is at default.
+- **`popola init --interactive` extended** (v1.0.0-pre.1 — Q-5) — wizard now asks `default_cloud_target` immediately after `default_runtime`, gated on `default_runtime ∈ {cloud, ask-each-time}` (skipped entirely when `default_runtime=local`). The non-interactive `--set default_cloud_target=...` path is also new.
+- **`popola dispatch --cloud-target` + `--worker-name` Typer flags** (NEW; v1.0.0-pre.1 — Q-6) — `--cloud-target` accepts `self-hosted | cursor-managed | ask-each-time`; `--worker-name` is required iff `--cloud-target=self-hosted` and rejected when `--cloud-target=cursor-managed`. When `--cloud-target` is given AND `--cli` is empty, `cli="cursor-cloud"` is auto-set. Precedence: per-task flag > `[user_preferences].default_cloud_target` > `"ask-each-time"`.
+- **`_enforce_self_hosted_worker_exists()` pre-flight gate** (NEW; v1.0.0-pre.1 — Q-3 + Q-4 + Q-7) — installed at `cli/cloud_worker_cmd.py:worker_dispatch_cmd`. Calls `cloud.preflight.check_self_hosted_worker_exists()`; on `found=False` raises `typer.Exit(78)` with a bilingual hint that contains `popola cloud worker start --name <X> --worker-dir <repo-root>` and the Chinese fragment `Worker '<name>' 不存在`. Soft-WARN-only when `found=True` AND `is_in_use=True` (the run will queue). HTTP 5xx during `list_workers()` re-raises (No Silent Failures rule).
+- **GitHub-App pre-flight inside `cursor_cloud.create_agent`** (NEW; v1.0.0-pre.1 — Q-9) — when `repos[0].url` host is `github.com`, calls `cloud.preflight.check_github_app_installed()` BEFORE issuing the POST. On `installed=False` raises `GithubAppMissingError` with the same bilingual hint as the catalog rule (so the early refuse and late catch produce identical operator UX). Opt-out via `extras["skip_github_app_preflight"] = True`.
+- **`tests/cloud/test_real_cursor_cloud_env_shape_v0_10_0.py`** (NEW; v1.0.0-pre.1 — Q-12) — Tier-4 live smoke gated by `@pytest.mark.real_cursor_cloud` + `CURSOR_API_KEY`. Five tests: minimum-config 201 + Dashboard URL emission; `env: machine` 201 + Dashboard URL; GitHub-App pre-flight refusal when `/v1/repositories` is empty; teardown archives every created agent; `list_workers()` includes a probe worker when `POPOLA_PROBE_WORKER_NAME` is set. Total live-call budget ≤ 20 per session.
+
+### Changed
+
+- **`CloudCursorClient.create_agent` body builder rewritten** (v1.0.0-pre.1 — Q-2 + Q-8) — emits `env: {type, name?}` (when caller passes it) and `workOnCurrentBranch: true` (replaces `autoGenerateBranch: false`); NEVER sets `usePrivateWorker`, `labels`, or `autoGenerateBranch` on the request payload. **(Breaking; see above.)**
+- **`_normalize_cloud_extra` rewritten** (v1.0.0-pre.1 — Q-2 + Q-6 + Q-11) — accepts `worker_name` / `pool_name` / `cloud_target` extras and translates to `{env: {type, name?}}`. Legacy `use_private_worker` / `labels` / `worker_name` / `machine_name` extras are translated with a single `DeprecationWarning` per call. The default model fallback is updated from `"composer-2"` to `"default"` (per `research/02-path-1-visibility-probe.md` §1).
+- **`_ERROR_CATALOG` extended 16 → 18 entries** (v1.0.0-pre.1 — Q-9) — `integration_github_app_branch_not_found` regex extended to match `(?i)(failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository|failed\s+to\s+determine\s+repository\s+default\s+branch)`. New `repository_required` (HTTP 400 → `cli_exit=2`) + `pr_resolution_failed` (HTTP 400 → reuses `GithubAppMissingError`, `cli_exit=78`).
+- **`get_account_class()` emits a one-time deprecation `WARN`** (v1.0.0-pre.1 — Q-10) — `account_class is deprecated as of v1.0.0-pre.1; the v0.9.9 pre-flight gate has been removed. See CHANGELOG.md`. Suppressed when the stored value is `unknown` or absent. The enum / setter / `--account-class` CLI flag are KEPT (no API breakage).
+
+### Removed
+
+- **`_enforce_account_class_pre_flight_gate()`** (v1.0.0-pre.1 — Q-4) — the v0.9.9 hard-fail gate based on the disconfirmed Spike-0 verdict. **(Breaking; see above.)** Replaced by `_enforce_self_hosted_worker_exists()` at the same call site.
+- **`_PRE_FLIGHT_BILINGUAL_HINT` constant** (v1.0.0-pre.1 — Q-4) — the v0.9.9 account-class bilingual hint. Replaced by the new worker-existence bilingual hint built by `_build_self_hosted_worker_missing_hint(worker_name)`.
+- **`payload["usePrivateWorker"]` / `payload["labels"]` / `payload["autoGenerateBranch"]`** (v1.0.0-pre.1 — Q-2 + Q-8) — these three legacy keys are NEVER set on the `POST /v1/agents` body anymore. **(Breaking; see above.)** Use `env: {type, name?}` and `workOnCurrentBranch: true` instead.
+
+### Deprecated
+
+- `--cli-flag use_private_worker=true` (v1.0.0-pre.1 — Q-2). Translated to `env={type:"machine"}` with a `DeprecationWarning`; removal scheduled for v1.1+.
+- `--cli-flag labels='{"worker":"X"}'` (v1.0.0-pre.1 — Q-2). Translated to `env={type:"machine", name:"X"}` with a `DeprecationWarning`; removal scheduled for v1.1+.
+- `--cli-flag autoGenerateBranch=...` (v1.0.0-pre.1 — Q-8). Translated to a no-op with a `DeprecationWarning`; the gateway rejects this field, use `--cli-flag work_on_current_branch=true` (which sets `workOnCurrentBranch:true`) instead.
+- `[cursor].account_class` field on `credentials.toml` and `--account-class` flag on `popola auth cursor set` (v1.0.0-pre.1 — Q-10). Kept for one-release backward compat; one-time `WARN` on read; removal targets v1.1+.
+- `[user_preferences].cloud_target_priority` list (v1.0.0-pre.1 — Q-5). Replaced by `default_cloud_target` (single value); kept for one-release backward compat; one-time `WARN` on read; the resolver no longer consults the list.
+- `CloudCursorClient.create_agent(use_private_worker=..., labels=...)` keyword arguments (v1.0.0-pre.1 — Q-11). Replaced by `env: AgentEnv | None = None`. **(Breaking; see above for the migration.)**
+
+### Fixed
+
+- **`feedback_for_v0.10.0.md` L5 — silent fallback to local on cloud dispatch failure** — closed by Q-7's no-fallback contract enforcement. `popola dispatch --cloud-target=self-hosted --worker-name=ghost` now exits 78 with an actionable hint instead of silently spawning `cursor-agent` locally.
+- **`feedback_for_v0.10.0.md` L11 — init-stage cloud-target preference** — closed by Q-5's `default_cloud_target` field + Q-6's per-task `--cloud-target` override. The user explicitly demanded "在初始化阶段，有用户选择的偏好或通过任务给出的具体指令" — both paths now exist.
+- **`feedback_for_v0.10.0.md` L13 — research-then-fix discipline** — closed by Q-12's release-gate live smoke. The v0.9.9 misstep (Spike-0's doc-only BRANCH_B verdict) is structurally prevented in v1.0.0+: every release that touches the cloud schema must pass the live smoke before tagging.
+- **OpenAPI-vs-runtime drift on `POST /v1/agents`** — closed by Q-2 + Q-8. The published Cursor OpenAPI spec lists `usePrivateWorker` and `autoGenerateBranch` as accepted fields, but the live REST gateway rejects both (live probes 22/22 confirm). v1.0.0-pre.1 follows the runtime schema, not the spec.
+
+### Closes
+
+- [`./.local/feedbacks/feedback_for_v0.10.0.md`](.local/feedbacks/feedback_for_v0.10.0.md) (the verbatim user feedback that v0.9.9's account_class gate misunderstood the cloud-dispatch goal). Closure stamp lives in `.local/feedbacks/TRACKER.md` (`FB-v0.10.0-1` Closed row).
+- Generated backlog item `BL-v0.10.0-cursor-personal-key-worker-schema` from v0.9.9 (the upstream Cursor REST schema for personal-key + self-hosted-worker dispatch was DISCONFIRMED by research/01's 22 successful 2xx probes; the schema is `env: {type, name?}`).
+- Generated backlog item `BL-v0.10.0-cursor-cloud-rest-smoke` from v0.9.9 (gated live REST smoke for personal vs service-account combinations to detect schema drift earlier — implemented as Q-12's tier-4 smoke).
+
+### Generated backlog (v1.0.0-pre.2 → v1.1+)
+
+- `BL-v1.0.0-pre.2-service-account-pool-claim` — service-account / pool-mode end-to-end claim test. Research/01 PROBE_35/36 confirmed REST 201 for `env: {type:"pool"}` but did not verify a pool worker actually claims the run (no service-account key in the probe). Tracked for v1.0.0-pre.2 if a service-account key becomes available.
+- `BL-v1.0.0-pre.2-openapi-upstream-issue` — file an upstream Cursor docs issue requesting that the OpenAPI spec catch up with the runtime gateway (the gateway accepts `env: {type, name?}` + `workOnCurrentBranch:true`; the spec only knows `usePrivateWorker` + `autoGenerateBranch`). Doc-only; does NOT block PopolaLoom releases.
+- `BL-v1.0.0-pre.2-worker-claim-verification` — real end-to-end claim test (probe-w1 → CREATING → RUNNING transition). Research/01 §"Worker-claim verification" L151-159 documented the partial bonus probe; deferred to v1.0.0-pre.2 manual smoke.
+- `BL-v1.0.0-pre.2-non-github-host-preflight` — `/v1/integrations` or `/v1/git-providers` discovery for the "is this user's GitLab/Gitea host known to Cursor?" question. v1.0.0-pre.1 covers only the `github.com` host case via `GET /v1/repositories`. Other hosts skip the pre-flight.
+- `BL-v1.1-account-class-removal` — full removal of `AccountClass` enum, `--account-class` flag, and `[cursor].account_class` TOML field (Q-10). Targets v1.1+.
+- `BL-v1.1-cloud-target-priority-removal` — full removal of `[user_preferences].cloud_target_priority` (Q-5). Targets v1.1+.
+- `BL-v1.1-create-agent-kwargs-removal` — full removal of `use_private_worker` / `labels` kwargs on `CloudCursorClient.create_agent` (Q-11). Targets v1.1+.
+- `BL-v0.9.x-PyPI` (carry-forward) — PyPI publish promotion remains deferred (Q-D-5 偏离默认 carries forward from v0.9.0 GA).
+
+### Version bumps
+
+- `src/popolaloom/__init__.py` — `__version__` `0.9.10` → `1.0.0-pre.1`
+- `pyproject.toml` — `version = "0.9.10"` → `"1.0.0-pre.1"`
+- `src/popolaloom/skills/popola-loom/SKILL.md` — frontmatter `version: 0.9.10` → `1.0.0-pre.1`
+- `src/popolaloom/skills/popola-loom/.popola-loom-version` — `0.9.10` → `1.0.0-pre.1`
+- `src/popolaloom/skills/install-popola/SKILL.md` — frontmatter `version: 0.9.10` → `1.0.0-pre.1`
+- `src/popolaloom/skills/install-popola/.popola-loom-version` — `0.9.10` → `1.0.0-pre.1`
+
+### Tests
+
+- `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` keeps the SKILL.md frontmatter aligned to the package version (passes after the lockstep bump).
+- `tests/cloud/test_real_cursor_cloud_env_shape_v0_10_0.py` — Tier-4 live smoke (5 tests; gated by `real_cursor_cloud` mark + `CURSOR_API_KEY`).
+- `tests/cli/test_cloud_worker_dispatch_worker_existence.py` — replaces the v0.9.9 `tests/cli/test_cloud_worker_dispatch_account_class.py` (renamed + rewritten); 7 unit tests pinning the new gate's behaviour matrix from PLAN.md C1 AC 5.
+- `tests/adapters/test_cursor_cloud.py`, `tests/adapters/test_cursor_extra_passthrough.py`, `tests/adapters/test_cursor_cloud_error_catalog.py` — extended for the env-shape pivot, deprecation translators, and catalog regex extensions (≥ 14 new test cases; existing v0.9.9 default-lane assertions that pinned `usePrivateWorker:true` are flipped to assert `env={type:"machine"}`).
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark and not real_cursor_cloud" -q --no-cov` continues to pass.
+
+### Files
+
+- **MOD source**: `src/popolaloom/adapters/cursor_cloud.py` (Q-1 + Q-2 + Q-3 + Q-8 + Q-9 + Q-11), `src/popolaloom/cli/cloud_worker_cmd.py` (Q-3 + Q-4 + Q-7), `src/popolaloom/cli/main.py` (Q-6), `src/popolaloom/cli/init_cmd.py` (Q-5), `src/popolaloom/daemon/main.py` (Q-5), `src/popolaloom/credentials.py` (Q-10).
+- **NEW source / package**: `src/popolaloom/cloud/__init__.py`, `src/popolaloom/cloud/preflight.py` (Q-3 + Q-9).
+- **MOD docs**: `docs/USER_GUIDE.md` + `docs/zh/USER_GUIDE.md` (new "Cloud dispatch (v1.0.0-pre.1)" section per E2 AC 3 + AC 4).
+- **MOD release artifacts**: `CHANGELOG.md` (this section), `RELEASE_NOTES.md` (overwritten per v0.7.0+ policy).
+- **MOD tracker**: `.local/feedbacks/TRACKER.md` (Closed row for `FB-v0.10.0-1` + `Releases 总览` v1.0.0-pre.1 line); `.local/feedbacks/feedback_for_v0.10.0.md` (close stamp appended).
+- **NEW design / plan artefacts** (local-only): `.local/.agent/active/v0.10.0-cloud-dispatch-clarity/{DECISIONS.md,PLAN.md,research/0{1,2,3}-*.md}`.
+
+## [0.9.10] — 2026-05-10
+
+**Theme**: Docs-site polish, demo expansion, and user-preferences documentation sync. This is a docs/skill-facing patch: the public site gets a modernized NieR-Popola landing page, a 9-scenario demo matrix, bilingual navigation coverage, and an explicit experimental `[user_preferences]` schema without changing the Python CLI runtime.
+
+### Added
+
+- **Landing-page polish** — refreshed hero treatment, KPI strip (`5 channels HITL · 8 dim self-eval · v0.9.x stable surface · 10 workflows`), user-routing cards, and a v0.9.x release timeline.
+- **Expanded `/demo-page`** — three new bilingual scenarios: CLI preferences wizard, Cursor → Claude → Codex relay, and daemon doctor + fix. All nine scenarios now carry `Expected event sequence`, `Common pitfalls`, `Verification command`, and `Skill / Workflow link` deliverables.
+- **Bilingual page coverage** — added `docs/zh/index.md` and `docs/zh/known-issues.md`; existing English/Chinese docs now route via reciprocal `translation_url` front matter where applicable.
+- **Static demo contract test** — `tests/docs/test_demo_page_scenarios.py` verifies the three new scenario ids and deliverables in both English and Chinese.
+- **Demo SVG placeholders** — added `docs/assets/img/demos/{cli-preferences-wizard,multi-cli-relay,daemon-doctor-fix}.svg`.
+
+### Changed
+
+- **Docs UX** — language switching preserves the current hash; i18n prefers the page `<html lang>` before localStorage to reduce first-paint language jitter; copy buttons cover terminal blocks and include a no-clipboard fallback.
+- **Site metadata** — default layout now emits Open Graph and Twitter card metadata using the existing favicon image; `_config.yml` enables `jekyll-sitemap` and `docs/sitemap.xml` is present.
+- **User preferences documentation** — `docs/USER_GUIDE.md`, `docs/zh/USER_GUIDE.md`, `docs/API_STABILITY.md`, and the canonical `popola-loom` Skill document `[user_preferences]` as experimental until v0.10.0.
+
+### Version bumps
+
+- `pyproject.toml`, `src/popolaloom/__init__.py`, `docs/_config.yml`, `src/popolaloom/skills/*/SKILL.md`, and both Skill version marker files now read `0.9.10`.
+
+### Tests
+
+- Targeted docs/static lane: `python -m pytest tests/docs/test_demo_page_scenarios.py tests/docs/test_docs_contract.py tests/cli/test_skill_md_canonical.py tests/test_smoke.py -q`
 
 ## [0.9.9] — 2026-05-10
 

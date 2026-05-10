@@ -1,14 +1,14 @@
 ---
 layout: default
 title: 演示
-description: PopolaLoom v0.9.7 产品演示、示例输出、设计思想和实现路径。
+description: PopolaLoom v1.0.0-pre.1 产品演示、示例输出、设计思想和实现路径。
 lang: zh
 translation_url: /DEMO.html
 ---
 
 # PopolaLoom — 产品演示
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
 
 > 这不是另一个 IDE，而是本机 agent CLI 之上的 sidecar 编排层：统一派发、跨终端存活、文件化 handoff、HITL 多通道广播。
 

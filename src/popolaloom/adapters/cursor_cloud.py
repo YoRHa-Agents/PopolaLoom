@@ -18,6 +18,58 @@ subclasses; **stream_run** / follow-up runs are deferred to v0.8.6+ (SSE
 
 Further design notes: ``.local/research/v0.8.5_cloud_agent/research.md``.
 REST field names: ``https://cursor.com/docs/cloud-agent/api/endpoints.md``.
+
+v0.10.0 — Cloud Dispatch Clarity
+================================
+
+This module was pivoted in v0.10.0 (release ``v1.0.0-pre.1``) to align with
+the live Cursor REST gateway schema as discovered by 22 successful 2xx
+probes against ``api.cursor.com``. See
+``.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`` for the
+full decision log; the rows below are the ones that landed in this file:
+
+- **Q-1** (API-key class detection): :meth:`CloudCursorClient.me` calls
+  ``GET /v1/me`` and inspects the personal-key marker fields
+  (``userId | userFirstName | userLastName``) — these are runtime-additive
+  fields not declared in the OpenAPI ``ApiKeyInfo`` schema. The result is
+  purely informational; no code path branches on key class.
+- **Q-2** (routing field shape): ``POST /v1/agents`` now emits
+  ``env: {type: "cloud" | "pool" | "machine", name?: str}`` instead of the
+  legacy ``usePrivateWorker:true + labels.worker:X`` shape — the gateway
+  rejects the legacy shape with ``400 "Unrecognized key(s)"``. Personal AND
+  service-account keys both accept ``env`` with no code-path divergence.
+- **Q-3** (worker discovery): :meth:`CloudCursorClient.list_workers` calls
+  ``GET /v0/private-workers`` (works for personal keys per probe PROBE_07/44).
+- **Q-8** (branch handling): the OpenAPI-documented ``autoGenerateBranch``
+  field is rejected by the runtime gateway; the accepted toggle is
+  ``workOnCurrentBranch:true`` (PROBE_29). ``branchName`` aliases were
+  never accepted; ``startingRef`` is the only branch pointer.
+- **Q-9** (GitHub-App caveat handling): two-pronged refuse/catch UX for
+  the missing-Cursor-GitHub-App failure mode on ``github.com`` URLs.
+  The early-refuse path is a ``GET /v1/repositories`` pre-flight inside
+  :meth:`CloudCursorClient.create_agent` (gated on the new
+  ``skip_github_app_preflight`` kwarg) — when the response carries an
+  empty ``items`` list and the dispatch target's host is ``github.com``,
+  the call raises :class:`GithubAppMissingError` BEFORE the heavy
+  ``POST /v1/agents`` runs. The late-catch path covers the gateway's
+  three known 400 message variants via :data:`_ERROR_CATALOG` rules
+  ``integration_github_app_branch_not_found`` (regex extended to
+  match BOTH ``"Failed to verify existence of branch ... in repository"``
+  AND ``"Failed to determine repository default branch"`` per
+  research/02 §3.1), ``repository_required`` (caller forgot
+  ``repos[]``), and ``pr_resolution_failed`` (``prUrl`` against an
+  uninstalled-App repo — same actionable fix as the branch-validation
+  variant). All four early/late surfaces emit the SAME bilingual hint
+  pointing at ``https://cursor.com/integrations/github`` so operator
+  UX is identical regardless of whether popola refuses up front or
+  the gateway 400s downstream.
+- **Q-11** (adapter API stability): :meth:`CloudCursorClient.create_agent`
+  drops ``use_private_worker`` and ``labels`` kwargs; the typed
+  ``env: AgentEnv | None`` parameter replaces them. Legacy extras
+  (``use_private_worker`` / ``labels`` / ``worker_name`` / ``machine_name``)
+  passed via ``--cli-flag`` translate to ``env={type:"machine", name:X}``
+  with a one-time ``DeprecationWarning`` per call (one minor release of
+  graceful migration; v1.1+ removes the alias path entirely).
 """
 
 from __future__ import annotations
@@ -29,13 +81,14 @@ import random
 import re
 import threading
 import time
+import warnings
 from collections import OrderedDict
 from collections.abc import Iterable, Iterator
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from typing import TYPE_CHECKING, Any, cast
+from typing import TYPE_CHECKING, Any, Literal, TypedDict, cast
 
 import httpx
 
@@ -63,6 +116,58 @@ frames. Pump translates it to ``cloud.sse.parse_error`` per
 _SSE_RAW_CHUNK_CAP_BYTES: int = 4096
 """Cap on raw payload bytes embedded in ``cloud.sse.parse_error`` (per
 ``state-source-of-truth.md`` §5)."""
+
+
+# ---------------------------------------------------------------------------
+# v0.10.0 — typed schema for ``POST /v1/agents`` `env` field (Q-2 + Q-11).
+#
+# AgentEnv is a tagged-union TypedDict that mirrors the runtime Zod schema
+# discovered during v0.10.0 R1 path-2 probes (research/01-path-2-live-probe.md
+# §"Schema fully nailed down" L97-122).  All three discriminator values are
+# accepted by the gateway; the ``name`` slot is required for ``machine`` and
+# optional for ``pool``.  ``cloud`` is the gateway default when ``env`` is
+# omitted entirely.
+#
+# WorkerInfo is the parsed row shape for ``GET /v0/private-workers`` (Q-3).
+# Personal API keys can list their own workers via this endpoint per
+# probe PROBE_07/44; the row maps the camelCase wire field names to
+# snake_case for ergonomic Python consumers.
+# ---------------------------------------------------------------------------
+
+
+class AgentEnv(TypedDict, total=False):
+    """Runtime schema for ``POST /v1/agents`` ``env`` field (Q-2).
+
+    Discriminated union over ``type``; the gateway rejects any other
+    discriminator value with ``400 "Invalid discriminator value"``.
+
+    - ``type="cloud"``: Cursor-managed VM. ``name`` is ignored if set.
+    - ``type="machine"``: My-Machines (self-hosted) worker;
+      ``name`` is REQUIRED (omitting it returns ``400 "env.name is required
+      when env.type is machine"``).
+    - ``type="pool"``: Self-Hosted Pool worker (Enterprise);
+      ``name`` is optional.
+    """
+
+    type: Literal["cloud", "pool", "machine"]
+    name: str
+
+
+class WorkerInfo(TypedDict, total=False):
+    """Parsed worker row from ``GET /v0/private-workers`` (Q-3).
+
+    The wire shape is ``{workerId, name, isInUse, activeBcId, repoUrl,
+    userId}`` (camelCase); this TypedDict normalizes to snake_case for
+    consistency with the rest of the popolaloom codebase. ``name`` keeps
+    its wire spelling because it is already snake_case-compatible.
+    """
+
+    worker_id: str
+    name: str
+    is_in_use: bool
+    active_bc_id: str | None
+    repo_url: str | None
+    user_id: int | None
 
 
 class CursorCloudError(Exception):
@@ -382,12 +487,20 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
         # workaround) instead of the misleading "schema" hint emitted by
         # the sibling :data:`validation_request_body` entry.
         #
+        # v0.10.0 (DECISIONS Q-9): regex EXTENDED to also match the second
+        # missing-App message variant ``"Failed to determine repository
+        # default branch"`` observed when no ``startingRef`` is provided
+        # (research/02-path-1-visibility-probe.md §3.1 row 1). The
+        # actionable fix is identical for both variants — install the
+        # Cursor GitHub App — so a single catalog entry covers both.
+        #
         # Position: BEFORE ``validation_request_body`` so :func:`_score_entry`
         # picks this entry on a regex match (+5 over the generic body hit).
         "http": 400,
         "code": ["validation_error"],
         "message_pattern": (
-            r"(?i)failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository"
+            r"(?i)(failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository|"
+            r"failed\s+to\s+determine\s+repository\s+default\s+branch)"
         ),
         "subclass": "GithubAppMissingError",
         "retry": False,
@@ -407,6 +520,74 @@ _ERROR_CATALOG: dict[str, dict[str, Any]] = {
             "org/repo（而非分支真的不存在）。请到 "
             "https://cursor.com/integrations/github 安装 App 并授予写权限，或使用 "
             "`auto_create_pr=false` 跳过 PR 创建。若分支确实不存在，请检查拼写。"
+        ),
+    },
+    "repository_required": {
+        # v0.10.0 (DECISIONS Q-9 / research/02 §3.1 row "NEW codes observed"):
+        # the gateway returns 400 + ``error.code = "repository_required"`` when
+        # the dispatch payload is missing ``repos[]`` (or ``repos[0].url``)
+        # entirely. Distinct from the generic body fallback because the fix
+        # is "supply --repo-url" rather than "fix the URL/ref format" — the
+        # ``cli_exit=2`` (CLI usage error) lets shell scripts branch on this
+        # without parsing the hint text.
+        #
+        # Selector wins over :data:`validation_request_body` via the explicit
+        # ``code`` list (+10) which scores higher than the generic entry's
+        # baseline +1. Position: BEFORE ``validation_request_body`` so the
+        # ordering is documented even though :func:`_score_entry` picks the
+        # max regardless of dict order.
+        "http": 400,
+        "code": ["repository_required"],
+        "message_pattern": None,
+        "subclass": "CursorCloudValidationError",
+        "retry": False,
+        "cli_exit": 2,
+        "hint_en": (
+            "Cursor rejected the dispatch because no repository was specified. "
+            "Set --repo-url (or --cli-flag repo_url=...) to point at the target "
+            "GitHub repo, or configure a default repo at "
+            "https://cursor.com/settings before re-running."
+        ),
+        "hint_zh": (
+            "Cursor 拒绝调度：未指定仓库。请通过 --repo-url（或 --cli-flag "
+            "repo_url=...）指定目标 GitHub 仓库，或到 "
+            "https://cursor.com/settings 配置默认仓库后重试。"
+        ),
+    },
+    "pr_resolution_failed": {
+        # v0.10.0 (DECISIONS Q-9 / research/02 §3.1 row P/P2): the gateway
+        # returns 400 + ``error.code = "pr_resolution_failed"`` when the
+        # dispatch sets ``repos[0].prUrl`` AND the Cursor GitHub App is not
+        # installed (or lacks PR-read permission) on the owning org. The
+        # actionable fix is identical to
+        # ``integration_github_app_branch_not_found`` — install / configure
+        # the Cursor GitHub App — so we reuse :class:`GithubAppMissingError`
+        # and ``cli_exit=78`` for ABI parity with the branch-validation
+        # variant. Selector wins over :data:`validation_request_body` via
+        # the explicit ``code`` list (+10).
+        #
+        # Position: BEFORE ``validation_request_body`` for the same
+        # documentation-of-intent reason as ``repository_required`` above.
+        "http": 400,
+        "code": ["pr_resolution_failed"],
+        "message_pattern": None,
+        "subclass": "GithubAppMissingError",
+        "retry": False,
+        "cli_exit": 78,
+        "hint_en": (
+            "Cursor could not resolve the pull request — almost always because "
+            "the Cursor GitHub App is not installed (or lacks PR-read "
+            "permission) on the owning org/repo. Install or 'Configure' the "
+            "App at https://cursor.com/integrations/github (or "
+            "https://github.com/apps/cursor) and grant repository access; "
+            "see https://cursor.com/docs/integrations/github.md."
+        ),
+        "hint_zh": (
+            "Cursor 无法获取 PR 详情，通常是因为目标仓库所在 org 未安装 "
+            "Cursor GitHub App（或缺少 PR 读取权限）。请到 "
+            "https://cursor.com/integrations/github（或 "
+            "https://github.com/apps/cursor）安装/配置 App 并授予仓库权限"
+            "（参考 https://cursor.com/docs/integrations/github.md）。"
         ),
     },
     "validation_request_body": {
@@ -1073,13 +1254,141 @@ class CloudCursorClient:
         skip_reviewer_request: bool = False,
         pr_url: str | None = None,
         env_vars: dict[str, str] | None = None,
-        use_private_worker: bool = False,
-        labels: dict[str, str] | None = None,
+        env: AgentEnv | None = None,
+        skip_github_app_preflight: bool = False,
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
-        """POST ``/v1/agents`` — launch a cloud agent; returns parsed JSON body."""
+        """POST ``/v1/agents`` — launch a cloud agent; returns parsed JSON body.
+
+        v0.10.0 wire schema (per DECISIONS Q-2 + Q-8):
+
+        - Routing now flows via ``env: {type, name?}`` discriminated union
+          instead of the legacy ``usePrivateWorker:true + labels.worker:X``
+          shape (the gateway rejects the legacy shape with
+          ``400 "Unrecognized key(s)"``; PROBE_21/22). Pass ``env=None``
+          (the default) for Cursor-managed cloud routing — the gateway
+          interprets a missing ``env`` as ``{type:"cloud"}``.
+        - ``work_on_current_branch=True`` emits ``workOnCurrentBranch:true``
+          (PROBE_29 — accepted by gateway). The historical
+          ``autoGenerateBranch:false`` field is rejected by the runtime
+          gateway as "Unrecognized key" (PROBE_13/14) and is no longer
+          emitted.
+
+        v0.10.0 GitHub-App pre-flight (DECISIONS Q-9): when ``repo_url``
+        is supplied AND its host is ``github.com`` AND
+        ``skip_github_app_preflight`` is left at its default ``False``,
+        this method calls
+        :func:`popolaloom.cloud.preflight.check_github_app_installed`
+        BEFORE issuing the ``POST /v1/agents`` request. If the response's
+        ``items`` list is empty (the Cursor GitHub App is not installed
+        on any of the API key's GitHub orgs), the dispatch is refused
+        early with :class:`GithubAppMissingError` carrying the SAME
+        bilingual hint as the late-catch
+        :data:`_ERROR_CATALOG` rule
+        ``integration_github_app_branch_not_found`` — operator UX is
+        identical regardless of which surface fires.
+
+        Args:
+            prompt: Task prompt placed under ``prompt.text``.
+            model: Cursor model id (e.g. ``"composer-2"`` / ``"default"``).
+            repo_url: Repo URL for ``repos[0].url`` (mutually exclusive
+                with ``pr_url``).
+            starting_ref: Git ref placed under ``repos[0].startingRef``;
+                ignored when ``pr_url`` is set.
+            auto_create_pr: Toggles ``autoCreatePR`` on the body.
+            work_on_current_branch: When ``True`` emits
+                ``workOnCurrentBranch:true`` (the only "use current branch"
+                toggle the runtime gateway accepts; Q-8).
+            skip_reviewer_request: Emits ``skipReviewerRequest:true`` only
+                when paired with ``auto_create_pr=True``.
+            pr_url: Mutually exclusive with ``repo_url``; emits
+                ``repos[0].prUrl``.
+            env_vars: Optional ``envVars`` dict; values must be ``str``.
+            env: Optional :class:`AgentEnv` discriminated union. Pass
+                ``{type:"machine", name:X}`` for self-hosted-worker
+                routing, ``{type:"pool"[, name:X]}`` for Self-Hosted Pool,
+                or ``{type:"cloud"}`` to be explicit about the default.
+                ``None`` (the default) leaves ``env`` off the payload —
+                the gateway treats that as ``{type:"cloud"}``.
+            skip_github_app_preflight: Opt-out for the v0.10.0 Q-9
+                ``GET /v1/repositories`` pre-flight. Defaults to
+                ``False`` (pre-flight ENABLED). Set ``True`` when:
+                (a) test suites that mock the dispatch HTTP path want
+                a single round-trip and don't need the pre-flight,
+                (b) service-account keys that intentionally bypass the
+                Cursor GitHub App, or (c) ``pr_url`` dispatches where
+                the App-install state is verified out-of-band. The
+                late-catch catalog rules
+                (``integration_github_app_branch_not_found`` /
+                ``pr_resolution_failed``) still produce a friendly hint
+                if a downstream 400 fires. (Pre-flight is also a no-op
+                for non-``github.com`` hosts — :func:`check_github_app_installed`
+                returns ``installed=None`` per A2 AC 3, which this method
+                treats as "skip" without raising.)
+            timeout_s: Per-call timeout override; ``None`` falls back to
+                client default.
+
+        Returns:
+            Parsed JSON body — typically
+            ``{"agent": {"id": "bc-..."}, "run": {"id": "run-..."}}``.
+
+        Raises:
+            ValueError: when both ``repo_url`` and ``pr_url`` are absent.
+            GithubAppMissingError: from the v0.10.0 Q-9 pre-flight when
+                ``repo_url`` host is ``github.com`` and
+                ``GET /v1/repositories`` returns an empty ``items`` list.
+            CursorCloudError: any 4xx / 5xx mapped via :func:`_map_http_error`.
+        """
         if not pr_url and not repo_url:
             raise ValueError("cursor-cloud: repo_url or pr_url is required for create_agent")
+
+        # v0.10.0 (DECISIONS Q-9) — early-refuse pre-flight for github.com
+        # repo URLs. Performs a lightweight ``GET /v1/repositories`` probe
+        # to detect the most common operator failure mode (the Cursor
+        # GitHub App is not installed on the owning org) BEFORE the heavy
+        # ``POST /v1/agents`` call. Refuses with the SAME bilingual hint
+        # as the late-catch catalog rule
+        # ``integration_github_app_branch_not_found`` so the early refuse
+        # and the late catch produce identical operator UX (see PLAN.md
+        # C2 AC 4). The pre-flight is a no-op for non-github.com hosts
+        # (``installed=None``); the only refuse-trigger is ``installed=False``.
+        #
+        # Design choice (PLAN.md C2 AC 5): the opt-out is the
+        # ``skip_github_app_preflight`` kwarg on this method, NOT a key
+        # plumbed through :func:`_normalize_cloud_extra` output. Rationale:
+        #   1. The pre-flight is a property of THIS HTTP call (one extra
+        #      round trip), not of the user-facing extras grammar — keeping
+        #      it in the method signature mirrors the existing
+        #      ``timeout_s`` / ``env`` / ``env_vars`` kwargs which are
+        #      also adapter-call-shape-only.
+        #   2. Tests can opt out by calling ``client.create_agent(...,
+        #      skip_github_app_preflight=True)`` directly without round-
+        #      tripping through the marker payload.
+        #   3. End-to-end CLI opt-out via ``--cli-flag
+        #      skip_github_app_preflight=true`` is a follow-up that
+        #      requires the supervisor (``daemon/supervisor.py``) to
+        #      pluck the value from ``extra`` and forward it to this
+        #      kwarg. That's read-only territory for this Wave C2 task
+        #      and is documented in the L0 follow-up note.
+        #   4. ``pr_url`` dispatches skip the pre-flight (only ``repo_url``
+        #      gates it) — the catch path is the new
+        #      ``pr_resolution_failed`` catalog rule which already routes
+        #      to :class:`GithubAppMissingError` with the same hints.
+        if repo_url and not skip_github_app_preflight:
+            from popolaloom.cloud.preflight import check_github_app_installed
+
+            preflight_result = check_github_app_installed(self, repo_url)
+            if preflight_result.installed is False:
+                # Mirror the catalog rule's hint text verbatim so the
+                # early refuse is byte-identical to the late catch.
+                catalog_entry = _ERROR_CATALOG["integration_github_app_branch_not_found"]
+                raise GithubAppMissingError(
+                    "cursor-cloud GitHub App pre-flight refused dispatch for "
+                    f"{repo_url}: {preflight_result.message}",
+                    hint_en=catalog_entry["hint_en"],
+                    hint_zh=catalog_entry["hint_zh"],
+                    cli_exit=catalog_entry["cli_exit"],
+                )
 
         repo_entry: dict[str, Any] = {}
         if pr_url:
@@ -1096,7 +1405,7 @@ class CloudCursorClient:
         payload["model"] = {"id": model}
 
         if work_on_current_branch:
-            payload["autoGenerateBranch"] = False
+            payload["workOnCurrentBranch"] = True
 
         if auto_create_pr and skip_reviewer_request:
             payload["skipReviewerRequest"] = True
@@ -1104,11 +1413,8 @@ class CloudCursorClient:
         if env_vars:
             payload["envVars"] = dict(env_vars)
 
-        if use_private_worker:
-            payload["usePrivateWorker"] = True
-
-        if labels:
-            payload["labels"] = dict(labels)
+        if env is not None:
+            payload["env"] = dict(env)
 
         return self._request_json(
             "POST",
@@ -1152,6 +1458,144 @@ class CloudCursorClient:
             f"/v1/agents/{agent_id}/runs/{run_id}/cancel",
             timeout_s=timeout_s,
         )
+
+    # -----------------------------------------------------------------
+    # v0.10.0 — Q-1 / Q-3 informational HTTP surfaces.
+    #
+    # ``me()`` and ``list_workers()`` are net-add HTTP wrappers used by
+    # the CLI pre-flight gates (``cloud worker dispatch``) and by an
+    # informational ``api_key_class`` log line. Both route errors through
+    # :func:`_map_http_error` via :meth:`_request_json`, so the bilingual
+    # catalog hints + ``cli_exit`` codes stay consistent with the rest
+    # of the client surface.
+    # -----------------------------------------------------------------
+
+    def me(self, *, timeout_s: float | None = None) -> dict[str, Any]:
+        """GET ``/v1/me`` — return identity info + observed API-key class.
+
+        v0.10.0 (Q-1) — calls Cursor's ``/v1/me`` and inspects the
+        runtime-additive personal-key marker fields
+        (``userId | userFirstName | userLastName``) to classify the API
+        key class. The OpenAPI ``ApiKeyInfo`` schema only declares
+        ``apiKeyName | createdAt | userEmail`` — the trio above is NOT
+        in the spec but IS reliably emitted by personal API keys
+        (research/01-path-2-live-probe.md §"API key class diagnostics"
+        L168-180). Service-account keys carry only the documented trio.
+
+        The detection is **purely informational**. Every code path that
+        could route to either key class uses the env-field shape
+        unconditionally (Q-2). The ``api_key_class`` value is intended
+        for log lines / telemetry only — popola does not branch
+        behaviour on it.
+
+        Returns:
+            ``{"api_key_class": "personal" | "service_account",
+                "user_id": int | None,
+                "user_email": str}``
+
+            ``api_key_class`` is ``"personal"`` iff the response
+            contains ANY of ``userId``, ``userFirstName``,
+            ``userLastName``. ``user_id`` is the parsed integer if
+            present, else ``None``. ``user_email`` mirrors the
+            ``userEmail`` field (defaults to empty string when absent).
+
+        Raises:
+            CursorCloudError: any 4xx / 5xx mapped via
+                :func:`_map_http_error` (e.g. ``CursorCloudAuthError``
+                on ``401``).
+        """
+        body = self._request_json("GET", "/v1/me", timeout_s=timeout_s)
+        personal_marker_keys = ("userId", "userFirstName", "userLastName")
+        api_key_class: Literal["personal", "service_account"] = (
+            "personal"
+            if any(key in body for key in personal_marker_keys)
+            else "service_account"
+        )
+        raw_user_id = body.get("userId")
+        user_id: int | None
+        if isinstance(raw_user_id, int):
+            user_id = raw_user_id
+        elif isinstance(raw_user_id, str) and raw_user_id.strip():
+            try:
+                user_id = int(raw_user_id)
+            except ValueError:
+                user_id = None
+        else:
+            user_id = None
+        raw_email = body.get("userEmail", "")
+        user_email = raw_email if isinstance(raw_email, str) else ""
+        return {
+            "api_key_class": api_key_class,
+            "user_id": user_id,
+            "user_email": user_email,
+        }
+
+    def list_workers(
+        self,
+        *,
+        timeout_s: float | None = None,
+    ) -> list[WorkerInfo]:
+        """GET ``/v0/private-workers`` — list registered self-hosted workers.
+
+        v0.10.0 (Q-3) — calls Cursor's ``/v0/private-workers`` (works
+        under personal API keys per probe PROBE_07/44) and converts the
+        camelCase wire rows into :class:`WorkerInfo` TypedDicts. The
+        wire shape is ``{"workers": [{workerId, name, isInUse,
+        activeBcId, repoUrl, userId}, ...]}``; this method returns the
+        ``workers`` array verbatim apart from snake_case key remapping.
+        Empty / missing ``workers`` returns ``[]``.
+
+        Used by the ``--cloud-target=self-hosted`` pre-flight gate
+        (``_enforce_self_hosted_worker_exists`` in
+        :mod:`popolaloom.cli.cloud_worker_cmd`) to validate that
+        ``--worker-name`` matches a registered worker BEFORE the
+        ``POST /v1/agents`` attempt — refusing early with a friendly
+        bilingual hint when the worker is missing (per the no-fallback
+        contract from DECISIONS Q-7).
+
+        Args:
+            timeout_s: Per-call timeout override; ``None`` falls back
+                to the client-level default.
+
+        Returns:
+            ``list[WorkerInfo]`` — empty list when no workers are
+            registered. Each row carries the snake_case keys defined
+            on :class:`WorkerInfo` (``worker_id``, ``name``,
+            ``is_in_use``, ``active_bc_id``, ``repo_url``, ``user_id``).
+
+        Raises:
+            CursorCloudError: any 4xx / 5xx mapped via
+                :func:`_map_http_error`. Note: ``GET
+                /v0/private-workers/pending-requests`` requires a
+                service-account key (PROBE_08), but the listing
+                endpoint itself works for personal keys too.
+        """
+        body = self._request_json("GET", "/v0/private-workers", timeout_s=timeout_s)
+        raw_workers = body.get("workers")
+        if not isinstance(raw_workers, list):
+            return []
+        result: list[WorkerInfo] = []
+        for row in raw_workers:
+            if not isinstance(row, dict):
+                logger.warning(
+                    "cursor-cloud /v0/private-workers row is not a dict: %r",
+                    row,
+                )
+                continue
+            worker: WorkerInfo = {}
+            wire_to_local: dict[str, str] = {
+                "workerId": "worker_id",
+                "name": "name",
+                "isInUse": "is_in_use",
+                "activeBcId": "active_bc_id",
+                "repoUrl": "repo_url",
+                "userId": "user_id",
+            }
+            for wire_key, local_key in wire_to_local.items():
+                if wire_key in row:
+                    worker[local_key] = row[wire_key]  # type: ignore[literal-required]
+            result.append(worker)
+        return result
 
     # -----------------------------------------------------------------
     # v0.8.8 — `popola cloud runs <task>` history listing (T2.4.1)
@@ -1882,18 +2326,32 @@ class CursorCloudAdapter:
 
         - ``repo_url`` (``str``, required unless ``pr_url``) — GitHub repo URL
         - ``starting_ref`` (``str``, default ``\"main\"``) — branch / tag / ref
-        - ``model`` (``str``, default ``\"composer-2\"``) — model id
+        - ``model`` (``str``, default ``\"default\"``; v0.10.0 bumped from
+          ``\"composer-2\"``) — model id
         - ``auto_create_pr`` (``bool``, default ``False``)
-        - ``work_on_current_branch`` (``bool``, default ``False``)
+        - ``work_on_current_branch`` (``bool``, default ``False``) — emits
+          ``workOnCurrentBranch:true`` (v0.10.0; the legacy
+          ``autoGenerateBranch:false`` field is rejected by the gateway)
         - ``skip_reviewer_request`` (``bool``, default ``False``)
         - ``pr_url`` (``str``, optional) — PR URL (``repos[0].prUrl``)
         - ``env_vars`` (``dict[str, str]``, optional)
-        - ``use_private_worker`` (``bool``, default ``False``) — request Cursor
-          self-hosted / local worker routing (REST ``usePrivateWorker``)
-        - ``labels`` (``dict[str, str]``, optional) — worker routing labels
-        - ``worker_name`` / ``machine_name`` / ``pool_name`` (``str``, optional)
-          — convenience aliases merged into labels as ``worker`` / ``machine`` /
-          ``pool`` and imply ``use_private_worker=true``
+        - ``cloud_target`` (``str``, optional) — one of
+          ``\"self-hosted\"`` / ``\"cursor-managed\"``; v0.10.0 (Q-2 / Q-6)
+          symmetric with the ``--cloud-target`` CLI flag.
+          ``\"self-hosted\"`` requires ``worker_name`` (or ``machine_name``);
+          ``\"cursor-managed\"`` rejects routing knobs.
+          ``\"ask-each-time\"`` is rejected at adapter time (it must be
+          resolved by the CLI before dispatch).
+        - ``pool_name`` (``str``, optional) — emits
+          ``env={type:\"pool\", name:X}`` (or ``{type:\"pool\"}`` when
+          empty); the v0.10.x current-style spelling for pool routing.
+        - ``use_private_worker`` / ``labels`` / ``worker_name`` /
+          ``machine_name`` (DEPRECATED, v0.10.0) — legacy v0.9.x
+          aliases; translate to ``env={type:\"machine\", name:X}`` and
+          emit a single :class:`DeprecationWarning` per call. v1.1+
+          will remove the alias path entirely; use ``cloud_target`` +
+          ``worker_name`` (which becomes the new style once Wave B3
+          ships) or pass ``env`` directly.
         - ``timeout_s`` (``float``, default ``60.0``)
         - ``api_key`` (``str``, optional) — overrides :envvar:`CURSOR_API_KEY`
 
@@ -1974,8 +2432,78 @@ def redact_cloud_marker_cmd(cmd: list[str]) -> list[str]:
     return [cmd[0], cmd[1], redacted_json]
 
 
+_VALID_CLOUD_TARGETS: frozenset[str] = frozenset({
+    "self-hosted",
+    "cursor-managed",
+    "ask-each-time",
+})
+"""v0.10.0 (Q-2 / Q-6) — valid values for ``--cloud-target`` / ``cloud_target`` extra.
+
+Mirrors :data:`popolaloom.daemon.main.USER_PREF_VALID_DEFAULT_CLOUD_TARGET`
+(introduced by Wave B1). ``ask-each-time`` is only valid as a stored
+*default* on ``[user_preferences]``; the dispatch path resolves it to a
+concrete value before invoking the adapter, so seeing it here is a
+caller bug.
+"""
+
+
+_LEGACY_ROUTING_EXTRAS: tuple[str, ...] = (
+    "use_private_worker",
+    "labels",
+    "worker_name",
+    "machine_name",
+)
+"""v0.10.0 (Q-2 / Q-11) — legacy extras that translate to ``env={type:"machine",
+name:X}`` and emit a single :class:`DeprecationWarning`.
+
+`pool_name` is intentionally NOT in this list — it is the v0.10.x-current
+spelling for ``env={type:"pool", name?:X}`` per AC6.
+"""
+
+
 def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
-    """Validate known keys, merge defaults; return JSON-serializable dict."""
+    """Validate known keys, translate legacy routing extras, return marker dict.
+
+    v0.10.0 (DECISIONS Q-2 / Q-11) — the historical ``use_private_worker``
+    / ``labels`` / ``worker_name`` / ``machine_name`` extras are now
+    deprecated aliases that translate to the new
+    ``env={type:"machine", name:X}`` shape (per :class:`AgentEnv`). When
+    ANY of those four legacy keys is present a single
+    :class:`DeprecationWarning` is emitted (one per call, never per
+    sub-key). The new :data:`_VALID_CLOUD_TARGETS` ``cloud_target`` knob
+    layers on top:
+
+    - ``cloud_target="cursor-managed"``: no ``env`` is emitted; the
+      gateway defaults to ``{type:"cloud"}``.
+    - ``cloud_target="self-hosted"``: requires ``worker_name`` or
+      ``machine_name`` (or a ``labels.worker`` / ``labels.machine``
+      legacy alias) to also be set; raises :class:`ValueError`
+      otherwise.
+    - ``cloud_target="ask-each-time"``: rejected at adapter time
+      (``ask-each-time`` is only valid as a stored default on
+      ``[user_preferences]``; the CLI must resolve it before dispatch).
+    - ``pool_name=<X>`` (no ``cloud_target`` needed): emits
+      ``env={type:"pool", name:X}``; empty string / ``""`` emits
+      ``env={type:"pool"}`` (Self-Hosted Pool default name).
+
+    Output dict shape (v0.10.0):
+
+    - Always: ``auto_create_pr``, ``model``, ``skip_reviewer_request``,
+      ``starting_ref``, ``timeout_s``, ``work_on_current_branch``.
+    - Conditional: ``repo_url`` / ``pr_url``, ``env_vars``, ``env``
+      (the resolved :class:`AgentEnv`), ``cloud_target`` (when set),
+      ``api_key``.
+
+    Note: the v0.9.x output keys ``use_private_worker`` and ``labels``
+    are NO LONGER EMITTED — every routing decision lives in ``env``
+    instead. Callers reading the marker payload (e.g. the daemon
+    supervisor) MUST read ``env`` and pass it through to
+    :meth:`CloudCursorClient.create_agent`.
+
+    Raises:
+        ValueError: for any invalid type, conflicting routing knobs,
+            or unsupported ``cloud_target`` value.
+    """
     repo_url = extra.get("repo_url")
     pr_url = extra.get("pr_url")
     if repo_url is None and pr_url is None:
@@ -2006,7 +2534,11 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         if not isinstance(model, str):
             raise ValueError(f"cursor-cloud: model must be str, got {type(model).__name__}")
     else:
-        model = "composer-2"
+        # v0.10.0 (AC12) — default model bumped from "composer-2" to
+        # "default" so Cursor picks the recommended model for the user's
+        # plan rather than pinning to a name that may rotate
+        # (research/02-path-1-visibility-probe.md §1 L70-77).
+        model = "default"
 
     for key in ("auto_create_pr", "work_on_current_branch", "skip_reviewer_request"):
         if key in extra and not isinstance(extra[key], bool):
@@ -2031,20 +2563,30 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("cursor-cloud: env_vars must be dict[str, str] only")
             env_vars = dict(ev)
 
+    # ---- v0.10.0 routing translation (AC5 / AC6 / AC7) ------------------
+    # 1. Validate the four legacy extras for shape/type so a buggy caller
+    #    passing labels=int still gets a precise error.
+    # 2. Validate the new cloud_target knob and pool_name.
+    # 3. Resolve a single (env_type, env_name) pair from whatever combo
+    #    the caller set; raise on conflicts.
+    # 4. Emit ONE DeprecationWarning when ANY legacy extra was present
+    #    (per implementation hint in PLAN A1).
+
     use_private_worker_explicit = "use_private_worker" in extra
     if use_private_worker_explicit:
-        raw_use_private_worker = extra["use_private_worker"]
-        if not isinstance(raw_use_private_worker, bool):
+        raw_upw = extra["use_private_worker"]
+        if not isinstance(raw_upw, bool):
             raise ValueError(
                 "cursor-cloud: use_private_worker must be bool, "
-                f"got {type(raw_use_private_worker).__name__}"
+                f"got {type(raw_upw).__name__}"
             )
-        use_private_worker = raw_use_private_worker
+        use_private_worker_value: bool = raw_upw
     else:
-        use_private_worker = False
+        use_private_worker_value = False
 
     labels: dict[str, str] = {}
-    if "labels" in extra:
+    labels_explicit = "labels" in extra
+    if labels_explicit:
         raw_labels = extra["labels"]
         if raw_labels is not None:
             if not isinstance(raw_labels, dict):
@@ -2059,36 +2601,151 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
                 raise ValueError("cursor-cloud: labels must be dict[str, str] only")
             labels = dict(raw_labels)
 
-    convenience_labels = {
-        "worker_name": "worker",
-        "machine_name": "machine",
-        "pool_name": "pool",
-    }
-    routing_requested = bool(labels)
-    for extra_key, label_key in convenience_labels.items():
-        if extra_key not in extra:
-            continue
-        raw_value = extra[extra_key]
-        if not isinstance(raw_value, str) or not raw_value.strip():
-            raise ValueError(f"cursor-cloud: {extra_key} must be a non-empty str")
-        value = raw_value.strip()
-        routing_requested = True
-        if label_key in labels and labels[label_key] != value:
-            raise ValueError(
-                "cursor-cloud: "
-                f"{extra_key}={value!r} conflicts with labels[{label_key!r}]="
-                f"{labels[label_key]!r}"
-            )
-        labels[label_key] = value
+    def _validated_name(key: str) -> str | None:
+        if key not in extra:
+            return None
+        raw = extra[key]
+        if not isinstance(raw, str) or not raw.strip():
+            raise ValueError(f"cursor-cloud: {key} must be a non-empty str")
+        return raw.strip()
 
-    if routing_requested:
-        if use_private_worker_explicit and use_private_worker is False:
+    worker_name = _validated_name("worker_name")
+    machine_name = _validated_name("machine_name")
+
+    pool_name: str | None = None
+    pool_name_explicit = "pool_name" in extra
+    if pool_name_explicit:
+        raw_pool = extra["pool_name"]
+        if not isinstance(raw_pool, str):
             raise ValueError(
-                "cursor-cloud: use_private_worker=false cannot be combined with "
-                "labels, worker_name, machine_name, or pool_name; self-hosted "
-                "worker routing requires use_private_worker=true"
+                f"cursor-cloud: pool_name must be str, got {type(raw_pool).__name__}"
             )
-        use_private_worker = True
+        pool_name = raw_pool.strip()
+
+    cloud_target: str | None = None
+    if "cloud_target" in extra:
+        raw_target = extra["cloud_target"]
+        if not isinstance(raw_target, str):
+            raise ValueError(
+                "cursor-cloud: cloud_target must be str, "
+                f"got {type(raw_target).__name__}"
+            )
+        cloud_target = raw_target.strip()
+        if cloud_target not in _VALID_CLOUD_TARGETS:
+            raise ValueError(
+                "cursor-cloud: cloud_target must be one of "
+                f"{sorted(_VALID_CLOUD_TARGETS)!r}, got {raw_target!r}"
+            )
+        if cloud_target == "ask-each-time":
+            raise ValueError(
+                "cursor-cloud: cloud_target='ask-each-time' is only valid as a "
+                "default; resolve to 'self-hosted' or 'cursor-managed' before dispatch"
+            )
+
+    # Conflict #1 (legacy v0.9.x semantics carried forward): the caller
+    # explicitly typed `use_private_worker=False` AND a routing knob.
+    # In v0.9.x this auto-promoted to True with a warning; in v0.10.0 the
+    # promotion silently disagrees with the explicit False so we hard-fail.
+    has_routing_knob = bool(
+        worker_name or machine_name or labels or pool_name_explicit
+    )
+    if has_routing_knob and use_private_worker_explicit and not use_private_worker_value:
+        raise ValueError(
+            "cursor-cloud: use_private_worker=false cannot be combined with "
+            "labels, worker_name, machine_name, or pool_name; v0.10.0 routes "
+            "via env={type, name?} and these knobs are deprecated aliases"
+        )
+
+    # Conflict #2 (Q-7 no-fallback contract): cloud_target=cursor-managed
+    # is mutually exclusive with any self-hosted routing knob.
+    if cloud_target == "cursor-managed" and (
+        worker_name is not None
+        or machine_name is not None
+        or pool_name_explicit
+        or labels
+    ):
+        raise ValueError(
+            "cursor-cloud: cloud_target='cursor-managed' is mutually exclusive "
+            "with worker_name / machine_name / pool_name / labels (cursor-managed "
+            "routes to the Cursor cloud VM, not a self-hosted worker)"
+        )
+
+    # Resolve the machine name from the most-specific knob; require unique.
+    machine_candidates: list[tuple[str, str]] = []
+    if worker_name is not None:
+        machine_candidates.append(("worker_name", worker_name))
+    if machine_name is not None:
+        machine_candidates.append(("machine_name", machine_name))
+    legacy_label_worker = labels.get("worker") if labels else None
+    if legacy_label_worker is not None:
+        machine_candidates.append(("labels[worker]", legacy_label_worker))
+    legacy_label_machine = labels.get("machine") if labels else None
+    if legacy_label_machine is not None:
+        machine_candidates.append(("labels[machine]", legacy_label_machine))
+
+    machine_name_resolved: str | None = None
+    if machine_candidates:
+        first_source, first_value = machine_candidates[0]
+        for source, value in machine_candidates[1:]:
+            if value != first_value:
+                raise ValueError(
+                    f"cursor-cloud: {source}={value!r} conflicts with "
+                    f"{first_source}={first_value!r}"
+                )
+        machine_name_resolved = first_value
+
+    # AC7: cloud_target=self-hosted requires a resolved worker name.
+    if cloud_target == "self-hosted" and machine_name_resolved is None:
+        raise ValueError(
+            "cursor-cloud: cloud_target='self-hosted' requires a worker name "
+            "via worker_name=<X> or machine_name=<X>"
+        )
+
+    # Conflict #3: pool_name + machine_name_resolved are mutually exclusive
+    # (a single dispatch routes to one env-type, not both).
+    if pool_name_explicit and machine_name_resolved is not None:
+        raise ValueError(
+            "cursor-cloud: pool_name is mutually exclusive with worker_name / "
+            "machine_name / labels.worker / labels.machine — pick one routing "
+            "shape per dispatch"
+        )
+
+    # Build the env dict (AgentEnv shape).
+    resolved_env: AgentEnv | None = None
+    if machine_name_resolved is not None:
+        resolved_env = {"type": "machine", "name": machine_name_resolved}
+    elif pool_name_explicit:
+        # AC6: pool_name=X → {type:"pool", name:X}; pool_name="" → {type:"pool"}.
+        resolved_env = {"type": "pool"}
+        if pool_name:
+            resolved_env["name"] = pool_name
+    elif use_private_worker_explicit and use_private_worker_value:
+        # Legacy `use_private_worker=true` with no name. The gateway rejects
+        # `env={type:"machine"}` without a name (PROBE_49 → 400 "env.name is
+        # required when env.type is machine"); fail early with a friendlier
+        # message instead of round-tripping to a 400.
+        raise ValueError(
+            "cursor-cloud: use_private_worker=true is deprecated and requires "
+            "either worker_name=<X> or machine_name=<X>; v0.10.0 routes via "
+            "env={type:'machine', name:X}"
+        )
+    # cloud_target=cursor-managed (no other knobs) → leave env=None.
+    # cloud_target=None and no routing knobs → leave env=None (gateway default cloud).
+
+    # AC5: emit DeprecationWarning when ANY legacy extra is present (one
+    # warning per call regardless of how many legacy keys were used).
+    legacy_used = any(key in extra for key in _LEGACY_ROUTING_EXTRAS)
+    if legacy_used:
+        warnings.warn(
+            "cursor-cloud: 'use_private_worker' / 'labels' / 'worker_name' / "
+            "'machine_name' extras are deprecated as of v0.10.0; pass "
+            "env={'type':'machine','name':<X>} via the new --cloud-target / "
+            "--worker-name CLI flags instead. The legacy alias path translates "
+            "to env={type:'machine', name:<resolved>} for one minor release; "
+            "v1.1+ will remove the alias entirely.",
+            DeprecationWarning,
+            stacklevel=3,
+        )
 
     if "timeout_s" in extra:
         ts = extra["timeout_s"]
@@ -2116,7 +2773,6 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         "skip_reviewer_request": skip_reviewer_request,
         "starting_ref": starting_ref,
         "timeout_s": timeout_s,
-        "use_private_worker": use_private_worker,
         "work_on_current_branch": work_on_current_branch,
     }
     if repo_url is not None:
@@ -2125,8 +2781,11 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         out["pr_url"] = pr_url
     if env_vars is not None:
         out["env_vars"] = env_vars
-    if labels:
-        out["labels"] = labels
+    if resolved_env is not None:
+        # Materialize as a plain dict (TypedDict serializes the same shape).
+        out["env"] = dict(resolved_env)
+    if cloud_target is not None:
+        out["cloud_target"] = cloud_target
     if api_key is not None:
         out["api_key"] = api_key
     return out

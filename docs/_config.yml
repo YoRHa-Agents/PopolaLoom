@@ -15,7 +15,7 @@ url: https://YoRHa-Agents.github.io
 baseurl: /PopolaLoom
 
 # Site version (rendered in the footer by _layouts/default.html)
-popola_version: "0.9.9"
+popola_version: "1.0.0-pre.1"
 
 # Site metadata
 github:
@@ -30,6 +30,7 @@ kramdown:
 # Build plugins
 plugins:
   - jekyll-relative-links
+  - jekyll-sitemap
 
 # Files to exclude from the Pages build (keep them in git but not
 # rendered as Jekyll pages)

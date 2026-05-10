@@ -2,21 +2,39 @@
 layout: default
 title: PopolaLoom
 description: Meta-orchestrator over local agent CLIs (Cursor / Claude / Codex / Copilot)
+lang: en
+translation_url: /zh/index.html
 ---
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
 
 <section class="hero">
   <h1 data-i18n="hero.title">PopolaLoom</h1>
   <p class="tagline" data-i18n="hero.tagline">A loom that weaves agents.</p>
   <p data-i18n="hero.lead">Local-first meta-orchestrator that sits on top of every agent CLI on your machine — Cursor, Claude Code, Codex, Kimi, GitHub Copilot — and gives them a single dispatch surface, a persistent task bus, and a unified HITL channel.</p>
   <div class="cta-cluster">
-    <a class="cta-button" href="QUICKSTART.html" data-i18n="hero.cta_start">5-minute Quickstart</a>
-    <a class="cta-button" href="https://github.com/YoRHa-Agents/PopolaLoom" data-i18n="hero.cta_github">GitHub</a>
-    <a class="cta-button" href="USER_GUIDE.html" data-i18n="hero.cta_guide">User Guide</a>
-    <a class="cta-button" href="DEMO.html" data-i18n="hero.cta_demo">Demo</a>
+    <a class="cta-button" href="QUICKSTART.html" aria-label="Start the five-minute PopolaLoom quickstart" data-i18n="hero.cta_start">5-minute Quickstart</a>
+    <a class="cta-button" href="https://github.com/YoRHa-Agents/PopolaLoom" aria-label="Open PopolaLoom on GitHub" data-i18n="hero.cta_github">GitHub</a>
+    <a class="cta-button" href="USER_GUIDE.html" aria-label="Read the PopolaLoom user guide" data-i18n="hero.cta_guide">User Guide</a>
+    <a class="cta-button" href="DEMO.html" aria-label="Open PopolaLoom demos" data-i18n="hero.cta_demo">Demo</a>
   </div>
 </section>
+
+<div class="kpi-strip" aria-label="PopolaLoom v0.9.x key metrics">
+  <div class="kpi-strip__item">5 channels HITL</div>
+  <div class="kpi-strip__item">8 dim self-eval</div>
+  <div class="kpi-strip__item">v0.9.x stable surface</div>
+  <div class="kpi-strip__item">10 workflows</div>
+</div>
+
+## Choose Your Path
+
+<div class="routing-grid">
+  <a class="routing-card" href="QUICKSTART.html"><strong>Newcomer</strong><span>Install, init, dispatch, attach in five minutes.</span></a>
+  <a class="routing-card" href="demo-page.html#cloud-agent"><strong>Cloud dispatch</strong><span>Route Cursor Cloud tasks through the same status and attach surface.</span></a>
+  <a class="routing-card" href="demo-page.html#self-hosted-worker"><strong>Self-hosted machine</strong><span>Register this workstation as a worker and hand off safely.</span></a>
+  <a class="routing-card" href="USER_GUIDE.html#mcp-integration"><strong>Scripting</strong><span>Use SDK-shaped CLI JSON and the MCP tool bridge.</span></a>
+</div>
 
 <hr class="ornament">
 
@@ -80,6 +98,18 @@ popola doctor                        # 4-subsystem health check
 
 <hr class="ornament">
 
+<h2>v0.9.x Release Timeline</h2>
+
+<ol class="release-timeline">
+  <li><strong>v0.8.5</strong> — Cursor Cloud dispatch enters the loom with task ids, status, and attach parity.</li>
+  <li><strong>v0.9.0</strong> — GA stability boundary locks CLI verbs, daemon RPC routes, JSON shapes, and config sections.</li>
+  <li><strong>v0.9.7</strong> — Secure credential install path lands via `./install.sh install --with-credentials`.</li>
+  <li><strong>v0.9.9</strong> — Worker dispatch observability, pid drift visibility, and init secret fallback close the feedback loop.</li>
+  <li><strong>v0.9.10</strong> — Docs-site polish, expanded demo scenarios, and user preferences documentation sync the public surface.</li>
+</ol>
+
+<hr class="ornament">
+
 <h2 data-i18n="design.heading">Design in one picture</h2>
 
 <div class="feature-grid">
@@ -115,4 +145,4 @@ popola doctor                        # 4-subsystem health check
 
 <h2 data-i18n="status.heading">Project status</h2>
 
-<p data-i18n="status.lead">v0.9.7 carries forward the v0.9.0 GA stability boundary while refreshing the public docs for cloud workers, secure key storage, and Cloud HITL gamma. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, and file-backed handoff now share one documented surface. The safe install path is ./install.sh install, with ./install.sh install --with-credentials for OS-keyring-backed Cursor API keys.</p>
+<p data-i18n="status.lead">v1.0.0-pre.1 carries forward the v0.9.0 GA stability boundary while pivoting Cursor Cloud dispatch to the env-shape schema, removing the v0.9.9 account_class gate, and adding `--cloud-target` / `--worker-name` flags with a no-fallback contract. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, file-backed handoff, and preference-aware dispatch now share one public map.</p>

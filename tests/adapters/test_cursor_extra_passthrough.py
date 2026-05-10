@@ -34,6 +34,8 @@ subprocess, no daemon, no network. Each test < 5 ms.
 
 from __future__ import annotations
 
+import warnings
+
 import pytest
 
 from popolaloom.adapters import CursorAdapter
@@ -225,3 +227,158 @@ def test_cursor_cli_args_takes_precedence_over_cmd_args_alias() -> None:
     )
     assert "--from-canonical" in argv
     assert "--from-alias" not in argv
+
+
+# ── v0.10.0 Wave D2 — cursor-cloud ``_normalize_cloud_extra`` passthrough ──
+#
+# These tests pin the cursor-cloud adapter's extras-passthrough contract
+# under the v0.10.0 schema pivot (DECISIONS Q-2 / Q-11). The cursor-cloud
+# adapter shares this file's "extra passthrough" theme — both adapters
+# accept a ``--cli-flag`` extras dict from ``popola dispatch`` and the
+# extras-passthrough contract is the load-bearing seam between the CLI
+# parser and the wire-level body builder. We pin it here alongside the
+# local cursor passthrough so a regression in either side surfaces in
+# the same module.
+#
+# DECISIONS:
+# - Q-2: routing flows via ``env={type, name?}``; the legacy
+#   ``use_private_worker`` / ``labels`` / ``worker_name`` / ``machine_name``
+#   extras emit a single ``DeprecationWarning`` per call AND translate
+#   to ``env={type:"machine", name:X}``.
+# - Q-11: the kwarg path is removed; the extras path stays alive for
+#   one minor release.
+# - Default model fallback bumped from ``"composer-2"`` to ``"default"``
+#   so Cursor picks the recommended model for the user's plan rather
+#   than pinning to a name that may rotate (research/02-path-1-visibility-probe.md
+#   §1 L70-77).
+# ────────────────────────────────────────────────────────────────────────
+
+
+def test_cloud_normalize_worker_name_translates_to_env_machine_with_warning() -> None:
+    """AC2 (a): ``worker_name="X"`` (extras) translates to ``env={type:"machine", name:"X"}``.
+
+    Per Q-2 the legacy ``worker_name`` extra is a deprecated alias for the
+    new ``env`` shape. The translation is the operator-friendly one-release
+    deprecation window so v0.9.x ``--cli-flag worker_name=X`` invocations
+    keep working through v0.10.x.
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    with pytest.warns(DeprecationWarning, match=r"deprecated"):
+        out = _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "worker_name": "ci-worker-1",
+            }
+        )
+    assert out["env"] == {"type": "machine", "name": "ci-worker-1"}
+    # v0.9.x output keys are NEVER emitted on the v0.10.0 marker payload.
+    assert "use_private_worker" not in out
+    assert "labels" not in out
+
+
+def test_cloud_normalize_pool_name_translates_to_env_pool() -> None:
+    """AC2 (b): ``pool_name="Y"`` (extras) translates to ``env={type:"pool", name:"Y"}``.
+
+    ``pool_name`` is the v0.10.x-current spelling (NOT a deprecated alias)
+    so no ``DeprecationWarning`` should fire.
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("error", DeprecationWarning)
+        out = _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "pool_name": "team-pool",
+            }
+        )
+    assert out["env"] == {"type": "pool", "name": "team-pool"}
+
+
+def test_cloud_normalize_pool_name_empty_emits_pool_without_name() -> None:
+    """AC2 (b) variant: ``pool_name=""`` emits ``env={type:"pool"}`` (no ``name``).
+
+    Empty string means "use the Self-Hosted Pool default name"; the
+    gateway accepts ``env.name`` being absent for ``type=pool`` per
+    research/01-path-2-live-probe.md §"Schema fully nailed down" L97-122.
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    out = _normalize_cloud_extra(
+        {
+            "repo_url": "https://github.com/o/r",
+            "pool_name": "",
+        }
+    )
+    assert out["env"] == {"type": "pool"}
+    assert "name" not in out["env"]
+
+
+def test_cloud_normalize_cloud_target_cursor_managed_emits_no_env_key() -> None:
+    """AC2 (c): ``cloud_target="cursor-managed"`` produces NO ``env`` key.
+
+    The gateway treats a missing ``env`` as ``{type:"cloud"}`` (the
+    default), so omitting the key is byte-identical to passing
+    ``env={type:"cloud"}`` and saves a few wire bytes.
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    out = _normalize_cloud_extra(
+        {
+            "repo_url": "https://github.com/o/r",
+            "cloud_target": "cursor-managed",
+        }
+    )
+    assert "env" not in out
+    # ``cloud_target`` itself IS preserved in the marker payload so the
+    # daemon supervisor can echo it back into the dispatch-context log.
+    assert out["cloud_target"] == "cursor-managed"
+
+
+def test_cloud_normalize_use_private_worker_with_worker_name_raises_deprecation_warning() -> None:
+    """AC2 (d): legacy ``use_private_worker=True + worker_name=X`` emits ``DeprecationWarning``.
+
+    The pair translates to ``env={type:"machine", name:"X"}`` while a
+    ``DeprecationWarning`` fires once per call (regardless of how many
+    legacy keys were used).
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    with pytest.warns(DeprecationWarning, match=r"deprecated"):
+        out = _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "use_private_worker": True,
+                "worker_name": "ci-worker-1",
+            }
+        )
+    assert out["env"] == {"type": "machine", "name": "ci-worker-1"}
+
+
+def test_cloud_normalize_default_model_fallback_is_default_not_composer_2() -> None:
+    """AC2 (e): the default model fallback is ``"default"`` (NOT ``"composer-2"``).
+
+    Pinned by ``research/02-path-1-visibility-probe.md`` §1 L70-77:
+    ``"default"`` lets Cursor pick the recommended model for the user's
+    plan rather than tying popola to a specific composer version that
+    may rotate.
+    """
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    out = _normalize_cloud_extra({"repo_url": "https://github.com/o/r"})
+    assert out["model"] == "default"
+    assert out["model"] != "composer-2"
+
+
+def test_cloud_normalize_explicit_model_overrides_default() -> None:
+    """AC2 (e) corollary: an explicit ``model`` extra still overrides the new default."""
+    from popolaloom.adapters.cursor_cloud import _normalize_cloud_extra
+
+    out = _normalize_cloud_extra(
+        {
+            "repo_url": "https://github.com/o/r",
+            "model": "composer-2",
+        }
+    )
+    assert out["model"] == "composer-2"

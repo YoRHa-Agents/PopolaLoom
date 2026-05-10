@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" role="img" aria-labelledby="title desc">
+  <title id="title">Daemon doctor fix</title>
+  <desc id="desc">A doctor check changing from red failure to green pass.</desc>
+  <rect width="720" height="320" fill="#f4ede4"/>
+  <rect x="48" y="58" width="624" height="204" fill="#14110d" stroke="#c89a4a" stroke-width="3"/>
+  <text x="82" y="112" fill="#e8dfd4" font-family="JetBrains Mono, monospace" font-size="22">$ popola doctor</text>
+  <text x="82" y="154" fill="#ff8a7a" font-family="JetBrains Mono, monospace" font-size="20"> popolad: socket missing</text>
+  <path d="M82 184h556" stroke="#8a6936" stroke-width="1"/>
+  <text x="82" y="222" fill="#e8dfd4" font-family="JetBrains Mono, monospace" font-size="22">$ popola popolad start</text>
+  <text x="82" y="252" fill="#9dd69d" font-family="JetBrains Mono, monospace" font-size="20"> all checks</text>
+</svg>

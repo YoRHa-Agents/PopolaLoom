@@ -8,7 +8,9 @@ translation_url: /zh/QUICKSTART.html
 
 # PopolaLoom — 5-minute Quickstart
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
+
+> Current release: **v1.0.0-pre.1** (2026-05-11). See [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) for the env-shape pivot, the deletion of the v0.9.9 account_class gate, and the new `--cloud-target` / `--worker-name` flags.
 
 > Get from install to "task dispatched and visible in `popola list`" in five minutes. For the full reference, see [`USER_GUIDE.md`](USER_GUIDE.md).
 
@@ -22,11 +24,11 @@ translation_url: /zh/QUICKSTART.html
 ## Step 1 — Install popolaloom
 
 ```bash
-# Current v0.9.9 release. The default installer path uses GitHub while PyPI promotion is deferred.
+# Current v1.0.0-pre.1 release. The default installer path uses GitHub while PyPI promotion is deferred.
 ./install.sh install                                              # canonical (default --from=git, tracks main)
 
 # Optional reproducible tag pin:
-./install.sh install --ref=v0.9.9
+./install.sh install --ref=v1.0.0-pre.1
 
 # Optional secure-credential extra (v0.9.7+):
 ./install.sh install --with-credentials
@@ -37,12 +39,12 @@ cd PopolaLoom
 pip install -e ".[dev]"
 
 # verify
-python -c "import popolaloom; print(popolaloom.__version__)"   # → 0.9.9
+python -c "import popolaloom; print(popolaloom.__version__)"   # → 1.0.0-pre.1
 which popola                         # → /usr/local/bin/popola (or similar)
-popola version                       # → "popolaloom 0.9.9"
+popola version                       # → "popolaloom 1.0.0-pre.1"
 ```
 
-If you specifically need a tag-pinned manual fallback outside the installer, use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9`. Avoid the bare package-name form until the `BL-v0.9.x-PyPI` promotion patch lands.
+If you specifically need a tag-pinned manual fallback outside the installer, use `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1`. Avoid the bare package-name form until the `BL-v0.9.x-PyPI` promotion patch lands.
 
 If `popola: command not found` after install, your shell's PATH may not include `~/.local/bin`. Fix:
 
@@ -160,7 +162,7 @@ bash examples/quickstart.sh
 # [quickstart] Step 4/6: querying popola status ...
 # [quickstart] Step 5/6: running popola doctor
 # [quickstart] Step 6/6: stopping popolad
-# [quickstart] all 6 steps PASS — popolaloom v0.9.9 ready
+# [quickstart] all 6 steps PASS — popolaloom v1.0.0-pre.1 ready
 ```
 
 The script honours `$POPOLA_HOME` (default: a fresh `mktemp -d`) so it never pollutes your real `~/.popola`.

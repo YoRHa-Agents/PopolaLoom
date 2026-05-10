@@ -46,6 +46,7 @@ from popolaloom.adapters.cursor_cloud import CLOUD_BUILD_COMMAND_MARKER
 from popolaloom.daemon.event_log import EventLog
 
 if TYPE_CHECKING:
+    from popolaloom.adapters.cursor_cloud import AgentEnv
     from popolaloom.daemon.state import StateStore
 
 logger = logging.getLogger(__name__)
@@ -389,7 +390,7 @@ class Supervisor:
         if not api_key:
             return _fail(error_kind="missing_api_key")
 
-        model = str(extra.get("model", "composer-2"))
+        model = str(extra.get("model", "default"))
         repo_url = extra.get("repo_url")
         if repo_url is not None and not isinstance(repo_url, str):
             return _fail(
@@ -423,32 +424,132 @@ class Supervisor:
             else:
                 env_vars_param = dict(ev)
 
-        use_private_worker_param = extra.get("use_private_worker", False)
-        if not isinstance(use_private_worker_param, bool):
-            return _fail(
-                error_kind="marker_decode_error",
-                error_detail="extra.use_private_worker must be bool",
-            )
-
-        labels_param: dict[str, str] | None = None
-        if "labels" in extra:
-            labels_raw = extra.get("labels")
-            if labels_raw is None:
-                labels_param = None
-            elif not isinstance(labels_raw, dict):
+        # v0.10.0 Wave A1.5 (DECISIONS Q-2 + Q-11) — `env: AgentEnv` is the
+        # sole routing knob on `POST /v1/agents`. The CLI process translates
+        # `worker_name` / `pool_name` / legacy `use_private_worker+labels`
+        # extras into `extra["env"]` via `_normalize_cloud_extra` BEFORE the
+        # marker is built; the supervisor's job is to validate the
+        # already-translated payload and pass it through to `create_agent`.
+        #
+        # Option B (defensive deprecation translator) is implemented per the
+        # L3 brief AC 3: a v0.9.x CLI pinned by an operator can still
+        # dispatch to a v0.10.0 daemon. When `env` is absent AND legacy
+        # `use_private_worker=True + labels.worker=X` are both present we
+        # translate to `env={type:"machine", name:X}` and emit one warning.
+        # If `env` IS present the legacy keys are ignored (env wins).
+        env_param: AgentEnv | None = None
+        env_raw = extra.get("env")
+        if env_raw is not None:
+            if not isinstance(env_raw, dict):
                 return _fail(
                     error_kind="marker_decode_error",
-                    error_detail="extra.labels must be object or null",
+                    error_detail=(
+                        "extra.env must be object (AgentEnv: {type, name?}); "
+                        f"got {type(env_raw).__name__}"
+                    ),
                 )
-            elif not all(
-                isinstance(k, str) and isinstance(v, str) for k, v in labels_raw.items()
-            ):
+            env_type = env_raw.get("type")
+            if not isinstance(env_type, str) or env_type not in {
+                "cloud",
+                "machine",
+                "pool",
+            }:
                 return _fail(
                     error_kind="marker_decode_error",
-                    error_detail="extra.labels must be dict[str, str]",
+                    error_detail=(
+                        "extra.env.type must be one of "
+                        "['cloud', 'machine', 'pool']; "
+                        f"got {env_type!r}"
+                    ),
                 )
+            env_name_raw = env_raw.get("name")
+            if env_type == "machine":
+                if not isinstance(env_name_raw, str) or not env_name_raw.strip():
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail=(
+                            "extra.env.name is required (non-empty str) when "
+                            "extra.env.type == 'machine' "
+                            "(gateway returns 400 otherwise)"
+                        ),
+                    )
+                env_param = {"type": "machine", "name": env_name_raw}
+            elif env_type == "pool":
+                if env_name_raw is not None and not isinstance(env_name_raw, str):
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail=(
+                            "extra.env.name must be str when present "
+                            "(extra.env.type == 'pool')"
+                        ),
+                    )
+                env_param = {"type": "pool"}
+                if isinstance(env_name_raw, str) and env_name_raw:
+                    env_param["name"] = env_name_raw
             else:
-                labels_param = dict(labels_raw)
+                if env_name_raw is not None:
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail=(
+                            "extra.env.name is forbidden when extra.env.type "
+                            "== 'cloud' (the cursor-managed VM has no "
+                            "addressable name)"
+                        ),
+                    )
+                env_param = {"type": "cloud"}
+        else:
+            legacy_upw: bool = False
+            if "use_private_worker" in extra:
+                raw_upw = extra["use_private_worker"]
+                if not isinstance(raw_upw, bool):
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail="extra.use_private_worker must be bool",
+                    )
+                legacy_upw = raw_upw
+            legacy_labels: dict[str, str] | None = None
+            if "labels" in extra:
+                legacy_labels_raw = extra["labels"]
+                if legacy_labels_raw is None:
+                    legacy_labels = None
+                elif not isinstance(legacy_labels_raw, dict):
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail="extra.labels must be object or null",
+                    )
+                elif not all(
+                    isinstance(k, str) and isinstance(v, str)
+                    for k, v in legacy_labels_raw.items()
+                ):
+                    return _fail(
+                        error_kind="marker_decode_error",
+                        error_detail="extra.labels must be dict[str, str]",
+                    )
+                else:
+                    legacy_labels = dict(legacy_labels_raw)
+            if legacy_upw and legacy_labels and legacy_labels.get("worker"):
+                worker_value = legacy_labels["worker"]
+                logger.warning(
+                    "legacy marker payload detected; translating "
+                    "use_private_worker+labels to env=AgentEnv "
+                    "(task=%s worker=%s)",
+                    task_id,
+                    worker_value,
+                )
+                env_param = {"type": "machine", "name": worker_value}
+            elif legacy_upw:
+                # `use_private_worker=True` without `labels.worker=X` would
+                # round-trip to a 400 from the gateway (PROBE_49: env={type:
+                # "machine"} requires `name`). Fail early per No-Silent-Failures
+                # rather than dispatching a payload guaranteed to fail.
+                return _fail(
+                    error_kind="marker_decode_error",
+                    error_detail=(
+                        "extra.use_private_worker=True requires "
+                        "extra.labels.worker=<name>; v0.10.0 routes via "
+                        "env={type:'machine', name:X}"
+                    ),
+                )
 
         timeout_s_param: float | None = None
         if extra.get("timeout_s") is not None:
@@ -473,8 +574,7 @@ class Supervisor:
                 skip_reviewer_request=bool(extra.get("skip_reviewer_request", False)),
                 pr_url=pr_url,
                 env_vars=env_vars_param,
-                use_private_worker=use_private_worker_param,
-                labels=labels_param,
+                env=env_param,
                 timeout_s=timeout_s_param,
             )
         except ValueError as exc:
