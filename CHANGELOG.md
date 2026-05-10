@@ -14,6 +14,74 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 <!-- updated: 2026-05-10 -->
 
+## [0.9.9] — 2026-05-10
+
+**Theme**: Worker dispatch + observability + init secret caching — closes the **8 outstanding items** in [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) (six original observability / dispatch / orphan-process pain points 1a / 1b / 1c / 2 / 3 / 5, plus the user's verbatim follow-up at lines 114-116 about worker-targeted dispatch and init-time secret caching). Six source-code patches across supervisor / daemon / adapter / CLI plus one canonical 0o600 fallback file land **without breaking a single v0.9.0 GA stable surface** (per [`docs/API_STABILITY.md`](docs/API_STABILITY.md)). The release organises those changes into 4 implementation waves (A / B / C / D) plus 1 schema-investigation spike (Spike-0); the `pid_alive` probe, the worker stop verb, and the `account_class` pre-flight gate are the operator-visible new surfaces.
+
+### Added
+
+- **`process.note` event with `kind=stdout_silence`** (NEW; v0.9.9 F1 — Q-V099-5 + Q-V099-14) — `Supervisor.spawn` arms a 30-second stdout-silence timer (t0 = `process.started` thread fan-out); on timeout the supervisor emits a single `process.note` event whose `data.hint` branches by adapter + `output_format`: `cursor` + `text` (or unknown) gets the verbatim `feedback_for_v0.9.7.md:33-34` "pass `--cli-flag output_format=stream-json` for live progress" wording, `cursor` + `stream-json` gets the Q-V099-14 "first frame not yet emitted" hint, every other CLI gets a generic stdout-silence note. The fire-once `threading.Timer` is cancelled by the first non-empty `_drain_stream` line AND by `_wait_and_finalize` exit so a fast-exiting task does not leak a delayed note. Tests monkeypatch the threshold to ≈ 0.05s for sub-second runs.
+- **`pid_alive` field in `popola status --json` + table renderer** (NEW; v0.9.9 F2 — Q-V099-4) — `Popolad.get_status` runs an `os.kill(pid, 0)` probe for every `runtime=local` + `state=running` handle with a known pid; `pid_alive=false` on `ProcessLookupError` (also logs a daemon-side WARN: `status drift: task=… state=running but pid=… already reaped; supervisor sync pending`), `pid_alive=true` on `PermissionError` and on a successful signal. The field is intentionally **absent** for cloud-runtime tasks, terminal-state tasks, and running tasks without a known pid (additive-only contract — old consumers keep working unchanged). The follow-up "force-finalize once `pid_alive=false`" change is deferred to `BL-v0.10.0-supervisor-force-finalize`.
+- **Dispatch-time CLI footer for `--cli=cursor`** (NEW; v0.9.9 F3) — `popola dispatch --cli=cursor` stdout now ends with `view: popola attach <id> --follow (note: Cursor dashboard does not show local subprocess tasks)`. Gated on `cli == "cursor"` so `cursor-cloud` and other adapters keep their existing single-line output.
+- **Worker idle hint on `popola cloud worker status`** (NEW; v0.9.9 F3) — when `metrics.last_activity` is zero AND `readyz.claimed` is false, the renderer appends `note: 0 sessions claimed since worker started …` so operators can distinguish "worker dead" from "worker alive but idle". Suppressed in JSON mode and as soon as a claim signal is observed.
+- **`integration_github_app_branch_not_found` `_ERROR_CATALOG` entry** (NEW; v0.9.9 F4 — Q-V099-7) — catalog grows from 16 → 17 entries. Matches HTTP 400 `validation_error` with regex `(?i)failed\s+to\s+verify\s+existence\s+of\s+branch.+in\s+repository` and reuses the existing `GithubAppMissingError` subclass (no new exception class — Q-V099-7 lock). Bilingual hint surfaces both `https://cursor.com/integrations/github` and the `auto_create_pr=false` workaround. Position: BEFORE `validation_request_body` so the regex match wins on the +5 score in `_score_entry`.
+- **`account_class` metadata field on `$POPOLA_HOME/credentials.toml`** (NEW; v0.9.9 F5 + U1 — Q-V099-1 + Spike-0 BRANCH_B) — default `unknown` for backward compat; persisted under `[cursor].account_class`; the literal API key value never travels alongside the class label.
+- **`AccountClass` enum + `store_account_class` / `get_account_class` helpers** (NEW; v0.9.9 F5 + U1) — new public symbols on `popolaloom.credentials`; the enum's string values (`personal`, `service-account`, `unknown`) match the on-disk form verbatim.
+- **`popola auth cursor set --account-class={personal|service-account|unknown}` Typer option + `--no-prompt`** (NEW; v0.9.9 F5 + U1) — case-insensitive validation; on an interactive terminal an inline prompt asks for the class when omitted; non-interactive runs default to `unknown` per Q-V099-1.
+- **`popola cloud worker stop --name X | --worker-dir Y --grace N` Typer verb** (NEW; v0.9.9 F6 — Q-V099-6) — SIGTERM-then-SIGKILL escalation with default 5-second grace; `--help` documents the no-idle-gate caveat verbatim: *"Stops the worker even if a Cloud Agent session is currently claimed; compose with `popola cloud worker status --busy` to gate."*
+- **`~/.popola/cursor_api_key.env` 0o600 fallback file** (NEW; v0.9.9 U2 — Q-V099-11) — `popola init --cursor-api-key VAL` (and `--cursor-api-key-file`) writes `CURSOR_API_KEY=<value>\n` to a 0o600-protected sibling of `credentials.toml` when the keyring backend is unavailable. The file path is printed using `~/...` rendering for portability across machines.
+- **Daemon startup auto-source of `cursor_api_key.env`** (NEW; v0.9.9 U2 — Q-V099-12) — `popolad` startup calls `credentials.load_env_fallback_into_environ` so a fresh `popola popolad start` after `popola init --cursor-api-key VAL` works end-to-end without any manual `source`. The env-var precedence (slot #2) keeps winning if `CURSOR_API_KEY` is already set in the environment (No-Silent-Failures: never overwrite a live env value).
+- **`SCHEMA_INVESTIGATION.md` Wave Spike-0 deliverable** (NEW; in `.local/.agent/active/v0.9.9-worker-observability/`) — desk-research artefact (BRANCH_B verdict) plus drafted upstream Cursor issue text for filing to `https://github.com/getcursor/cursor/issues`.
+
+### Changed
+
+- **`_run_subprocess` rewritten to `subprocess.Popen(start_new_session=True)` + SIGTERM/SIGINT pgroup-forwarder** (v0.9.9 F6 — Q-V099-6) — the helper underneath `popola cloud worker start` now makes the spawned `agent worker start` Node child the leader of its own process group; the Python wrapper installs `signal.signal(SIGTERM, …)` / `signal.signal(SIGINT, …)` handlers that re-broadcast to `os.killpg(getpgid(self.pid), SIGTERM)` so killing the wrapper now cascades cleanly to the Node child. Closes `feedback_for_v0.9.7.md` §5 ("orphan Node.js worker").
+- **`_ERROR_CATALOG` entry count 16 → 17** (v0.9.9 F4) — see Added above for the new `integration_github_app_branch_not_found` regex entry; the existing 16 entries are unchanged.
+- **Q-V099-2 (DECISIONS.md) revised** — original lock was Option-A (loud-fail). Wave Spike-0's BRANCH_B verdict (no Cursor REST schema for personal-key + worker dispatch with Dashboard visibility as of 2026-05-10) collapsed the alternative Option-D (Spike-0-then-branch) back to Branch-B, which ships in v0.9.9 as the F5+U1 pre-flight gate.
+
+### Fixed
+
+- **F2 — `popola status` ↔ supervisor state-machine drift** (closes [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) §1b) — `popola status` now surfaces `pid_alive=false` and emits a daemon-log WARN when a `runtime=local` + `state=running` handle's pid has already been reaped by the kernel but the supervisor wait-thread has not yet finalised the state. The 10-second drift window the user observed is now visible to operators in real time instead of misleading them into a no-op `popola cancel`.
+- **U2 — silent-discard bug for init-time Cursor secret on hosts without a keyring backend** (closes the user's verbatim follow-up at `feedback_for_v0.9.7.md:114-116`) — `popola init --cursor-api-key VAL` previously printed an actionable hint and returned without persisting anything when the keyring extra was unavailable; v0.9.9 also writes the 0o600 fallback file at `~/.popola/cursor_api_key.env` so the secret is captured at-rest and the next `popolad` startup auto-sources it. The pre-existing env-var slot precedence is preserved.
+- **F6 — orphan Node.js worker on `popola cloud worker start` stop** (closes [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) §5) — killing the Python wrapper used to leave the underlying `agent worker start` Node child running; the new pgroup-forwarder + dedicated `popola cloud worker stop` verb make SIGTERM cascade as users expect.
+
+### Closes
+
+- [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) §1a (F1), §1b (F2), §1c (F3), §2 (F4), §3 (F5 + U1), §5 (F6), and the verbatim follow-up at lines 114-116 (U1 worker-targeted dispatch routing decision + U2 init secret caching). The closure stamp lives in `.local/feedbacks/TRACKER.md` (`FB-v0.9.7-1` Closed row).
+
+### Generated backlog (v0.10.0)
+
+- `BL-v0.10.0-cursor-personal-key-worker-schema` — track upstream Cursor REST schema for personal-key + self-hosted-worker dispatch with Dashboard visibility once the Spike-0 upstream issue lands a resolution (Q-V099-1).
+- `BL-v0.10.0-supervisor-force-finalize` — auto-reap a status-vs-pid drift after T seconds rather than just surfacing `pid_alive=false` (Q-V099-4).
+- `BL-v0.10.0-cursor-cloud-rest-smoke` — gated live REST smoke for personal vs service-account combinations to detect schema drift earlier (Q-V099-9).
+- `BL-v0.10.0-init-no-cursor-key-flag` — explicit opt-out flag for `popola init` so CI can skip the v0.9.5 intake without setting an empty `--cursor-api-key` (cleanup carry-forward).
+- `BL-v0.10.0-init-validate-cursor-key` — round-trip the key through `GET /v1/me` at init time, mirroring `popola auth cursor set --validate` (cleanup carry-forward).
+- `BL-v0.9.x-PyPI` — PyPI publish promotion remains deferred (Q-D-5 偏离默认 carries forward from v0.9.0 GA).
+
+### Version bumps
+
+- `src/popolaloom/__init__.py` — `__version__` `0.9.8` → `0.9.9`
+- `pyproject.toml` — `version = "0.9.8"` → `"0.9.9"`
+- `docs/_config.yml` — `popola_version: "0.9.8"` → `"0.9.9"`
+- `src/popolaloom/skills/popola-loom/SKILL.md` — frontmatter `version: 0.9.8` → `0.9.9`
+- `src/popolaloom/skills/popola-loom/.popola-loom-version` — `0.9.8` → `0.9.9`
+- `src/popolaloom/skills/install-popola/SKILL.md` — frontmatter `version: 0.9.8` → `0.9.9`
+- `src/popolaloom/skills/install-popola/.popola-loom-version` — `0.9.8` → `0.9.9`
+
+### Tests
+
+- `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package` keeps the SKILL.md frontmatter aligned to the package version (passes after the lockstep bump).
+- New tests for v0.9.9: ≈ 91 (Wave A + B1 — F1 silence-timer, F2 `pid_alive`, F3 footer + worker idle hint, F4 catalog 17 entries, U2 fallback file) + ≈ 51 (Wave B2 — F5 + U1 `account_class` pre-flight gate) + ≈ 16 (Wave C — F6 Popen+setsid + `popola cloud worker stop` verb) ≈ 158 new tests across `tests/cli/` + `tests/cloud/` + `tests/adapters/` + `tests/daemon/`.
+- Default lane: `pytest -m "not slow and not nightly and not real_cli and not real_lark and not real_cursor_cloud" -q --no-cov` continues to pass — 1289+ default-lane tests.
+
+### Files
+
+- **MOD source / skills**: `src/popolaloom/__init__.py`, `pyproject.toml`, `src/popolaloom/skills/popola-loom/{SKILL.md,.popola-loom-version}`, `src/popolaloom/skills/install-popola/{SKILL.md,.popola-loom-version}`, `src/popolaloom/daemon/supervisor.py` (F1), `src/popolaloom/daemon/server.py` (F2), `src/popolaloom/cli/main.py` (F3), `src/popolaloom/cli/cloud_worker_cmd.py` (F3 + F6), `src/popolaloom/adapters/cursor_cloud.py` (F4), `src/popolaloom/credentials.py` (F5 + U1 + U2), `src/popolaloom/cli/auth_cmd.py` (F5 + U1), `src/popolaloom/cli/init_cmd.py` (U2), `src/popolaloom/daemon/main.py` (U2 auto-source).
+- **MOD docs**: `README.md`, `docs/_config.yml`, `docs/USER_GUIDE.md` (7 add-only sub-sections), `docs/QUICKSTART.md` (Step 1.5).
+- **MOD release artifacts**: `CHANGELOG.md` (this section), `RELEASE_NOTES.md` (overwritten per v0.7.0+ policy).
+- **MOD tracker**: `.local/feedbacks/TRACKER.md` (Closed row for `FB-v0.9.7-1` + `Releases 总览` v0.9.9 line); `.local/feedbacks/feedback_for_v0.9.7.md` (close-comment appended).
+- **NEW research / spike artefact** (local-only): `.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md`.
+
 ## [0.9.8] — 2026-05-10
 
 **Theme**: Documentation surface refresh + interactive `/demo-page` + canonical "Core Design Ideas" chapter (`/design-ideas`). Strictly additive: no source-code edits under `src/popolaloom/**` (sole exceptions: the version bumps in `src/popolaloom/__init__.py`, `src/popolaloom/skills/{popola-loom,install-popola}/{SKILL.md,.popola-loom-version}` per the canonical-version lockstep enforced by `tests/cli/test_skill_md_canonical.py::test_skill_md_version_matches_package`). Closes the documentation half of [`./.local/feedbacks/feedback_for_v0.9.7.md`](.local/feedbacks/feedback_for_v0.9.7.md) §1c (the `runtime=local` / Cursor-Dashboard visibility gap got cross-referenced from the new `/design-ideas` Sidecar Daemon section + the README + USER_GUIDE local-dispatch sub-section).
