@@ -1,12 +1,12 @@
 ![PopolaLoom banner](docs/assets/img/popola-banner.svg)
 
-[![Version](https://img.shields.io/badge/version-v1.0.0--pre.1-c89a4a?labelColor=2b1f14)](RELEASE_NOTES.md)
+[![Version](https://img.shields.io/badge/version-v1.0.0-c89a4a?labelColor=2b1f14)](RELEASE_NOTES.md)
 [![Python](https://img.shields.io/badge/python-3.11%2B-c89a4a?labelColor=2b1f14)](https://www.python.org/)
 [![License](https://img.shields.io/badge/license-MIT-c89a4a?labelColor=2b1f14)](#license)
 
 <!-- updated: 2026-05-10 -->
 
-PopolaLoom is a local-first **meta-orchestrator** that sits on top of every agent CLI on your machine - Cursor, Claude Code, Codex, Kimi, GitHub Copilot - and gives them one dispatch surface, one durable task bus, and one shared human-in-the-loop channel. It has been Generally Available since `v0.9.0`; the current release line documented here is `v1.0.0-pre.1`.
+PopolaLoom is a local-first **meta-orchestrator** that sits on top of every agent CLI on your machine - Cursor, Claude Code, Codex, Kimi, GitHub Copilot - and gives them one dispatch surface, one durable task bus, and one shared human-in-the-loop channel. It has been Generally Available since `v0.9.0`; the current release line documented here is `v1.0.0` (first formal GA tag).
 
 ## What it does
 
@@ -46,20 +46,20 @@ flowchart LR
   A --> G[Cursor cloud agents]
 ```
 
-## Install and upgrade (v1.0.0-pre.1)
+## Install and upgrade (v1.0.0)
 
 ```bash
 # Canonical install (default --from=git, tracks main)
 ./install.sh install
 
 # Reproducible tag pin
-./install.sh install --ref=v1.0.0-pre.1
+./install.sh install --ref=v1.0.0
 
 # Optional keyring backend for secure Cursor credentials
 ./install.sh install --with-credentials
 
 # Manual tag-pinned fallback
-pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1
+pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0
 
 # Upgrade an existing install
 ./install.sh update
