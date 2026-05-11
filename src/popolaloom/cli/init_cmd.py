@@ -75,6 +75,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import sys
 import tomllib
 from collections.abc import Sequence
 from datetime import UTC, datetime
@@ -165,6 +166,11 @@ app = typer.Typer(
 
 _console_out = Console()
 
+_USER_PREFERENCES_FOOTER = """NOTE: [user_preferences] not configured. To set dispatch defaults:
+        popola init prefs --wizard           # interactive
+        popola init prefs --set k=v --set ... # non-interactive
+        (preferences are optional — daemon falls back to dataclass defaults)"""
+
 
 VALID_MODES: frozenset[str] = frozenset({"core", "standard", "full"})
 
@@ -196,6 +202,32 @@ def _popola_home_for_cli() -> Path:
 def prefs_config_path() -> Path:
     """Return the ``popolad.toml`` path used by init preference helpers."""
     return _popola_home_for_cli() / "popolad.toml"
+
+
+def _stdin_is_tty() -> bool:
+    """Return whether stdin is interactive; split out for CLI tests."""
+    return sys.stdin.isatty()
+
+
+def _maybe_print_user_preferences_footer() -> None:
+    """Print the optional preferences footer when no block is configured."""
+    try:
+        raw = _load_popolad_toml_raw(prefs_config_path())
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        typer.echo(f"WARN: could not inspect [user_preferences]: {exc}", err=True)
+        return
+    if "user_preferences" not in raw:
+        typer.echo(_USER_PREFERENCES_FOOTER)
+
+
+def _maybe_run_preferences_wizard_step(
+    *,
+    with_preferences_wizard: bool,
+    dry_run: bool,
+) -> None:
+    """Run the optional Step 6 preferences wizard for TTY init invocations."""
+    if with_preferences_wizard and _stdin_is_tty() and not dry_run:
+        _run_preferences_wizard_step()
 
 
 def _load_popolad_toml_raw(path: Path) -> dict[str, object]:
@@ -1607,6 +1639,15 @@ def init_callback(
             "from the operator instead."
         ),
     ),
+    with_preferences_wizard: bool = typer.Option(
+        False,
+        "--with-preferences-wizard",
+        help=(
+            "After non-interactive init completes, run the optional Step 6 "
+            "user_preferences wizard when stdin is a TTY. Ignored during "
+            "--dry-run."
+        ),
+    ),
     target: InitTarget = typer.Option(  # noqa: B008
         InitTarget.FULL,
         "--target",
@@ -1709,6 +1750,11 @@ def init_callback(
             configure_cursor_auth=effective_configure_cursor_auth,
             cursor_api_key=resolved_cursor_api_key,
         )
+        _maybe_print_user_preferences_footer()
+        _maybe_run_preferences_wizard_step(
+            with_preferences_wizard=with_preferences_wizard,
+            dry_run=dry_run,
+        )
         raise typer.Exit(code=0)
 
     if interactive:
@@ -1746,16 +1792,26 @@ def init_callback(
         # credential helper to a click ``ctx.call_on_close`` hook so it
         # fires AFTER the verb body completes (per the v0.9.5 contract:
         # "after the verb installs, run the credential helper").
-        if effective_configure_cursor_auth:
+        if ctx.invoked_subcommand not in {"cursor", "claude", "copilot", "codex", "local", "all"}:
+            return
+        if effective_configure_cursor_auth or with_preferences_wizard:
 
-            def _after_subcommand_credential_helper() -> None:
-                _handle_credential_intake_after_install(
-                    resolved_key=resolved_cursor_api_key,
-                    configure_cursor_auth=effective_configure_cursor_auth,
+            def _after_subcommand_init_helpers() -> None:
+                if effective_configure_cursor_auth:
+                    _handle_credential_intake_after_install(
+                        resolved_key=resolved_cursor_api_key,
+                        configure_cursor_auth=effective_configure_cursor_auth,
+                        dry_run=dry_run,
+                    )
+                _maybe_print_user_preferences_footer()
+                _maybe_run_preferences_wizard_step(
+                    with_preferences_wizard=with_preferences_wizard,
                     dry_run=dry_run,
                 )
 
-            ctx.call_on_close(_after_subcommand_credential_helper)
+            ctx.call_on_close(_after_subcommand_init_helpers)
+        else:
+            ctx.call_on_close(_maybe_print_user_preferences_footer)
         return
 
     typer.echo("popola init — target: full (default)")
@@ -1775,6 +1831,11 @@ def init_callback(
     _handle_credential_intake_after_install(
         resolved_key=resolved_cursor_api_key,
         configure_cursor_auth=effective_configure_cursor_auth,
+        dry_run=dry_run,
+    )
+    _maybe_print_user_preferences_footer()
+    _maybe_run_preferences_wizard_step(
+        with_preferences_wizard=with_preferences_wizard,
         dry_run=dry_run,
     )
 

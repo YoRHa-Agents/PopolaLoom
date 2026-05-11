@@ -532,7 +532,7 @@ def test_cursor_api_key_without_keyring_backend_writes_fallback_file_and_returns
     assert "cr_no_keyring" not in out
 
     # v0.9.9 U2 positive behavior: the fallback file exists with mode
-    # 0o600 and contains exactly ``CURSOR_API_KEY=<raw_key>\n``. The
+    # 0o600 and contains exactly ``export CURSOR_API_KEY=<raw_key>\n``. The
     # ``$POPOLA_HOME`` env var is set by ``isolated_home`` so we can
     # locate the file deterministically without polluting the
     # developer's real ``~/.popola``.
@@ -542,7 +542,7 @@ def test_cursor_api_key_without_keyring_backend_writes_fallback_file_and_returns
     actual_mode = _os.stat(fallback_path).st_mode & 0o777
     assert actual_mode == 0o600, f"expected mode 0o600, got {oct(actual_mode)}"
     payload = fallback_path.read_text(encoding="utf-8")
-    assert payload == "CURSOR_API_KEY=cr_no_keyring\n"
+    assert payload == "export CURSOR_API_KEY=cr_no_keyring\n"
 
     # Operator-facing follow-up line: stdout MUST tell the operator
     # the file path AND the ``source`` command so they can use it from
@@ -765,13 +765,13 @@ class TestPersistCursorApiKeyNoninteractive:
         # The literal value must never appear in any output.
         assert "cr_x" not in combined
         # v0.9.9 U2: the fallback file is written with mode 0o600 and
-        # contains the literal payload ``CURSOR_API_KEY=<raw_key>\n``.
+        # contains the literal payload ``export CURSOR_API_KEY=<raw_key>\n``.
         fallback_path = cred_mod._env_fallback_path()
         assert fallback_path.is_file()
         import os as _os
         actual_mode = _os.stat(fallback_path).st_mode & 0o777
         assert actual_mode == 0o600
-        assert fallback_path.read_text(encoding="utf-8") == "CURSOR_API_KEY=cr_x\n"
+        assert fallback_path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=cr_x\n"
         # Operator-facing follow-up line names the file path + ``source``.
         assert "Wrote fallback to" in combined
         assert "cursor_api_key.env" in combined

@@ -362,7 +362,7 @@ def _env_fallback_path() -> Path:
 def write_env_fallback(raw_key: str) -> Path:
     """Atomically write the v0.9.9 U2 0600 fallback file (Q-V099-11).
 
-    Writes ``CURSOR_API_KEY=<raw_key>\\n`` into
+    Writes ``export CURSOR_API_KEY=<raw_key>\\n`` into
     ``$POPOLA_HOME/cursor_api_key.env`` with mode ``0o600`` (owner-only)
     using ``os.open(..., O_WRONLY|O_CREAT|O_TRUNC, 0o600)`` so the file
     is *born* with the right permissions (avoids the race where a
@@ -403,7 +403,8 @@ def write_env_fallback(raw_key: str) -> Path:
     path = _env_fallback_path()
     parent = path.parent
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    payload = f"{CURSOR_API_KEY_ENV}={raw_key.strip()}\n".encode()
+    # Include ``export`` so operators can source the file directly in a shell.
+    payload = f"export {CURSOR_API_KEY_ENV}={raw_key.strip()}\n".encode()
     fd = os.open(
         str(path),
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
@@ -489,6 +490,8 @@ def load_env_fallback_into_environ(*, logger: logging.Logger | None = None) -> b
     loaded = False
     for lineno, raw_line in enumerate(contents.splitlines(), start=1):
         line = raw_line.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
         if not line or line.startswith("#"):
             continue
         if "=" not in line:
