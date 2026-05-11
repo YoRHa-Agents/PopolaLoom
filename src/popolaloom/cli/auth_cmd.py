@@ -460,6 +460,8 @@ def cmd_status(
     else:
         typer.echo("Cursor API key: NOT configured")
         typer.echo(f"  keyring available: {status.keyring_available}")
+        if status.reason:
+            typer.echo(f"  reason:           {status.reason}")
         typer.echo("")
         typer.echo("To configure, choose one:")
         typer.echo("  - `popola auth cursor set` (stores in OS keyring)")

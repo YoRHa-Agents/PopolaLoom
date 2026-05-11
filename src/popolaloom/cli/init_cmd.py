@@ -734,7 +734,26 @@ def _resolve_mode(
 # ── core install helpers ─────────────────────────────────────────────────
 
 
-def _write_skill(target: Path, content: str, *, dry_run: bool) -> str:
+def _read_installed_marker(install_dir: Path) -> str | None:
+    """Return the installed skill marker value, or ``None`` for legacy installs."""
+    marker = install_dir / ".popola-loom-version"
+    if not marker.exists():
+        return None
+    try:
+        return marker.read_text(encoding="utf-8").strip()
+    except OSError as exc:
+        typer.echo(f"  WARN could not read {marker}: {exc}")
+        return None
+
+
+def _write_skill(
+    target: Path,
+    content: str,
+    *,
+    dry_run: bool,
+    target_name: str,
+    upgrade_on_drift: bool = False,
+) -> str:
     """Write ``content`` to ``target`` and return the action taken.
 
     Returns one of the literal strings ``"OK"`` (wrote new file),
@@ -746,15 +765,33 @@ def _write_skill(target: Path, content: str, *, dry_run: bool) -> str:
         typer.echo(f"  DRY  {target}")
         return "DRY"
     if target.exists():
-        typer.echo(f"  SKIP {target} (already installed)")
-        return "SKIP"
+        from popolaloom import __version__
+
+        installed_version = _read_installed_marker(target.parent)
+        if installed_version is None:
+            typer.echo(f"  SKIP {target} (already installed)")
+            return "SKIP"
+        if installed_version == __version__:
+            typer.echo(f"  SKIP {target} (already at v{__version__})")
+            return "SKIP"
+        if not upgrade_on_drift:
+            typer.echo(
+                f"  DRIFT {target} v{installed_version} → v{__version__} "
+                f"(run `popola skill upgrade --target={target_name} --project` "
+                "to refresh, or pass --upgrade-on-drift)"
+            )
+            return "DRIFT"
+        target.write_text(content, encoding="utf-8", newline="\n")
+        _write_marker(target.parent, dry_run=False, force=True)
+        typer.echo(f"  OK   {target} (upgraded drift v{installed_version} → v{__version__})")
+        return "OK"
     target.parent.mkdir(parents=True, exist_ok=True)
     target.write_text(content, encoding="utf-8", newline="\n")
     typer.echo(f"  OK   {target}")
     return "OK"
 
 
-def _write_marker(install_dir: Path, *, dry_run: bool) -> None:
+def _write_marker(install_dir: Path, *, dry_run: bool, force: bool = False) -> None:
     """Write a ``.popola-loom-version`` marker beside the SKILL.md.
 
     The marker stores the running wheel version so a future ``popola
@@ -767,7 +804,7 @@ def _write_marker(install_dir: Path, *, dry_run: bool) -> None:
     if dry_run:
         typer.echo(f"  DRY  {marker}")
         return
-    if marker.exists():
+    if marker.exists() and not force:
         return
     marker.parent.mkdir(parents=True, exist_ok=True)
     marker.write_text(f"{__version__}\n", encoding="utf-8")
@@ -779,6 +816,7 @@ def _install_target(
     scope: str,
     cwd: Path,
     dry_run: bool,
+    upgrade_on_drift: bool = False,
 ) -> str:
     """Install one IDE target; return the literal action (OK/SKIP/DRY)."""
     content, _is_real = resolve_skill_source()
@@ -797,7 +835,13 @@ def _install_target(
         raise typer.BadParameter(f"unknown install target: {target!r}")
 
     typer.echo(f"\n  {target.capitalize()} ({scope}) -> {path}")
-    action = _write_skill(path, content, dry_run=dry_run)
+    action = _write_skill(
+        path,
+        content,
+        dry_run=dry_run,
+        target_name=target,
+        upgrade_on_drift=upgrade_on_drift,
+    )
     if action == "OK":
         _write_marker(path.parent, dry_run=dry_run)
     return action
@@ -1648,6 +1692,14 @@ def init_callback(
             "--dry-run."
         ),
     ),
+    upgrade_on_drift: bool = typer.Option(
+        False,
+        "--upgrade-on-drift",
+        help=(
+            "When an installed skill marker is older than this PopolaLoom "
+            "version, overwrite the skill and bump .popola-loom-version."
+        ),
+    ),
     target: InitTarget = typer.Option(  # noqa: B008
         InitTarget.FULL,
         "--target",
@@ -1727,6 +1779,8 @@ def init_callback(
     during a preview).
     """
     cwd = Path.cwd()
+    ctx.obj = dict(ctx.obj or {})
+    ctx.obj["upgrade_on_drift"] = upgrade_on_drift
 
     resolved_cursor_api_key = _resolve_cursor_api_key_input(
         value=cursor_api_key,
@@ -1826,7 +1880,13 @@ def init_callback(
         if verb == "local":
             _install_local(cwd, no_compile=False, with_examples=False, dry_run=dry_run)
         elif verb in {"cursor", "claude", "copilot", "codex"}:
-            _install_target(verb, scope="project", cwd=cwd, dry_run=dry_run)
+            _install_target(
+                verb,
+                scope="project",
+                cwd=cwd,
+                dry_run=dry_run,
+                upgrade_on_drift=upgrade_on_drift,
+            )
 
     _handle_credential_intake_after_install(
         resolved_key=resolved_cursor_api_key,
@@ -2409,40 +2469,72 @@ def _resolve_scope(global_: bool, project: bool, *, default: str = "project") ->
 
 @app.command("cursor")
 def cmd_cursor(
+    ctx: typer.Context,
     global_: bool = typer.Option(False, "--global", help="Install to ~/.cursor/."),
     project: bool = typer.Option(False, "--project", help="Install to <cwd>/.cursor/."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print without writing."),
 ) -> None:
     """Install the PopolaLoom skill for Cursor (project-local default)."""
     scope = _resolve_scope(global_, project)
-    _install_target("cursor", scope=scope, cwd=Path.cwd(), dry_run=dry_run)
+    upgrade_on_drift = bool((ctx.obj or {}).get("upgrade_on_drift", False))
+    _install_target(
+        "cursor",
+        scope=scope,
+        cwd=Path.cwd(),
+        dry_run=dry_run,
+        upgrade_on_drift=upgrade_on_drift,
+    )
 
 
 @app.command("claude")
 def cmd_claude(
+    ctx: typer.Context,
     global_: bool = typer.Option(False, "--global", help="Install to ~/.claude/."),
     project: bool = typer.Option(False, "--project", help="Install to <cwd>/.claude/."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print without writing."),
 ) -> None:
     """Install the PopolaLoom skill for Claude Code."""
     scope = _resolve_scope(global_, project)
-    _install_target("claude", scope=scope, cwd=Path.cwd(), dry_run=dry_run)
+    upgrade_on_drift = bool((ctx.obj or {}).get("upgrade_on_drift", False))
+    _install_target(
+        "claude",
+        scope=scope,
+        cwd=Path.cwd(),
+        dry_run=dry_run,
+        upgrade_on_drift=upgrade_on_drift,
+    )
 
 
 @app.command("copilot")
 def cmd_copilot(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(False, "--dry-run", help="Print without writing."),
 ) -> None:
     """Install the PopolaLoom skill for GitHub Copilot (single-file, project-local)."""
-    _install_target("copilot", scope="project", cwd=Path.cwd(), dry_run=dry_run)
+    upgrade_on_drift = bool((ctx.obj or {}).get("upgrade_on_drift", False))
+    _install_target(
+        "copilot",
+        scope="project",
+        cwd=Path.cwd(),
+        dry_run=dry_run,
+        upgrade_on_drift=upgrade_on_drift,
+    )
 
 
 @app.command("codex")
 def cmd_codex(
+    ctx: typer.Context,
     dry_run: bool = typer.Option(False, "--dry-run", help="Print without writing."),
 ) -> None:
     """Install the PopolaLoom skill for Codex (``$CODEX_HOME`` or ~/.codex/)."""
-    _install_target("codex", scope="global", cwd=Path.cwd(), dry_run=dry_run)
+    upgrade_on_drift = bool((ctx.obj or {}).get("upgrade_on_drift", False))
+    _install_target(
+        "codex",
+        scope="global",
+        cwd=Path.cwd(),
+        dry_run=dry_run,
+        upgrade_on_drift=upgrade_on_drift,
+    )
 
 
 @app.command("local")
@@ -2480,18 +2572,37 @@ def cmd_local(
 
 @app.command("all")
 def cmd_all(
+    ctx: typer.Context,
     global_: bool = typer.Option(False, "--global", help="Use global scope where supported."),
     project: bool = typer.Option(False, "--project", help="Force project scope."),
     dry_run: bool = typer.Option(False, "--dry-run", help="Print without writing."),
 ) -> None:
     """Install every IDE target (excluding ``local`` — opt-in via ``init local``)."""
     scope = _resolve_scope(global_, project)
-    _install_all(scope=scope, cwd=Path.cwd(), dry_run=dry_run)
+    upgrade_on_drift = bool((ctx.obj or {}).get("upgrade_on_drift", False))
+    _install_all(
+        scope=scope,
+        cwd=Path.cwd(),
+        dry_run=dry_run,
+        upgrade_on_drift=upgrade_on_drift,
+    )
 
 
-def _install_all(*, scope: str, cwd: Path, dry_run: bool) -> None:
+def _install_all(
+    *,
+    scope: str,
+    cwd: Path,
+    dry_run: bool,
+    upgrade_on_drift: bool = False,
+) -> None:
     """Install every IDE target except ``local`` (mirrors DevolaFlow `all`)."""
     targets: Sequence[str] = ("cursor", "claude", "copilot", "codex")
     typer.echo(f"  popola init all — installing: {', '.join(targets)} (scope={scope})")
     for target in targets:
-        _install_target(target, scope=scope, cwd=cwd, dry_run=dry_run)
+        _install_target(
+            target,
+            scope=scope,
+            cwd=cwd,
+            dry_run=dry_run,
+            upgrade_on_drift=upgrade_on_drift,
+        )
