@@ -17,6 +17,7 @@ Plus bonus rehydrate test for AC #8 (``rehydrate_from_persistence``).
 
 from __future__ import annotations
 
+from importlib import resources
 import sys
 from collections.abc import Iterator
 from pathlib import Path
@@ -36,7 +37,7 @@ from popolaloom.daemon import (
 )
 
 _ARKTOWER_MIGRATIONS_DIR = Path("/home/agent/reference/ArkTower/migrations")
-_POPOLALOOM_MIGRATIONS_DIR = Path(__file__).resolve().parents[1] / "migrations"
+_POPOLALOOM_MIGRATIONS_DIR = Path(resources.files("popolaloom.migrations"))
 
 
 @pytest.fixture

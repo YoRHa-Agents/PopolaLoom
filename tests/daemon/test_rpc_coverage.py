@@ -23,6 +23,7 @@ Tests target the gaps:
 
 from __future__ import annotations
 
+from importlib import resources
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -385,10 +386,7 @@ def hitl_store(tmp_path: Path) -> HITLStore:
     db_path = tmp_path / "hitl.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    mig = (
-        Path(__file__).resolve().parents[2]
-        / "migrations" / "006_popola_hitl.sql"
-    ).read_text(encoding="utf-8")
+    mig = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(mig)
     conn.commit()
     return HITLStore(conn)

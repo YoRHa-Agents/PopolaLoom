@@ -24,6 +24,7 @@ Suite shape (4 cases):
 from __future__ import annotations
 
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -67,25 +68,22 @@ def test_vendored_arktower_imports_cleanly() -> None:
 
 
 @pytest.fixture
-def repo_root() -> Path:
-    """Resolve the repo root so the test works in editable + wheel installs."""
-    candidate = Path(__file__).resolve().parents[1]
-    if (candidate / "migrations").is_dir():
-        return candidate
-    raise pytest.skip(
-        "test only runs in an editable install where migrations/ is on disk"
-    )
+def popola_migrations_dir() -> Path:
+    """Resolve the packaged PopolaLoom migrations directory."""
+    return Path(resources.files("popolaloom.migrations"))
 
 
-def test_popolaloom_owned_migrations_exist_and_create_tables(repo_root: Path) -> None:
+def test_popolaloom_owned_migrations_exist_and_create_tables(
+    popola_migrations_dir: Path,
+) -> None:
     """``005_popolaloom_extensions.sql`` + ``006_popola_hitl.sql`` are present.
 
     Each file must contain at least one ``CREATE TABLE`` statement
     (basic syntax smoke check); the file must be apply-able against an
     in-memory SQLite DB without raising.
     """
-    five = repo_root / "migrations" / "005_popolaloom_extensions.sql"
-    six = repo_root / "migrations" / "006_popola_hitl.sql"
+    five = popola_migrations_dir / "005_popolaloom_extensions.sql"
+    six = popola_migrations_dir / "006_popola_hitl.sql"
     assert five.is_file(), f"missing {five}"
     assert six.is_file(), f"missing {six}"
 

@@ -31,6 +31,8 @@ described in the loader docstring and ``USER_GUIDE.md`` Cloud HITL §.
 
 from __future__ import annotations
 
+from importlib import resources
+from importlib import resources
 import sqlite3
 from collections.abc import Generator
 from pathlib import Path
@@ -64,7 +66,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     """
     repo_root = Path(__file__).resolve().parents[2]
     for name in _MIGRATIONS:
-        sql = (repo_root / "migrations" / name).read_text(encoding="utf-8")
+        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
 

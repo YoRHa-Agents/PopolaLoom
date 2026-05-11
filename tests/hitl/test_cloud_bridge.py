@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from importlib import resources
 import sqlite3
 import threading
 import time
@@ -21,11 +22,7 @@ def hitl_store(tmp_path: Path) -> HITLStore:
     db_path = tmp_path / "hitl.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    mig = (
-        Path(__file__).resolve().parents[2]
-        / "migrations"
-        / "006_popola_hitl.sql"
-    ).read_text(encoding="utf-8")
+    mig = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(mig)
     conn.commit()
     return HITLStore(conn)
@@ -152,11 +149,7 @@ def test_submit_answer_first_wins(tmp_path: Path) -> None:
     conn_a.row_factory = sqlite3.Row
     conn_b = sqlite3.connect(db_path, check_same_thread=False)
     conn_b.row_factory = sqlite3.Row
-    mig = (
-        Path(__file__).resolve().parents[2]
-        / "migrations"
-        / "006_popola_hitl.sql"
-    ).read_text(encoding="utf-8")
+    mig = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn_a.executescript(mig)
     conn_a.commit()
     store_main = HITLStore(conn_a)

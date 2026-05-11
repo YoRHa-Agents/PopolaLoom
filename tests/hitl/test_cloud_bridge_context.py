@@ -12,6 +12,8 @@ The replay-window subset (AC (b) + AC (e) replay tests) lives in the sibling
 
 from __future__ import annotations
 
+from importlib import resources
+from importlib import resources
 import json
 import sqlite3
 from pathlib import Path
@@ -35,7 +37,7 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     """Apply both 006 + 007 so ``popola_hitl.metadata`` is available."""
     repo_root = Path(__file__).resolve().parents[2]
     for name in _MIGRATIONS:
-        sql = (repo_root / "migrations" / name).read_text(encoding="utf-8")
+        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
 

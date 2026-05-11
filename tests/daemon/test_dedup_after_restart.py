@@ -24,6 +24,8 @@ test surfaces here too.
 
 from __future__ import annotations
 
+from importlib import resources
+from importlib import resources
 import sqlite3
 from pathlib import Path
 
@@ -54,7 +56,7 @@ def db_path(tmp_path: Path) -> Path:
     conn.row_factory = sqlite3.Row
     repo_root = Path(__file__).resolve().parents[2]
     for name in ("006_popola_hitl.sql", "007_popola_hitl_metadata.sql"):
-        sql = (repo_root / "migrations" / name).read_text(encoding="utf-8")
+        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
     conn.close()

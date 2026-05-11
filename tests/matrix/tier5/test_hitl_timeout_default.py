@@ -10,6 +10,7 @@ reply, ``HITLStore.process_timeout`` applies the prompt's
 
 from __future__ import annotations
 
+from importlib import resources
 import sqlite3
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -25,9 +26,7 @@ def hitl_store(tmp_path: Path) -> HITLStore:
     db_path = tmp_path / "hitl.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    migration_sql = (
-        Path(__file__).resolve().parents[3] / "migrations" / "006_popola_hitl.sql"
-    ).read_text(encoding="utf-8")
+    migration_sql = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(migration_sql)
     conn.commit()
     return HITLStore(conn)
