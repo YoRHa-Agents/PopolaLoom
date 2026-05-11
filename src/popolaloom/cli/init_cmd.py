@@ -75,6 +75,7 @@ from __future__ import annotations
 import getpass
 import json
 import os
+import socket
 import sys
 import tomllib
 from collections.abc import Sequence
@@ -83,10 +84,12 @@ from enum import StrEnum
 from pathlib import Path
 
 import typer
+from rich.markup import escape
 from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
+from popolaloom import __version__
 from popolaloom.cli._skill_source import resolve_skill_source
 from popolaloom.daemon.main import (
     USER_PREF_VALID_AMBIGUITY_RESOLUTION,
@@ -197,6 +200,14 @@ def _popola_home_for_cli() -> Path:
     home = os.environ.get("POPOLA_HOME")
     path = Path(home).expanduser().resolve() if home else Path.home() / ".popola"
     return path
+
+
+def _preferences_last_set_at() -> str:
+    return datetime.now(UTC).isoformat(timespec="seconds")
+
+
+def _preferences_last_set_by() -> str:
+    return f"{getpass.getuser()}@{socket.gethostname()} via popola {__version__}"
 
 
 def prefs_config_path() -> Path:
@@ -313,12 +324,15 @@ def apply_user_preference_sets(
     """
     prefs = base or UserPreferencesConfig()
     values = user_preferences_to_toml_dict(prefs)
+    assigned_non_metadata = False
     for raw in assignments:
         if "=" not in raw:
             raise ValueError(f"--set must be key=value form, got {raw!r}")
         key, _, value = raw.partition("=")
         key = _normalise_pref_assignment_key(key.strip())
         value = value.strip()
+        if key not in {"last_set_at", "last_set_by"}:
+            assigned_non_metadata = True
         if key == "routing.default_runtime":
             if value not in USER_PREF_VALID_RUNTIMES:
                 raise ValueError(
@@ -416,6 +430,9 @@ def apply_user_preference_sets(
         else:
             known = ", ".join(_known_preference_assignment_keys())
             raise ValueError(f"unknown preference key {key!r}; known keys: {known}")
+    if assigned_non_metadata:
+        values["last_set_at"] = _preferences_last_set_at()
+        values["last_set_by"] = _preferences_last_set_by()
     merged = _load_user_preferences({"user_preferences": values}, source=prefs_config_path())
     assert merged is not None
     return merged
@@ -502,14 +519,17 @@ def _print_user_preferences(
     if not data:
         typer.echo("[user_preferences] not set")
         return
-    tree = Tree("[user_preferences]")
+    tree = Tree(escape("[user_preferences]"))
     for key, value in data.items():
         if isinstance(value, dict):
-            branch = tree.add(f"[user_preferences.{key}]")
+            branch = tree.add(escape(f"[user_preferences.{key}]"))
             for child_key, child_value in value.items():
                 branch.add(f"{child_key} = {_format_pref_value(child_value)}")
-        else:
+        elif key not in {"last_set_at", "last_set_by"}:
             tree.add(f"{key} = {_format_pref_value(value)}")
+    for metadata_key in ("last_set_at", "last_set_by"):
+        if metadata_key in data:
+            tree.add(f"{metadata_key} = {_format_pref_value(data[metadata_key])}")
     _console_out.print(tree)
 
 
@@ -2158,7 +2178,7 @@ def _wizard_defaults_from_current(
         return current
     return UserPreferencesConfig(
         fallback_chain=("cursor", "claude", "codex"),
-        last_set_by="wizard",
+        last_set_by=_preferences_last_set_by(),
     )
 
 
@@ -2404,8 +2424,8 @@ def _run_preferences_wizard_step() -> None:
                 ambiguity_resolution=ambiguity_resolution,
                 ask_dimensions=ask_dimensions,
             ),
-            last_set_at=datetime.now(UTC).isoformat(timespec="seconds"),
-            last_set_by=getpass.getuser() or "wizard",
+            last_set_at=_preferences_last_set_at(),
+            last_set_by=_preferences_last_set_by(),
         )
         parsed = _load_user_preferences(
             {"user_preferences": user_preferences_to_toml_dict(prefs)},

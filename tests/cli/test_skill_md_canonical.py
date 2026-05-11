@@ -213,7 +213,7 @@ def test_skill_md_documents_ambiguity_protocol(skill_body: str) -> None:
         "## Ambiguity Resolution Protocol",
         "target/model/thinking depth/special modes",
         "AskQuestion",
-        "Workflow 11 — Guided dispatch with option-group Q&A",
+        "Workflow 13 — Guided dispatch with option-group Q&A",
         "Workflow 12 — Path-B advanced dispatch",
         "popola dispatch <prompt> --wizard",
         "schema_version = 2",

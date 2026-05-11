@@ -456,13 +456,13 @@ popola dispatch "review migration plan" --profile daily-driver --json
 
 Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.1.0 stable.
 
-### Workflow 11 — Guided dispatch with option-group Q&A
-
-Use AskQuestion for target → model → thinking_depth → special_modes, then submit: `popola dispatch "..." --wizard` locally, or MCP `popola_submit({"cli":"cursor-cloud","prompt":...,"cwd":...,"extra":{"model":"gpt-5.5","effort":"high","auto_create_pr":true}})`.
-
 ### Workflow 12 — Path-B advanced dispatch
 
 Experimental v1.1.0 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cloud-target=self-hosted --worker-name=<X> --model=gpt-5.5 --auth-mode=session-jwt --effort=high --long-running --preset=grind --cli-flag repo_url=https://github.com/org/repo`. Path-B uses Cursor session JWT + Connect-RPC and is not a v1.x stability surface; on 401/404 tell the user to retry stable REST (`--auth-mode=rest`) or run `cursor login`.
+
+### Workflow 13 — Guided dispatch with option-group Q&A
+
+Use AskQuestion for target → model → thinking_depth → special_modes, then submit: `popola dispatch "..." --wizard` locally, or MCP `popola_submit({"cli":"cursor-cloud","prompt":...,"cwd":...,"extra":{"model":"gpt-5.5","effort":"high","auto_create_pr":true}})`.
 
 ## Configuration
 

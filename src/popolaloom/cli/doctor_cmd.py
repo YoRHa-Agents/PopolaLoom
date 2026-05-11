@@ -468,7 +468,7 @@ def _audit_user_preferences() -> _AuditSection:
         name="schema",
         target=str(config_path),
         status=status,
-        detail=detail,
+        detail=_user_preferences_detail_with_metadata(detail, raw),
     )
     return _AuditSection(
         name="User preferences schema",
@@ -476,6 +476,20 @@ def _audit_user_preferences() -> _AuditSection:
         verdict=_roll_up([check]),
         summary=detail,
     )
+
+
+def _user_preferences_detail_with_metadata(
+    detail: str,
+    raw: Mapping[str, Any],
+) -> str:
+    """Append non-secret preferences metadata to the doctor detail row."""
+    section = raw.get("user_preferences")
+    if not isinstance(section, dict):
+        return detail
+    last_set_at = section.get("last_set_at")
+    if not isinstance(last_set_at, str) or not last_set_at:
+        return detail
+    return f"{detail}; last_set_at={last_set_at}"
 
 
 # ── aggregator ─────────────────────────────────────────────────────────
