@@ -270,7 +270,7 @@ def build_start_composer_request(
         raise ValueError("repo_url is required")
 
     body: dict[str, Any] = {
-        "prompt": {"text": prompt},
+        "prompt": prompt,
         "repos": [{"url": repo_url, "starting_ref": starting_ref}],
     }
 

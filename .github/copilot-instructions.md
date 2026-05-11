@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 0.8.5
+version: 1.1.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -9,11 +9,16 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola --help"
 tier: 1
-token_estimate: 3200
-last_updated: "2026-05-08"
+token_estimate: 3300
+last_updated: "2026-05-11"
 ---
 
+<!-- updated: 2026-05-11; v1.1.0 preferences wizard + dispatch Q&A sync -->
+
+
 # PopolaLoom Skill
+
+> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
 
 ## What is PopolaLoom?
 
@@ -38,22 +43,33 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 
 如果用户只是问"DevolaFlow 怎么写一个 task agent"或"如何写一个 prompt"，那是 DevolaFlow / 通用编程问题，不要走 popola — PopolaLoom 只在跨 CLI 派发 / 持久化 / 多任务调度场景介入。
 
+## Ambiguity Resolution Protocol
+
+When the user asks vaguely to "dispatch/run a cloud task" and target/model/thinking depth/special modes are missing, ask option-group questions before calling `popola_submit`. Dimensions: `target` (local cursor | local claude | local codex | cursor-cloud managed | cursor-cloud self-hosted), `model` (adapter default plus known models such as composer-2, composer-2-fast, sonnet, gpt-5.5), `thinking_depth` (cursor output_format, claude max_turns, codex sandbox, cursor-cloud effort/path-B), and `special_modes` (auto_create_pr, work_on_current_branch, skip_reviewer_request, cwd_flag).
+
+AskQuestion templates (copy/paste shape): `{"question":"Dispatch target?","options":["local cursor","local claude","local codex","cursor-cloud managed","cursor-cloud self-hosted"]}`, then ask model, thinking_depth, and multi-select special_modes. Construct `extra` from the answers and call `popola_submit` with only `cli`, `prompt`, `cwd`, and `extra`; MCP schema remains free-form for `extra`. Precise user intent may skip Q&A and call `popola dispatch --wizard` or explicit flags.
+
 ## Quick reference — common commands
 
 | Command | Purpose | Example |
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
+| `popola dispatch <prompt> --wizard` | v1.1.0 option-group Q&A: target/model/thinking_depth/special_modes | `popola dispatch "refactor X" --wizard` |
 | `popola dispatch ... --cli=cursor-cloud` | 派发任务到 Cursor **Cloud Agents** REST（远端跑，不占本机 subprocess） | 见下文 Workflow 6 |
+| `popola cloud worker {debug,start,status,handoff,dispatch}` | 启动 / 查看本机 self-hosted Cursor worker；`dispatch` 直接走 `popolad` 路由到当前 workspace worker | 见下文 Workflow 10 |
+| Cloud Agent 调 `popolaloom_cloud_hitl_request` MCP 工具 | 云端任务遇高风险决策时 deferer 给真人审批走 Lark（v0.8.7+，Enterprise/γ 模式） | 见下文 Workflow 7 |
 | `popola dispatch ... --wait --timeout=120` | 派发并阻塞到终态（默认 60s） | `popola dispatch "..." --cli=claude --wait` |
 | `popola dispatch ... --cli-flag KEY=VAL` | 透传 adapter 专属参数（可重复；JSON 值自动解析）（v0.2.0+，详见 Workflow 4） | `popola dispatch "..." --cli=cursor --cli-flag output_format=stream-json` |
 | `popola dispatch --replay <handoff_id>` | 按之前写下的 envelope 重派发（v0.7.3+） | `popola dispatch --replay cursor-fix-bug-foo-py-3a7f9c1d` |
 | `popola handoff list [--json]` | 列出 active envelope（按 mtime 倒排，v0.7.2+） | `popola handoff list` |
 | `popola handoff show <handoff_id> [--json]` | 打印 active envelope 内容（默认 raw Markdown） | `popola handoff show cursor-fix-bug-foo-py-3a7f9c1d` |
 | `popola handoff archive <handoff_id> <task_id>` | 复制到 `<archive_root>/<task_id>/<id>.md`（D4 双层） | `popola handoff archive <handoff_id> cursor-23e74ec18917` |
-| `popola list` | 列出非终态任务（含 task_id / cli / state / pid） | `popola list` |
+| `popola list` | 列出非终态任务（v0.8.6+ 默认含 `runtime` 列：`local`/`cloud`） | `popola list` |
+| `popola list --no-runtime` | v0.8.6+ 隐藏 `runtime` 列（escape hatch；`--json` 输出不受影响） | `popola list --no-runtime` |
 | `popola list --all` | 含已完成 / 失败 / 取消的所有任务 | `popola list --all` |
 | `popola status <task_id>` | 单任务全字段状态（JSON 加 `--json`） | `popola status cursor-23e74ec18917` |
-| `popola attach <task_id> --follow` | 跟随 SSE 事件流（默认 follow=true） | `popola attach cursor-23e74ec18917 --follow` |
+| `popola attach <task_id> --follow` | 跟随 SSE 事件流（默认 follow=true；v0.8.6+ 云任务额外 ingest Cursor SSE） | `popola attach cursor-23e74ec18917 --follow` |
+| `popola attach <id> --follow --no-stream` | v0.8.6+ 强制 legacy poll-only 路径（escape hatch） | `popola attach <id> --follow --no-stream` |
 | `popola attach <task_id> --no-follow` | 一次性 dump 已有事件（不阻塞） | `popola attach <id> --no-follow` |
 | `popola cancel <task_id>` | SIGTERM → 5 秒 grace → SIGKILL | `popola cancel cursor-23e74ec18917` |
 | `popola probe` | 轻量 daemon 健康（pid / uptime / active） | `popola probe` |
@@ -184,7 +200,11 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
    popola eval show --json
    ```
 
-### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+)
+### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+; **stable since v0.9.0**)
+
+<!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA**：本 Workflow 涉及的 CLI verb (`popola dispatch --cli=cursor-cloud`) + `--cli-flag` keys + `popola list` `runtime` 列 + `popola attach --no-stream` flag 全部进 v0.9.x stable surface。仅 `cloud.sse.*` 子事件类型 payload shape 仍 experimental（[API_STABILITY §3.4](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#34-sse-event-sub-types-cloudsse)）。需要纯云端项目脚手架走 `popola init --target=cloud-only`（v0.9.0+，Q-D-4 偏离默认）；要 copy-paste-ready 上手脚本走 [`cloud-quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/cloud-quickstart.sh)。
 
 云端 Background Agent：**不走本机 subprocess**，而是用 httpx 调 Cursor Cloud Agents REST（`CloudCursorClient`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()` + **cloud poller** 线程对齐状态事件。
 
@@ -215,16 +235,239 @@ popola dispatch "implement smoke-test stub in README" \
 | `work_on_current_branch` | bool，默认 `false` |
 | `skip_reviewer_request` | bool，`auto_create_pr=true` 时可选 |
 | `env_vars` | `dict[str,str]` JSON blob（透传到 payload `envVars`） |
+| `use_private_worker` | bool，显式请求 Cursor REST `usePrivateWorker=true` |
+| `labels` | `dict[str,str]` JSON blob，自托管 / 本地 worker 路由 labels |
+| `worker_name` / `machine_name` / `pool_name` | 非空字符串 convenience keys；分别合并为 `labels.worker` / `labels.machine` / `labels.pool`，并自动启用 `use_private_worker` |
 | `timeout_s` | HTTP 单次请求超时 float |
 | `api_key` | 覆盖环境变量里的 key（一般由测试/DI 用；生产不推荐写进 envelope） |
 
-**与本地 `cursor` subprocess 的差异（一眼）**：`popola list` / `popola status` 会带出 `runtime="cloud"`、`cursor_agent_id`（通常 `bc-*`）、`cursor_run_id`、`cloud_phase`。取消：`popola cancel` 在云路径走 **`cancel_run` REST**，不是 `SIGTERM`。HITL：若云端任务需要通过 Popola daemon 请人拍板走 Lark，可走 **`cloud`** 通道：`POST /hitl/cloud/request` → block `GET /hitl/cloud/wait/{hitl_id}` → Lark 侧照旧 first-responder wins → **`POST /hitl/cloud/answer/{hitl_id}`**。
+若设置了 `labels` 或任一 convenience key，`use_private_worker` 会自动变为 `true`；显式传 `use_private_worker=false` 同时又设置路由 label 会被拒绝，避免误以为已请求自托管 worker 路由。
+
+**与本地 `cursor` subprocess 的差异（一眼）**：`popola list` / `popola status` 会带出 `runtime="cloud"`、`cursor_agent_id`（通常 `bc-*`）、`cursor_run_id`、`cloud_phase`。v0.8.6+ 起 `popola list` 默认渲染 **`runtime` 列**（在 `task_id` 与 `cli` 之间，`local`/`cloud`），加 `--no-runtime` 可隐藏。取消：`popola cancel` 在云路径走 **`cancel_run` REST**，不是 `SIGTERM`。HITL：若云端任务需要通过 Popola daemon 请人拍板走 Lark，可走 **`cloud`** 通道：`POST /hitl/cloud/request` → block `GET /hitl/cloud/wait/{hitl_id}` → Lark 侧照旧 first-responder wins → **`POST /hitl/cloud/answer/{hitl_id}`**。
+
+**SSE 实时拉取（v0.8.6+）**：`popola attach <task_id> --follow` 在 `runtime=cloud` 任务上**默认启用 SSE**：在 daemon `/attach_stream` 之外另起一个后台线程 pump Cursor 的 `GET /v1/agents/{id}/runs/{run_id}/stream`，把 `cloud.sse.{assistant,tool_call,result,status,parse_error,stream_expired,dedup_drop}` 事件流入同一渲染器。每条 envelope 携带 `(task_id, run_id, stream_session_id, sse_id, seq)` 五元组用于幂等去重。**自动 fallback 到 poll**：遇到 `CursorCloudStreamExpiredError`（HTTP `410 stream_expired`）/ `httpx.ReadError` / `httpx.ConnectError` / `httpx.TimeoutException` / 缺 `CURSOR_API_KEY` / 主线程 Ctrl-C 时，SSE 线程优雅退出并 append 一条 `cloud.sse.fallback_to_poll` 边界事件 + stderr 一行 `[cloud sse] ...` 提示（No-Silent-Failures），既有 poll-driven 视图继续工作。**强制 legacy 路径**：`popola attach <id> --follow --no-stream`。**容忍漂移**：`cloud_poller` 仍是 `cloud_phase` 的唯一写入者（state SoT 锁），SSE 是 append-only 旁路；SSE-side `stream:running` 与 poller-side `cloud_phase=CREATING` 之间最长容忍 ≤3 s 不一致（`interval_s + 1s`，默认 `interval_s=2s`）。
+
+**云端错误提示（v0.8.6+）**：v0.8.6 在 `cursor_cloud.py` 内嵌 16 条 `_ERROR_CATALOG` 条目，按 `(error.code → error.message regex → HTTP status)` 优先级派发到 10 个新 `CursorCloud*Error` 子类，每个都带双语 `.hint_en` / `.hint_zh`（每条 ≤2 句、含 ≥1 个 dashboard URL）+ 稳定 `.cli_exit` 退出码。覆盖：`401 unauthorized` / `api_key_not_found`、`403 plan_required` / `role_forbidden` / `feature_unavailable`、`404 agent_not_found` / `run_not_found`、`409 agent_busy` / `agent_archived` / `run_not_cancellable`、`410 stream_expired`、`422` 三类 GitHub-App 集成错（`RepoAllowlistError` / `GithubAppMissingError` / `GithubAppPermissionError`）、`400/422 validation_error`、`429 rate_limit_exceeded`（v0.8.8 完整重试）、`5xx internal_error`/`upstream_error`。完整提示文本与重试矩阵见研究备忘 `.local/research/v0.8.6_sse/422-error-catalog.md` §3（`.local/` 仅本地存在，已 gitignore）。
 
 **Opt-in quota smoke**：导出 `CURSOR_API_KEY` 后跑 `pytest tests/real_cursor_cloud/ -m real_cursor_cloud`，否则该目录四项 case 仅 **skipped**（见 `pytest` marker `real_cursor_cloud`）。
 
-出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7。
+出处：`.local/research/v0.8.5_cloud_agent/research.md`（Option α）+ `00-decision-matrix-zh.md` §7；v0.8.6 SSE / 422 / state SoT 设计：`.local/research/v0.8.6_sse/{sse-event-schema,state-source-of-truth,422-error-catalog}.md`（local-only research notes）。
+
+### Workflow 7 — Cloud HITL approval via MCP tool (γ mode, v0.8.7+)
+
+<!-- updated: 2026-05-08 -->
+
+> **Tier**：Enterprise / Self-Hosted。本 workflow 让 **Cursor Cloud Agent** 在云端跑任务时，遇到高风险决策（删数据、上线变更、生产部署等）能 **deferer 给真人** — 经 Lark 卡片走人审批，结果回传给 Cloud Agent 继续执行。先决条件、详细架构与安装步骤详见 [`docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cloud-hitl-enterprise--self-hosted)。
+
+**架构**（γ — Worker stdio MCP 一等公民模式）：
+
+```text
+Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
+                                              │
+                                              │ spawns / pipes stdio
+                                              ▼
+                                        popolaloom-mcp
+                                              │
+                                              │ HTTP RPC (loopback / VPC)
+                                              ▼
+                                          popolad ──▶ popola_hitl (SQLite)
+                                              │
+                                              │ outbound HTTPS
+                                              ▼
+                                      open.larksuite.com (Lark 卡片)
+                                              │
+                                              ▼
+                                          人审批 → 回写 → Cloud Agent 继续
+```
+
+派发 + 审批一条龙，6 步：
+
+1. **先做 Enterprise 准备**（一次性，per worker host）：
+   - 在 Cursor Self-Hosted Pool 装 worker（`curl https://cursor.com/install -fsS | bash` 然后 `agent worker start --pool`）。详见 USER_GUIDE Cloud HITL §"Install steps (γ)"。
+   - 在同 host 装 `popolad` + `popolaloom-mcp`（`pipx install popolaloom`），并 `popolad up` 让 RPC 绑到 `127.0.0.1:<popolad_port>`（**绝不**绑公网接口）。
+   - 在 [Cloud Agents dashboard](https://cursor.com/agents) 注册自定义 MCP server（transport：**Command (stdio)**），命令 `popolaloom-mcp`，args `[]`（v0.8.7 入口默认就是 cloud HITL 桥），env 至少含 `POPOLAD_BASE_URL` + `POPOLAD_API_KEY`（per-tenant scoped）。env 白名单（per SECURITY L2）由 systemd / launchd unit 配 `Environment=` + `EnvironmentFile=` 完成（运维负责），`popolaloom-mcp` 进程本身不再持有 shell / git / 云 creds。
+2. **配 `popolad.toml [hitl.cloud]`**（一次性，可选 — 默认值已经 ok）：
+   ```toml
+   [hitl.cloud]
+   timeout_seconds      = 1800   # 默认 30 min；clamp 到 [60, 86400]
+   idempotency_window_s = 3600   # 1 h 内重复请求短路返回原 hitl_id
+   max_concurrent_per_run = 1
+   ```
+3. **派发一个会用到 HITL 的云端任务**（broad-audience cloud dispatch + 让 cloud agent 知道有 HITL 工具可用）：
+   ```bash
+   export CURSOR_API_KEY="cr_..."
+   export LARK_HITL_TARGET_OPEN_ID="ou_xxx"   # 审批人 / 群 open_id
+   popola dispatch "迁移生产数据库 schema，遇到 destructive 操作请通过 popolaloom_cloud_hitl_request 求人审批" \
+     --cli=cursor-cloud \
+     --cli-flag repo_url=https://github.com/acme/monorepo \
+     --cli-flag starting_ref=main
+   # → cursor-cloud-deadbeef（任务在 Cursor Cloud 上跑）
+   ```
+4. **Cloud Agent 在云端 runtime 调 MCP 工具**（这一步由 Cloud Agent 自己根据 prompt 与场景判断；典型 tool_call shape 如下，agent 的 LLM 自动构造）：
+   ```jsonc
+   {
+     "tool_name": "popolaloom_cloud_hitl_request",
+     "input": {
+       "task_id": "cursor-cloud-deadbeef",
+       "cursor_agent_id": "bc-ad-...",
+       "cursor_run_id": "run-...",
+       "question_text": "Drop staging.users (10M rows)? This is irreversible.",
+       "prompt_body": "About to execute: DROP TABLE staging.users; ... full context ...",
+       "options": ["approve", "reject"],
+       "responder_policy": "single",
+       "timeout_s": 1800
+     }
+   }
+   ```
+   工具内部：（a）走 worker-side `popolaloom-mcp` → `POST /hitl/cloud/request` 到 `popolad`；（b）`popolad` 写 `popola_hitl` 行 + 触发 Lark 卡片 `cloud_hitl_request_card_v1` 推送到 `LARK_HITL_TARGET_OPEN_ID`；（c）`popolaloom-mcp` 内部 long-poll `GET /hitl/cloud/wait/{hitl_id}?timeout_s=55` 一直拉到 30 min 超时为止。
+5. **真人在 Lark 点 Approve / Reject / Custom**（卡片含 verbatim 问题 + 200-字截断 context + Expand 链接 + 三按钮）：
+   - 点 Approve / Reject → `lark/listener.py` 接 button event（γ 模式经 `lark-cli event consume` 长连接，认证由 lark-cli 持有的 bot websocket session 完成 — 无 HMAC 校验在 listener 边界；β 模式才在公网 HTTPS gateway 做 HMAC 校验）→ `POST /hitl/cloud/answer/{hitl_id}` → `bridge.submit_answer`（含 `expected_cursor_*` mis-route 防御）→ `mark_answered`。
+   - 点 Custom → 弹 `open_input` 文本框 → 自由文本回答。
+   - 30 min 内没人响应 → 工具返回 `error.code: "timeout"`（**显式失败**，非默默通过 — per Q-B-3 锁定）。
+6. **Cloud Agent 收到结果继续执行**，或在 timeout 时按自己的策略 retry / fail-loud。在本机用 `popola attach cursor-cloud-deadbeef --follow` 同步看到全过程；用 `~/.popola/events/cursor-cloud-deadbeef.jsonl` 审计 `cloud_hitl.{requested,answered,failed,transition}` 4 类 NDJSON 事件。
+
+**关键安全约束**（不可省）：
+
+- **L3 季度轮换 Lark webhook secret**（Q1 1/15、Q2 4/15、Q3 7/15、Q4 10/15）；γ 与 β 共用同一 secret + 轮换流程。
+- **L6 Team follow-ups**：若组织里多人共用一个 Cloud Agent，**禁用 Team follow-ups** 或仅让服务账号能跟进 — 否则 teammate B 可能 driver agent 用 user A 的 secret 调 HITL 工具。
+- **L8 MCP 配置块视为机密**：dashboard 里 env / headers 加密+读时屏蔽，但**绝不**把 JSON blob commit 进 git 或粘贴到聊天。
+- **L10 Cursor Cloud network access policy**：处理 HITL 的 agent 设为 **"Allowlist only"**，仅放行 [Egress allowlist](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#egress-allowlist) 的 host。
+- **绝不** 用 public IP / port-forward / residential NAT / 入站端口 / VPN 隧道把 `popolad` 暴露给 Cursor Cloud — 仅 γ 的 outbound HTTPS（worker 主动出站）或 β 的 backend-proxied HTTPS（Cursor backend 代理）是合法路径。详见 [`docs/known-issues.md` §"v0.8.7 — Cloud HITL transport (anti-patterns)"](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/known-issues.md#v087--cloud-hitl-transport-anti-patterns)。
+
+**β（HTTP MCP backend-proxied 模式）的差异**：把第 1 步换成"在 VPC 里搭一个公网 HTTPS gateway，跑 HMAC 校验 + 转发给 popolad"，并在 dashboard 里改注册 transport=**HTTP** 的 MCP server；其余步骤一致。Β 不需要 Cursor Enterprise 套餐，但需要团队自有 SRE 维护 gateway。完整对照见 USER_GUIDE Cloud HITL §"Decision matrix — γ vs β vs neither"。
+
+**幂等 + 容灾**：同 `(task_id, cursor_agent_id, cursor_run_id, question_text)` 在 1 h 内重复调，后到的请求短路返回原 `hitl_id` + `deduped: true`（不重发卡片，不写新 `popola_hitl` 行）。`popolad` 重启不影响 dedup，因为 SQLite 是唯一真相源（无内存 cache）。
+
+出处：v0.8.7 设计与契约见 `.local/research/v0.8.7_hitl/{deployment-modes,mcp-tool-contract,lark-card-spec,long-tool-call-probe}.md`；安全 gate 见 `.local/.agent/active/v0.8.7-cloud-hitl-prod/SECURITY_CHECKLIST.md`（10 项 lateral-movement + 4 项 secret hygiene + 4 项 idempotency + 4 项 audit + 3 项 approval policy）。
+
+### Workflow 8 — Cross-PR relay (`popola relay`, v0.8.8+)
+
+<!-- updated: 2026-05-08 -->
+
+> **⚠️ Q-C-4 deviation**：v0.8.8 把 `popola relay <task_a>` 默认改成 **auto-dispatch**（偏离默认；详见 [`RELEASE_NOTES.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/RELEASE_NOTES.md) 顶部 callout 与 [`docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088)）。配套 5 项强制缓解：repo allowlist（默认 `[]` 阻断一切）+ `0o600` audit log + detect-secrets 预扫（6 种 token shape）+ RELEASE_NOTES callout + CI 隔离测试。
+
+把已完成的 cloud `task_a` 的 PR / branch / summary 接力成新的 cloud `task_b`，3 步：
+
+1. **预演（强烈推荐先 `--dry-run`）**：跑一遍**完整** policy gate（allowlist + secret scan + size cap），写一行 `mode="dry-run"` audit row，**不发任何 cloud API 请求**：
+   ```bash
+   popola relay v088-task-abc --dry-run --json | jq
+   # → {"mode": "dry-run", "outcome": "would_dispatch",
+   #     "source_task": "v088-task-abc", "target_repo": "neolix-ai/popola-loom",
+   #     "model": "composer-2", "prompt_sha256": "9c1f...",
+   #     "audit_path": ".local/.agent/archive/relay/v088-task-abc.jsonl",
+   #     "dispatched_at": null}
+   ```
+2. **确认 audit 路径 + sha256 后真发**（默认就是 auto；同 prompt 同 target 同 idempotency_key 在 1 h 内重复发会短路）：
+   ```bash
+   popola relay v088-task-abc
+   # → DISPATCHED v088-task-def → https://github.com/neolix-ai/popola-loom
+   #   model=composer-2  prUrl=https://github.com/neolix-ai/popola-loom/pull/42
+   #   audit=.local/.agent/archive/relay/v088-task-abc.jsonl
+   ```
+3. **跨 org 接力（罕见、需要显式 override）**：默认 `[cloud.relay] repo_allowlist = []` 会**阻断**任何 target；要想跨 allowlist 必须 `--confirm-allowlist`，且会在 stderr 打 WARN + 在 audit 行记 `gate_decision="override_confirm_allowlist"`：
+   ```bash
+   popola relay v088-task-abc \
+     --target-repo https://github.com/external/fork \
+     --confirm-allowlist
+   # WARNING: dispatching relay outside repo_allowlist via --confirm-allowlist
+   #          (target=external/fork); audit row recorded at <path>
+   # DISPATCHED v088-task-ghi → https://github.com/external/fork  ...
+   ```
+
+**5 项缓解（M1..M5）的快速记忆**（详见 [USER_GUIDE Cross-PR relay](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#cross-pr-relay--popola-relay-v088)）：(1) **repo_allowlist 默认 `[]` 阻断一切**；(2) `0o600` append-only audit log，crash 也留 `dispatch_inflight` 行；(3) detect-secrets 预扫 6 种 shape（AWS/GitHub PAT/Stripe/JWT/Slack/high-entropy），命中即 exit 1 + `…<last4>` 脱敏；(4) RELEASE_NOTES 顶部 callout（M4 lint 强制）；(5) `tests/cli/test_relay_safety.py` 在默认 CI 走道里跑。要恢复 v0.8.7 「人工确认」默认行为：在 `popolad.toml` 设 `[cloud.relay] mode = "confirm"`。
+
+### Workflow 9 — `popola cloud runs` 列出云端 run 历史（v0.8.8+；**experimental in v0.9.0**）
+
+<!-- updated: 2026-05-08 -->
+
+> **v0.9.0 GA**：`popola cloud` 子 app 本身 stable，`runs` verb 在 v0.9.0 仍标 **experimental**：6 列默认表格布局、`--include-events` slow-path JSON shape、跨 verb 404→exit `4`（vs `popola dispatch --cli=cursor-cloud` 的 100）可能在 v0.9.x minor 调整（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)；CHANGELOG 会显式记 column / shape 变更）。
+
+`popola cloud runs <task_id>` 包装 Cursor `GET /v1/agents/{id}/runs`，按 newest-first 列出该 cloud agent 的全部 run（含手工通过 `https://cursor.com/agents` 浏览器追加的）；`popola list` 仍保持 single-row-per-task。完整 dispatch → wait → cloud runs 一条龙：
+
+1. **派发一个 cloud 任务**：
+   ```bash
+   export CURSOR_API_KEY="cr_..."
+   popola dispatch "重构 caching 模块并补齐 unit test" \
+     --cli=cursor-cloud \
+     --cli-flag repo_url=https://github.com/neolix-ai/popola-loom \
+     --cli-flag starting_ref=main \
+     --cli-flag model=composer-2
+   # → cursor-cloud-deadbeef
+   ```
+2. **等任务跑（attach 跟随；多 run 时自动加 `[run-N]` 前缀 + 分隔行）**：
+   ```bash
+   popola attach cursor-cloud-deadbeef --follow
+   # [run-0] STARTING ───► RUNNING
+   # [run-0] tool_call: read_file(path="src/cache.py")
+   # [run-0] FINISHED (exit 0)
+   # ─── follow-up: run-1 (parent=run-0) ───
+   # [run-1] CREATING ───► RUNNING ...
+   ```
+3. **列出全部 run（默认 6 列表格）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef
+   # ┃ run_id              ┃ run_index ┃ state    ┃ created_at                  ┃ wall_clock ┃ model      ┃
+   # │ run-yyyyyyyy-00…    │ 1         │ finished │ 2026-05-08T18:30:00.000Z    │ 00:32:00   │ composer-2 │
+   # │ run-xxxxxxxx-00…    │ 0         │ finished │ 2026-05-08T17:00:00.000Z    │ 00:15:00   │ composer-2 │
+   ```
+4. **要 JSON 写脚本（`--json`，full `run_id` 不截断；分页用 `--cursor`）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef --json --limit 100 | jq '.runs[] | .run_id'
+   ```
+5. **要 events_summary（`--include-events` 慢路径，1 row 多 1 个 `GET /runs/{run_id}` round-trip）**：
+   ```bash
+   popola cloud runs cursor-cloud-deadbeef --include-events --json \
+     | jq '.runs[] | {run_index, state, events_summary}'
+   ```
+
+**和 `popola status --verbose` 的对比**：`status --verbose` 显示**单条最新 run**的 5 字段 cost block（`cost: n/a` + `model` + `wall` + `link` 等；honest disclosure，不编 cost 数字）；`popola cloud runs` 显示**全部 run 的可分页历史**。错误退出码：`task_id` 本地未知 → exit `4`（per Q-C-1 OQ-1，**与 `popola dispatch` 的 100 退出码不同**，CHANGELOG §Changed 显式记录此偏离）；401/403 → exit `77`（per Q-C-1 OQ-2，对齐 `_ERROR_CATALOG`）；429 / 5xx → exit `75`；403 plan_required → exit `78`。
+
+出处：wire 级细节见 `.local/research/v0.8.8_multi_run/runs-subcommand-spec.md`（`.local/` 仅本地存在，已 gitignore）。
+
+### Workflow 10 — Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
+
+<!-- updated: 2026-05-10 -->
+
+触发：`agent worker` / "self-hosted worker" / "My Machines" / "Self-Hosted Pool" / "把本机注册到 Cursor 云端"。`start` / `handoff` **不**创建 popola task id；要 popola-tracked task 可用 Workflow 6 (`--cli=cursor-cloud` REST) 或本 workflow 的 `dispatch` 便捷命令。
+
+5 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），自动生成 `popolaloom-<repo>-<hash>` 名称并按 `--worker-dir` 复用已有进程，`--allow-duplicate` 才强制开第二份；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`；`dispatch` 默认直接 POST 到 `popolad`，携带 `cli=cursor-cloud`、`worker_name`、repo/PR、`starting_ref`、`model` extras，把任务路由到当前 workspace worker；`--print-only` / `--dry-run` 只输出等价命令。
+
+```bash
+popola cloud worker start --worker-dir "$(pwd)" \
+    --management-addr 127.0.0.1:39231
+# → "Run agents: https://cursor.com/agents#workerId=<uuid>"
+popola cloud worker status --management-addr 127.0.0.1:39231 --json | jq
+popola cloud worker handoff --worker-id <uuid> --prompt "..."
+popola cloud worker dispatch "..." --worker-dir "$(pwd)" \
+    --repo-url https://github.com/acme/repo
+```
+
+完整文档：[USER_GUIDE §Self-hosted worker handoff](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091)。
+
+### Workflow 11 — Dispatch with user preferences (v0.9.10+, experimental)
+
+Repeatable dispatch defaults without shell aliases:
+
+```bash
+popola init --interactive
+popola dispatch "summarize repo state" --use-preferences
+popola dispatch "review migration plan" --profile daily-driver --json
+```
+
+Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.1.0 stable.
+
+### Workflow 11 — Guided dispatch with option-group Q&A
+
+Use AskQuestion for target → model → thinking_depth → special_modes, then submit: `popola dispatch "..." --wizard` locally, or MCP `popola_submit({"cli":"cursor-cloud","prompt":...,"cwd":...,"extra":{"model":"gpt-5.5","effort":"high","auto_create_pr":true}})`.
+
+### Workflow 12 — Path-B advanced dispatch
+
+Experimental v1.1.0 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cloud-target=self-hosted --worker-name=<X> --model=gpt-5.5 --auth-mode=session-jwt --effort=high --long-running --preset=grind --cli-flag repo_url=https://github.com/org/repo`. Path-B uses Cursor session JWT + Connect-RPC and is not a v1.x stability surface; on 401/404 tell the user to retry stable REST (`--auth-mode=rest`) or run `cursor login`.
 
 ## Configuration
+
+v1.1.0 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
+
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
 
@@ -243,27 +486,38 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 | `LARK_PRIORITY_BOT_ID` | 出口卡用哪个 bot 发（multi-bot setup） | (unset → 默认 bot) |
 | `CURSOR_API_KEY` | Cursor Cloud Agents REST Basic 用户名 (= API key)，密码空 | (unset → `--cli=cursor-cloud` 不可用 / `CursorCloudAdapter.is_available()==False`) |
 
+### User preferences (v0.9.10+, experimental)
+
+`[user_preferences]` is an **experimental until v1.1.0 stable** routing/profile schema. Typical keys: `default_cli`, `default_cwd`, `confirm_before_cloud`, `prefer_streaming`, `handoff_tags`, and `[user_preferences.dispatch] timeout_seconds` / `extra_cli_flags`. Never store secrets here.
+
+```toml
+[user_preferences]
+default_cli = "cursor"
+confirm_before_cloud = true
+[user_preferences.dispatch]
+timeout_seconds = 120
+```
+
 > **Lark gating**：当 `lark-cli` 不在 PATH **或** `LARK_HITL_TARGET_OPEN_ID` unset 时，daemon 静默退化为只发本地事件 + 写本机 NDJSON（不抛异常，per the No Silent Failures + degrade-gracefully 双约束）。
 
 ## Reference
 
-- **Repo / README**：[github.com/YoRHa-Agents/PopolaLoom](https://github.com/YoRHa-Agents/PopolaLoom) — 5 分钟 quickstart、架构 ASCII 图、5/5 self-bootstrap scenario 矩阵。
-- **Architecture diagram**：repo 内 `docs/DEMO.md`（截图 + 完整会话 walkthrough）。
-- **Spec + ADRs**：repo 内 `.local/memory/specs/popolaloom/`（spec.md / implementation-plan.md / v0.5.0-plan.md / adrs/）。
-- **MCP verbs（IDE Agent integration）**：9-verb stdio 桥（`popola_submit` / `popola_list` / `popola_status` / `popola_attach_stream` / `popola_supply_feedback` / `popola_cancel` / `popola_inject_subtask` / `popola_relay` / `popola_supervise`）— 见 `src/popolaloom/mcp/tools.py`。
-- **Sibling project**：[ArkTower](https://github.com/YoRHa-Agents/ArkTower) — 任务池 / FSM / EventBus / SQL migrations 提供方（v0.5.0 起 vendored 进 `popolaloom._vendored.arktower`，`pip install popolaloom` 不再需要 ArkTower 单独 clone）。
-- **Related Skill**：[devola-flow](https://github.com/YoRHa-Agents/DevolaFlow) — 单 agent 任务质量 / 4-layer hierarchy / convergence-loop framework；PopolaLoom 是它的多任务 / 多 CLI 编排互补层（你可以同时装两个 Skill）。
-- **Repo 内 examples**：`examples/quickstart.sh`（5 步自动 smoke）、`examples/quickstart-skill.md`（v0.5.0 Stage S5 起的长版 SKILL example）。
+- **Repo / README**：[github.com/YoRHa-Agents/PopolaLoom](https://github.com/YoRHa-Agents/PopolaLoom)。
+- **Docs**：`docs/USER_GUIDE.md` / `docs/DEMO.md` / `docs/API_STABILITY.md`。
+- **MCP verbs**：9-verb stdio bridge in `src/popolaloom/mcp/tools.py`.
+- **Related**：[ArkTower](https://github.com/YoRHa-Agents/ArkTower) task pool + [devola-flow](https://github.com/YoRHa-Agents/DevolaFlow) single-agent quality framework.
 
 ## Version + upgrade
 
-- **Current**: 0.4.1 — `popola init` (Stage S2/S3 of the v0.5.0 milestone, available on `feature/v0.5.0-skill-install`) 自动安装本 SKILL.md 到 `<scope>/.cursor/skills/popola-loom/SKILL.md`、`<scope>/.claude/skills/popola-loom/SKILL.md`、`$CODEX_HOME/skills/popola-loom/SKILL.md`、`<cwd>/.github/copilot-instructions.md`（Copilot 单文件 flatten）。Stage S5 of v0.5.0 bumps `__version__` (and this frontmatter) to 0.5.0 in lockstep.
-- **Check**: `popola version` 打印当前 wheel 版本；`cat ~/.cursor/skills/popola-loom/.popola-loom-version` 看安装版（Stage S4 `popola doctor` 检测两者 drift）。
-- **Upgrade**:
+- **Current**: v1.1.0 GA（2026-05-11，**stable since v0.9.0**, GA from v1.1.0）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
+- **Install / Upgrade**:
   ```bash
-  pip install --upgrade popolaloom
-  popola skill upgrade --target=cursor   # v0.5.0+ Stage S4，比对 SHA256 + backup .popola-loom-bak.<ts>
-  popola init                             # 兜底：手动 re-run 触发 idempotent install
+  ./install.sh install
+  ./install.sh install --ref=v1.1.0
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.1.0
+  popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
-- **Drift detection (v0.5.0+ Stage S4)**: `popola doctor` 走 5 项审计（Skill / Daemon / Lark-cli / ArkTower / IDE config），任一 ✗ 退 1，全 ✓ 退 0；脚本可信赖此 exit code。
-- **Idempotency**: 所有 `popola init <verb>` 二次执行打印 `SKIP <path> (already installed)` 不覆盖；要强制刷新走 `popola skill upgrade`。
+  > PyPI remains deferred for v0.9.x / v1.1.0; default installer uses GitHub.
+- **Check / drift**: `popola version`, `cat ~/.cursor/skills/popola-loom/.popola-loom-version`, then `popola doctor`.
+- **Idempotency**: `popola init <verb>` skips existing installs; force refresh via `popola skill upgrade`.
+- **v0.7.x → v0.9.0**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。

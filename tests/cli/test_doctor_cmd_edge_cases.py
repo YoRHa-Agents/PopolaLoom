@@ -234,8 +234,14 @@ def test_doctor_json_summary_has_stable_top_level_keys(
     assert "verdicts" in summary
 
     verdicts = summary["verdicts"]
-    assert set(verdicts.keys()) == {"skill", "daemon", "lark", "arktower"}, (
-        f"verdicts must have exactly the 4 subsystem keys; got {list(verdicts.keys())}"
+    assert set(verdicts.keys()) == {
+        "skill",
+        "daemon",
+        "lark",
+        "arktower",
+        "preferences",
+    }, (
+        f"verdicts must have exactly the 5 subsystem keys; got {list(verdicts.keys())}"
     )
 
 

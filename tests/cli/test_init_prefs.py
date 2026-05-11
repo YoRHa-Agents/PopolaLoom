@@ -183,8 +183,9 @@ def test_prefs_show_json(
     result = runner.invoke(init_app, ["prefs", "show", "--json"])
     assert result.exit_code == 0, _combined_output(result)
     payload = json.loads(result.stdout)
-    assert payload["default_runtime"] == "cloud"
-    assert payload["default_local_cli"] == "cursor"
+    assert payload["schema_version"] == 2
+    assert payload["routing"]["default_runtime"] == "cloud"
+    assert payload["routing"]["default_local_cli"] == "cursor"
 
 
 def test_prefs_reset_deletes_block_and_preserves_other_sections(
@@ -222,4 +223,4 @@ def test_prefs_set_preserves_old_toml_compatibility(
     raw = tomllib.loads(path.read_text(encoding="utf-8"))
     assert raw["hitl"]["cloud"]["timeout_seconds"] == 600
     assert raw["hitl"]["cloud"]["idempotency_window_s"] == 7200
-    assert raw["user_preferences"]["default_local_cli"] == "claude"
+    assert raw["user_preferences"]["routing"]["default_local_cli"] == "claude"

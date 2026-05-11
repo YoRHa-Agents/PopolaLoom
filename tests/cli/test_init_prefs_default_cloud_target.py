@@ -116,6 +116,21 @@ def _wizard_tail_answers() -> list[str]:
         "",  # follow_devola_flow keeps default.
         "",  # hitl_enabled keeps default.
         "",  # prompt_each_dispatch keeps default.
+        "",  # wait_timeout_s keeps default.
+        "",  # cursor output_format keeps default.
+        "",  # cursor cli_args keeps default.
+        "",  # cursor-cloud model keeps default.
+        "",  # auto_create_pr keeps default.
+        "",  # work_on_current_branch keeps default.
+        "",  # claude max_turns keeps default.
+        "",  # codex sandbox keeps default.
+        "",  # lark completed keeps default.
+        "",  # lark failed keeps default.
+        "",  # lark canceled keeps default.
+        "",  # lark cancel escalated keeps default.
+        "",  # lark prompt truncate keeps default.
+        "",  # ambiguity_resolution keeps default.
+        "",  # ask_dimensions keeps default.
     ]
 
 

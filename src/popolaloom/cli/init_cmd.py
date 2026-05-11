@@ -84,14 +84,27 @@ from pathlib import Path
 import typer
 from rich.console import Console
 from rich.table import Table
+from rich.tree import Tree
 
 from popolaloom.cli._skill_source import resolve_skill_source
 from popolaloom.daemon.main import (
+    USER_PREF_VALID_AMBIGUITY_RESOLUTION,
+    USER_PREF_VALID_ASK_DIMENSIONS,
     USER_PREF_VALID_CLOUD_TARGETS,
+    USER_PREF_VALID_CODEX_SANDBOXES,
+    USER_PREF_VALID_CURSOR_OUTPUT_FORMATS,
     USER_PREF_VALID_DEFAULT_CLOUD_TARGET,
     USER_PREF_VALID_LOCAL_CLIS,
     USER_PREF_VALID_RUNTIMES,
     UserPreferencesConfig,
+    UserPrefsClaude,
+    UserPrefsCodex,
+    UserPrefsCursor,
+    UserPrefsCursorCloud,
+    UserPrefsDefaults,
+    UserPrefsDispatch,
+    UserPrefsLark,
+    UserPrefsRouting,
     _load_user_preferences,
     user_preferences_to_toml_dict,
 )
@@ -155,8 +168,14 @@ _console_out = Console()
 
 VALID_MODES: frozenset[str] = frozenset({"core", "standard", "full"})
 
-VALID_TARGETS: frozenset[str] = frozenset(
-    {"cursor", "claude", "copilot", "codex", "local"}
+VALID_TARGETS: frozenset[str] = frozenset({"cursor", "claude", "copilot", "codex", "local"})
+
+CURSOR_CLOUD_KNOWN_MODELS: tuple[str, ...] = (
+    "default",
+    "composer-2",
+    "composer-2-fast",
+    "sonnet",
+    "gpt-5.5",
 )
 
 
@@ -254,22 +273,27 @@ def apply_user_preference_sets(
     *,
     base: UserPreferencesConfig | None = None,
 ) -> UserPreferencesConfig:
-    """Apply ``key=value`` assignments to an existing/default preferences block."""
+    """Apply ``key=value`` assignments to an existing/default preferences block.
+
+    v1.1.0 accepts nested dotted paths such as
+    ``cursor-cloud.model=composer-2`` while preserving the legacy flat names
+    as aliases for scripts written against v0.9/v1.0.
+    """
     prefs = base or UserPreferencesConfig()
     values = user_preferences_to_toml_dict(prefs)
     for raw in assignments:
         if "=" not in raw:
             raise ValueError(f"--set must be key=value form, got {raw!r}")
         key, _, value = raw.partition("=")
-        key = key.strip()
+        key = _normalise_pref_assignment_key(key.strip())
         value = value.strip()
-        if key == "default_runtime":
+        if key == "routing.default_runtime":
             if value not in USER_PREF_VALID_RUNTIMES:
                 raise ValueError(
                     f"default_runtime must be one of {sorted(USER_PREF_VALID_RUNTIMES)}"
                 )
-            values[key] = value
-        elif key == "cloud_target_priority":
+            _set_nested_pref_value(values, key, value)
+        elif key == "routing.cloud_target_priority":
             parsed = _parse_csv_pref(value)
             invalid = [item for item in parsed if item not in USER_PREF_VALID_CLOUD_TARGETS]
             if invalid:
@@ -277,21 +301,21 @@ def apply_user_preference_sets(
                     "cloud_target_priority entries must be one of "
                     f"{sorted(USER_PREF_VALID_CLOUD_TARGETS)}; got {invalid!r}"
                 )
-            values[key] = parsed
-        elif key == "default_cloud_target":
+            _set_nested_pref_value(values, key, parsed)
+        elif key == "cursor-cloud.default_cloud_target":
             if value not in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
                 raise ValueError(
                     "default_cloud_target must be one of "
                     f"{sorted(USER_PREF_VALID_DEFAULT_CLOUD_TARGET)}; got {value!r}"
                 )
-            values[key] = value
-        elif key == "default_local_cli":
+            _set_nested_pref_value(values, key, value)
+        elif key == "routing.default_local_cli":
             if value not in USER_PREF_VALID_LOCAL_CLIS:
                 raise ValueError(
                     f"default_local_cli must be one of {sorted(USER_PREF_VALID_LOCAL_CLIS)}"
                 )
-            values[key] = value
-        elif key == "fallback_chain":
+            _set_nested_pref_value(values, key, value)
+        elif key == "routing.fallback_chain":
             parsed = _parse_csv_pref(value)
             invalid = [item for item in parsed if item not in USER_PREF_VALID_LOCAL_CLIS]
             if invalid:
@@ -299,17 +323,133 @@ def apply_user_preference_sets(
                     "fallback_chain entries must be one of "
                     f"{sorted(USER_PREF_VALID_LOCAL_CLIS)}; got {invalid!r}"
                 )
-            values[key] = parsed
-        elif key in {"hitl_enabled", "follow_devola_flow", "prompt_each_dispatch"}:
-            values[key] = _parse_bool_pref(value, key=key)
+            _set_nested_pref_value(values, key, parsed)
+        elif key in {
+            "defaults.hitl_enabled",
+            "defaults.follow_devola_flow",
+            "defaults.prompt_each_dispatch",
+            "cursor-cloud.auto_create_pr",
+            "cursor-cloud.work_on_current_branch",
+            "cursor-cloud.skip_reviewer_request",
+            "lark.notify_on_completed",
+            "lark.notify_on_failed",
+            "lark.notify_on_canceled",
+            "lark.notify_on_cancel_escalated",
+        }:
+            _set_nested_pref_value(values, key, _parse_bool_pref(value, key=key))
+        elif key in {"defaults.wait_timeout_s", "claude.max_turns", "lark.prompt_truncate"}:
+            parsed_int = int(value)
+            _set_nested_pref_value(values, key, parsed_int)
+        elif key == "cursor.output_format":
+            if value not in USER_PREF_VALID_CURSOR_OUTPUT_FORMATS:
+                raise ValueError(
+                    "cursor.output_format must be one of "
+                    f"{sorted(USER_PREF_VALID_CURSOR_OUTPUT_FORMATS)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "codex.sandbox":
+            if value not in USER_PREF_VALID_CODEX_SANDBOXES:
+                raise ValueError(
+                    "codex.sandbox must be one of "
+                    f"{sorted(USER_PREF_VALID_CODEX_SANDBOXES)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "dispatch.ambiguity_resolution":
+            if value not in USER_PREF_VALID_AMBIGUITY_RESOLUTION:
+                raise ValueError(
+                    "dispatch.ambiguity_resolution must be one of "
+                    f"{sorted(USER_PREF_VALID_AMBIGUITY_RESOLUTION)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "dispatch.ask_dimensions":
+            parsed = _parse_csv_pref(value)
+            invalid = [item for item in parsed if item not in USER_PREF_VALID_ASK_DIMENSIONS]
+            if invalid:
+                raise ValueError(
+                    "dispatch.ask_dimensions entries must be one of "
+                    f"{sorted(USER_PREF_VALID_ASK_DIMENSIONS)}; got {invalid!r}"
+                )
+            _set_nested_pref_value(values, key, parsed)
+        elif key == "cursor.cli_args":
+            _set_nested_pref_value(values, key, _parse_csv_pref(value))
+        elif key in {
+            "cursor-cloud.model",
+            "cursor-cloud.starting_ref",
+            "cursor-cloud.worker_name",
+            "cursor-cloud.pool_name",
+        }:
+            _set_nested_pref_value(values, key, value)
         elif key in {"last_set_at", "last_set_by"}:
             values[key] = value
         else:
-            known = ", ".join(sorted(user_preferences_to_toml_dict(UserPreferencesConfig())))
+            known = ", ".join(_known_preference_assignment_keys())
             raise ValueError(f"unknown preference key {key!r}; known keys: {known}")
     merged = _load_user_preferences({"user_preferences": values}, source=prefs_config_path())
     assert merged is not None
     return merged
+
+
+_LEGACY_PREF_ASSIGNMENT_ALIASES: dict[str, str] = {
+    "default_runtime": "routing.default_runtime",
+    "cloud_target_priority": "routing.cloud_target_priority",
+    "default_local_cli": "routing.default_local_cli",
+    "fallback_chain": "routing.fallback_chain",
+    "hitl_enabled": "defaults.hitl_enabled",
+    "follow_devola_flow": "defaults.follow_devola_flow",
+    "prompt_each_dispatch": "defaults.prompt_each_dispatch",
+    "default_cloud_target": "cursor-cloud.default_cloud_target",
+}
+
+
+def _normalise_pref_assignment_key(key: str) -> str:
+    return _LEGACY_PREF_ASSIGNMENT_ALIASES.get(key, key)
+
+
+def _set_nested_pref_value(values: dict[str, object], dotted: str, value: object) -> None:
+    section, _, child_key = dotted.partition(".")
+    if not section or not child_key:
+        raise ValueError(f"preference key must be dotted section.key, got {dotted!r}")
+    table = values.setdefault(section, {})
+    if not isinstance(table, dict):
+        raise ValueError(f"preference section {section!r} is not a table")
+    table[child_key] = value
+
+
+def _known_preference_assignment_keys() -> list[str]:
+    return sorted(
+        {
+            *list(_LEGACY_PREF_ASSIGNMENT_ALIASES),
+            "routing.default_runtime",
+            "routing.cloud_target_priority",
+            "routing.default_local_cli",
+            "routing.fallback_chain",
+            "defaults.wait_timeout_s",
+            "defaults.hitl_enabled",
+            "defaults.follow_devola_flow",
+            "defaults.prompt_each_dispatch",
+            "cursor.output_format",
+            "cursor.cli_args",
+            "cursor-cloud.model",
+            "cursor-cloud.starting_ref",
+            "cursor-cloud.auto_create_pr",
+            "cursor-cloud.work_on_current_branch",
+            "cursor-cloud.skip_reviewer_request",
+            "cursor-cloud.default_cloud_target",
+            "cursor-cloud.worker_name",
+            "cursor-cloud.pool_name",
+            "claude.max_turns",
+            "codex.sandbox",
+            "lark.notify_on_completed",
+            "lark.notify_on_failed",
+            "lark.notify_on_canceled",
+            "lark.notify_on_cancel_escalated",
+            "lark.prompt_truncate",
+            "dispatch.ambiguity_resolution",
+            "dispatch.ask_dimensions",
+            "last_set_at",
+            "last_set_by",
+        }
+    )
 
 
 def _prefs_to_output_dict(prefs: UserPreferencesConfig | None) -> dict[str, object]:
@@ -330,13 +470,23 @@ def _print_user_preferences(
     if not data:
         typer.echo("[user_preferences] not set")
         return
-    typer.echo("[user_preferences]")
+    tree = Tree("[user_preferences]")
     for key, value in data.items():
-        if isinstance(value, list):
-            rendered = ",".join(str(item) for item in value)
+        if isinstance(value, dict):
+            branch = tree.add(f"[user_preferences.{key}]")
+            for child_key, child_value in value.items():
+                branch.add(f"{child_key} = {_format_pref_value(child_value)}")
         else:
-            rendered = str(value).lower() if isinstance(value, bool) else str(value)
-        typer.echo(f"{key} = {rendered}")
+            tree.add(f"{key} = {_format_pref_value(value)}")
+    _console_out.print(tree)
+
+
+def _format_pref_value(value: object) -> str:
+    if isinstance(value, list):
+        return ",".join(str(item) for item in value)
+    if isinstance(value, bool):
+        return str(value).lower()
+    return str(value)
 
 
 def _handle_prefs_cli_error(exc: Exception) -> None:
@@ -364,8 +514,19 @@ def prefs_callback(
             "comma-separated values, e.g. --set fallback_chain=cursor,claude."
         ),
     ),
+    wizard: bool = typer.Option(
+        False,
+        "--wizard",
+        help="Run only the Step 6 preferences wizard.",
+    ),
 ) -> None:
     """Implement ``popola init prefs --set key=value`` and default show."""
+    if wizard:
+        if set_values or ctx.invoked_subcommand is not None:
+            raise typer.BadParameter("--wizard cannot be combined with --set or subcommands")
+        _run_preferences_wizard_step()
+        raise typer.Exit(code=0)
+
     if set_values:
         if ctx.invoked_subcommand is not None:
             raise typer.BadParameter("--set cannot be combined with prefs subcommands")
@@ -534,9 +695,7 @@ def _resolve_mode(
         default_no_compile, default_with_examples = False, False
 
     no_compile = no_compile_flag or default_no_compile
-    with_examples = (
-        default_with_examples if with_examples_flag is None else with_examples_flag
-    )
+    with_examples = default_with_examples if with_examples_flag is None else with_examples_flag
     return no_compile, with_examples
 
 
@@ -598,9 +757,7 @@ def _install_target(
         path = claude_target_path(scope, cwd=cwd)
     elif target == "copilot":
         if scope == "global":
-            typer.echo(
-                "  warning: Copilot does not support --global; falling back to --project."
-            )
+            typer.echo("  warning: Copilot does not support --global; falling back to --project.")
         path = copilot_target_path(cwd=cwd)
     elif target == "codex":
         path = codex_target_path()
@@ -777,7 +934,7 @@ _EXAMPLE_TASK_MD: str = (
     "task to a local agent CLI via PopolaLoom.\n\n"
     "## Steps\n\n"
     "1. `popola popolad start` — start the daemon.\n"
-    "2. `popola dispatch \"refactor module X\" --cli cursor --cwd .`\n"
+    '2. `popola dispatch "refactor module X" --cli cursor --cwd .`\n'
     "3. `popola attach <task_id> --follow` to watch live events.\n\n"
     "Delete this file once you author your first real task.\n"
 )
@@ -1022,17 +1179,13 @@ def _install_cloud_only(
     """
     typer.echo("popola init — target: cloud-only")
     typer.echo(
-        "  scaffolding cloud-only project skeleton "
-        "(no local CLI shims, no local HITL stubs)"
+        "  scaffolding cloud-only project skeleton (no local CLI shims, no local HITL stubs)"
     )
     typer.echo(f"  cwd: {cwd}")
 
     primary_marker = cwd / _CLOUD_ONLY_FILES[0][0]
     if primary_marker.exists() and not force and not dry_run:
-        typer.echo(
-            f"  scaffold already exists at {primary_marker}; "
-            "use --force to overwrite"
-        )
+        typer.echo(f"  scaffold already exists at {primary_marker}; use --force to overwrite")
 
     for relative_path, content in _CLOUD_ONLY_FILES:
         target = cwd / relative_path
@@ -1047,7 +1200,7 @@ def _install_cloud_only(
         "\nNext steps:\n"
         "  1. cp .env.example .env && edit .env to set CURSOR_API_KEY\n"
         "  2. popola popolad start          (boot the daemon)\n"
-        "  3. make dispatch PROMPT=\"...\"    "
+        '  3. make dispatch PROMPT="..."    '
         "(or: popola dispatch ... --cli=cursor-cloud)"
     )
 
@@ -1104,23 +1257,18 @@ def _resolve_cursor_api_key_input(
     """
     if value is not None and file is not None:
         raise typer.BadParameter(
-            "--cursor-api-key and --cursor-api-key-file are mutually exclusive; "
-            "pass only one"
+            "--cursor-api-key and --cursor-api-key-file are mutually exclusive; pass only one"
         )
     if value is not None:
         stripped = value.strip()
         if not stripped:
-            raise typer.BadParameter(
-                "--cursor-api-key value must not be empty or whitespace-only"
-            )
+            raise typer.BadParameter("--cursor-api-key value must not be empty or whitespace-only")
         return stripped
     if file is not None:
         try:
             text = file.read_text(encoding="utf-8")
         except FileNotFoundError as exc:
-            raise typer.BadParameter(
-                f"--cursor-api-key-file path not found: {file}"
-            ) from exc
+            raise typer.BadParameter(f"--cursor-api-key-file path not found: {file}") from exc
         except OSError as exc:
             raise typer.BadParameter(
                 f"--cursor-api-key-file could not be read: {file} ({exc})"
@@ -1193,8 +1341,7 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
             err=True,
         )
         typer.echo(
-            "        Re-run the installer with the credentials extra to "
-            "enable secure storage:",
+            "        Re-run the installer with the credentials extra to enable secure storage:",
             err=True,
         )
         typer.echo(
@@ -1202,8 +1349,7 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
             err=True,
         )
         typer.echo(
-            "        (or `./install.sh update --with-credentials` on "
-            "existing installs).",
+            "        (or `./install.sh update --with-credentials` on existing installs).",
             err=True,
         )
         typer.echo(
@@ -1249,9 +1395,7 @@ def _persist_cursor_api_key_noninteractive(raw_key: str) -> None:
         return
 
     fp = compute_fingerprint(raw_key) or "(unknown)"
-    typer.echo(
-        f"  Stored Cursor API key. backend={status.backend_name}  fingerprint={fp}"
-    )
+    typer.echo(f"  Stored Cursor API key. backend={status.backend_name}  fingerprint={fp}")
 
 
 def _handle_credential_intake_after_install(
@@ -1322,10 +1466,7 @@ def _offer_cursor_credential_setup() -> None:
             "with the credentials extra to enable secure storage:"
         )
         typer.echo("        `./install.sh install --with-credentials`")
-        typer.echo(
-            "        (or `./install.sh update --with-credentials` on "
-            "existing installs)."
-        )
+        typer.echo("        (or `./install.sh update --with-credentials` on existing installs).")
         typer.echo(
             "        On a headless Linux container without a SecretService "
             "backend the install path succeeds but the keyring lookup "
@@ -1383,21 +1524,16 @@ def _offer_cursor_credential_setup() -> None:
         status = store_cursor_api_key(raw)
     except CredentialBackendError as exc:
         typer.echo(f"  ERROR: {exc}")
-        typer.echo(
-            "  Falling back to env var path: set CURSOR_API_KEY in your shell."
-        )
+        typer.echo("  Falling back to env var path: set CURSOR_API_KEY in your shell.")
         return
     except ValueError as exc:
         typer.echo(f"  ERROR: {exc}")
         return
 
     fp = compute_fingerprint(raw) or "(unknown)"
+    typer.echo(f"  Stored. backend={status.backend_name}  fingerprint={fp}")
     typer.echo(
-        f"  Stored. backend={status.backend_name}  fingerprint={fp}"
-    )
-    typer.echo(
-        "  Next dispatches will resolve via OS keyring (precedence: "
-        "CURSOR_API_KEY env > keyring)."
+        "  Next dispatches will resolve via OS keyring (precedence: CURSOR_API_KEY env > keyring)."
     )
 
 
@@ -1555,9 +1691,7 @@ def init_callback(
         value=cursor_api_key,
         file=cursor_api_key_file,
     )
-    effective_configure_cursor_auth = (
-        configure_cursor_auth or resolved_cursor_api_key is not None
-    )
+    effective_configure_cursor_auth = configure_cursor_auth or resolved_cursor_api_key is not None
 
     if target is InitTarget.CLOUD_ONLY:
         if ctx.invoked_subcommand is not None:
@@ -1565,13 +1699,9 @@ def init_callback(
                 "--target=cloud-only cannot be combined with a verb subcommand"
             )
         if list_only:
-            raise typer.BadParameter(
-                "--target=cloud-only cannot be combined with --list"
-            )
+            raise typer.BadParameter("--target=cloud-only cannot be combined with --list")
         if interactive:
-            raise typer.BadParameter(
-                "--target=cloud-only cannot be combined with --interactive"
-            )
+            raise typer.BadParameter("--target=cloud-only cannot be combined with --interactive")
         _install_cloud_only(
             cwd,
             dry_run=dry_run,
@@ -1583,9 +1713,7 @@ def init_callback(
 
     if interactive:
         if ctx.invoked_subcommand is not None:
-            raise typer.BadParameter(
-                "--interactive cannot be combined with a verb subcommand"
-            )
+            raise typer.BadParameter("--interactive cannot be combined with a verb subcommand")
         # v0.9.5: when a non-interactive value was supplied, persist it
         # immediately so the credential reaches the keyring even if the
         # operator declines every install in the wizard's "Nothing
@@ -1600,9 +1728,7 @@ def init_callback(
             )
         _run_interactive_wizard(
             cwd,
-            configure_cursor_auth=(
-                configure_cursor_auth and resolved_cursor_api_key is None
-            ),
+            configure_cursor_auth=(configure_cursor_auth and resolved_cursor_api_key is None),
             cursor_api_key=None,
             dry_run=dry_run,
         )
@@ -1610,9 +1736,7 @@ def init_callback(
 
     if list_only:
         if ctx.invoked_subcommand is not None:
-            raise typer.BadParameter(
-                "--list cannot be combined with a verb subcommand"
-            )
+            raise typer.BadParameter("--list cannot be combined with a verb subcommand")
         _print_list(cwd)
         raise typer.Exit(code=0)
 
@@ -1799,6 +1923,82 @@ def _prompt_pref_bool(label: str, *, default: bool) -> bool:
         typer.echo("  Please answer y, n, or q.")
 
 
+def _prompt_option_group(
+    prompt: str,
+    options: list[tuple[str, str]],
+    *,
+    default_idx: int = 0,
+) -> str:
+    """Render a numbered option group and return the selected value."""
+    if not options:
+        raise ValueError("_prompt_option_group requires at least one option")
+    default_idx = max(0, min(default_idx, len(options) - 1))
+    typer.echo(prompt)
+    for idx, (value, label) in enumerate(options, start=1):
+        marker = "*" if idx - 1 == default_idx else " "
+        typer.echo(f"  {idx}. [{marker}] {label} ({value})")
+    raw = _prompt_pref_text(
+        "Choose number (Enter for default, q to skip)",
+        default=str(default_idx + 1),
+    )
+    if not raw:
+        return options[default_idx][0]
+    try:
+        selected = int(raw)
+    except ValueError as exc:
+        values = [value for value, _label in options]
+        if raw in values:
+            return raw
+        raise ValueError(
+            f"invalid option {raw!r}; choose 1-{len(options)} or one of {values}"
+        ) from exc
+    if selected < 1 or selected > len(options):
+        raise ValueError(f"invalid option {selected}; choose 1-{len(options)}")
+    return options[selected - 1][0]
+
+
+def _prompt_pref_int(label: str, *, default: int) -> int:
+    while True:
+        raw = _prompt_pref_text(label, default=str(default))
+        try:
+            value = int(raw)
+        except ValueError:
+            typer.echo("  Please enter an integer.")
+            continue
+        if value < 0:
+            typer.echo("  Please enter a non-negative integer.")
+            continue
+        return value
+
+
+def _prompt_pref_multi_select(
+    label: str,
+    options: list[tuple[str, str]],
+    *,
+    default_values: tuple[str, ...],
+) -> tuple[str, ...]:
+    typer.echo(label)
+    for idx, (value, text) in enumerate(options, start=1):
+        marker = "*" if value in default_values else " "
+        typer.echo(f"  {idx}. [{marker}] {text} ({value})")
+    raw = _prompt_pref_text(
+        "Choose comma-separated numbers/values (Enter for defaults, q to skip)",
+        default=",".join(default_values),
+    )
+    if not raw:
+        return default_values
+    values_by_idx = {str(idx): value for idx, (value, _text) in enumerate(options, start=1)}
+    valid_values = {value for value, _text in options}
+    selected: list[str] = []
+    for token in _parse_csv_pref(raw):
+        value = values_by_idx.get(token, token)
+        if value not in valid_values:
+            raise ValueError(f"invalid multi-select value {token!r}")
+        if value not in selected:
+            selected.append(value)
+    return tuple(selected)
+
+
 def _prompt_default_cloud_target_with_skip(*, default: str) -> str | None:
     """Prompt for ``default_cloud_target`` with ``q/ESC`` skip support.
 
@@ -1812,10 +2012,7 @@ def _prompt_default_cloud_target_with_skip(*, default: str) -> str | None:
     invalid input is rejected with a helpful one-liner and re-prompts;
     we never silently coerce an unknown value to a default.
     """
-    label = (
-        "Default cloud target "
-        "[self-hosted | cursor-managed | ask-each-time, q to skip]"
-    )
+    label = "Default cloud target [self-hosted | cursor-managed | ask-each-time, q to skip]"
     while True:
         try:
             raw = typer.prompt(label, default=default, show_default=True)
@@ -1829,8 +2026,7 @@ def _prompt_default_cloud_target_with_skip(*, default: str) -> str | None:
         if value in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
             return value
         typer.echo(
-            "  Please answer one of: self-hosted, cursor-managed, "
-            "ask-each-time (or q to skip)."
+            "  Please answer one of: self-hosted, cursor-managed, ask-each-time (or q to skip)."
         )
 
 
@@ -1875,9 +2071,15 @@ def _run_preferences_wizard_step() -> None:
             typer.echo("Preferences skipped.")
             return
 
-        default_runtime = _prompt_pref_text(
-            "Default runtime (local/cloud/ask-each-time)",
-            default=defaults.default_runtime,
+        typer.echo("\nRouting")
+        default_runtime = _prompt_option_group(
+            "Default runtime",
+            [
+                ("local", "Local CLI"),
+                ("cloud", "Cursor Cloud"),
+                ("ask-each-time", "Ask each dispatch"),
+            ],
+            default_idx=["local", "cloud", "ask-each-time"].index(defaults.default_runtime),
         )
         # v0.10.0 Wave B2 (DECISIONS Q-5 / PLAN B2 AC 2+3): the cloud-target
         # prompt is gated on the just-answered runtime. When runtime=local
@@ -1895,26 +2097,36 @@ def _run_preferences_wizard_step() -> None:
                 default_cloud_target_value = chosen_cloud_target
         else:
             cloud_target_skipped = True
-        cloud_target_priority = tuple(
-            _parse_csv_pref(
-                _prompt_pref_text(
-                    "Cloud target priority",
-                    default=",".join(defaults.cloud_target_priority),
-                )
-            )
+        cloud_target_priority = _prompt_pref_multi_select(
+            "Cloud target priority",
+            [
+                ("self-hosted", "Self-hosted worker"),
+                ("cursor-managed", "Cursor-managed cloud"),
+            ],
+            default_values=defaults.cloud_target_priority,
         )
-        default_local_cli = _prompt_pref_text(
-            "Default local CLI (cursor/claude/codex/copilot)",
-            default=defaults.default_local_cli,
+        default_local_cli = _prompt_option_group(
+            "Default local CLI",
+            [
+                ("cursor", "Cursor CLI"),
+                ("claude", "Claude Code"),
+                ("codex", "Codex"),
+                ("copilot", "Copilot"),
+            ],
+            default_idx=["cursor", "claude", "codex", "copilot"].index(defaults.default_local_cli),
         )
-        fallback_chain = tuple(
-            _parse_csv_pref(
-                _prompt_pref_text(
-                    "Fallback chain (comma-separated; empty for none)",
-                    default=",".join(defaults.fallback_chain),
-                )
-            )
+        fallback_chain = _prompt_pref_multi_select(
+            "Fallback chain",
+            [
+                ("cursor", "Cursor CLI"),
+                ("claude", "Claude Code"),
+                ("codex", "Codex"),
+                ("copilot", "Copilot"),
+            ],
+            default_values=defaults.fallback_chain,
         )
+
+        typer.echo("\nGeneral defaults")
         follow_devola_flow = _prompt_pref_bool(
             "Follow DevolaFlow markers by default?",
             default=defaults.follow_devola_flow,
@@ -1926,6 +2138,103 @@ def _run_preferences_wizard_step() -> None:
         prompt_each_dispatch = _prompt_pref_bool(
             "Prompt on each dispatch?",
             default=defaults.prompt_each_dispatch,
+        )
+        wait_timeout_s = _prompt_pref_int(
+            "Wait timeout seconds",
+            default=defaults.defaults.wait_timeout_s,
+        )
+
+        typer.echo("\nPer-adapter defaults")
+        cursor_output_format = _prompt_option_group(
+            "Cursor output format",
+            [("text", "Text"), ("stream-json", "Streaming JSON")],
+            default_idx=["text", "stream-json"].index(defaults.cursor.output_format),
+        )
+        cursor_cli_args = tuple(
+            _parse_csv_pref(
+                _prompt_pref_text(
+                    "Cursor extra CLI args (comma-separated; empty for none)",
+                    default=",".join(defaults.cursor.cli_args),
+                )
+            )
+        )
+        model_default_idx = (
+            CURSOR_CLOUD_KNOWN_MODELS.index(defaults.cursor_cloud.model)
+            if defaults.cursor_cloud.model in CURSOR_CLOUD_KNOWN_MODELS
+            else 0
+        )
+        cursor_cloud_model = _prompt_option_group(
+            "Cursor Cloud model",
+            [(model, model) for model in CURSOR_CLOUD_KNOWN_MODELS],
+            default_idx=model_default_idx,
+        )
+        cursor_auto_create_pr = _prompt_pref_bool(
+            "Cursor Cloud auto-create PR?",
+            default=defaults.cursor_cloud.auto_create_pr,
+        )
+        cursor_work_current_branch = _prompt_pref_bool(
+            "Cursor Cloud work on current branch?",
+            default=defaults.cursor_cloud.work_on_current_branch,
+        )
+        claude_max_turns = _prompt_pref_int(
+            "Claude max turns (0 = no limit)",
+            default=defaults.claude.max_turns,
+        )
+        codex_sandbox = _prompt_option_group(
+            "Codex sandbox",
+            [
+                ("read-only", "Read-only"),
+                ("workspace-write", "Workspace write"),
+                ("danger-full-access", "Danger full access"),
+            ],
+            default_idx=["read-only", "workspace-write", "danger-full-access"].index(
+                defaults.codex.sandbox
+            ),
+        )
+
+        typer.echo("\nLark notify")
+        lark_completed = _prompt_pref_bool(
+            "Notify on completed?",
+            default=defaults.lark.notify_on_completed,
+        )
+        lark_failed = _prompt_pref_bool(
+            "Notify on failed?",
+            default=defaults.lark.notify_on_failed,
+        )
+        lark_canceled = _prompt_pref_bool(
+            "Notify on canceled?",
+            default=defaults.lark.notify_on_canceled,
+        )
+        lark_cancel_escalated = _prompt_pref_bool(
+            "Notify on cancel escalated?",
+            default=defaults.lark.notify_on_cancel_escalated,
+        )
+        lark_prompt_truncate = _prompt_pref_int(
+            "Lark prompt truncate",
+            default=defaults.lark.prompt_truncate,
+        )
+
+        typer.echo("\nDispatch behavior")
+        ambiguity_resolution = _prompt_option_group(
+            "Ambiguity resolution",
+            [
+                ("prompt", "Prompt with option groups"),
+                ("use-defaults", "Use defaults silently"),
+                ("fail", "Fail when dimensions are missing"),
+            ],
+            default_idx=["prompt", "use-defaults", "fail"].index(
+                defaults.dispatch.ambiguity_resolution
+            ),
+        )
+        ask_dimensions = _prompt_pref_multi_select(
+            "Ask dimensions",
+            [
+                ("target", "Target"),
+                ("model", "Model"),
+                ("thinking_depth", "Thinking depth"),
+                ("special_modes", "Special modes"),
+            ],
+            default_values=defaults.dispatch.ask_dimensions,
         )
     except (_PreferencesWizardSkipError, typer.Abort, EOFError):
         typer.echo("Preferences skipped.")
@@ -1939,14 +2248,41 @@ def _run_preferences_wizard_step() -> None:
 
     try:
         prefs = UserPreferencesConfig(
-            default_runtime=default_runtime,
-            cloud_target_priority=cloud_target_priority,
-            default_cloud_target=default_cloud_target_value,
-            default_local_cli=default_local_cli,
-            fallback_chain=fallback_chain,
-            hitl_enabled=hitl_enabled,
-            follow_devola_flow=follow_devola_flow,
-            prompt_each_dispatch=prompt_each_dispatch,
+            routing=UserPrefsRouting(
+                default_runtime=default_runtime,
+                default_local_cli=default_local_cli,
+                fallback_chain=fallback_chain,
+                cloud_target_priority=cloud_target_priority,
+            ),
+            defaults=UserPrefsDefaults(
+                wait_timeout_s=wait_timeout_s,
+                hitl_enabled=hitl_enabled,
+                follow_devola_flow=follow_devola_flow,
+                prompt_each_dispatch=prompt_each_dispatch,
+            ),
+            cursor=UserPrefsCursor(
+                output_format=cursor_output_format,
+                cli_args=cursor_cli_args,
+            ),
+            cursor_cloud=UserPrefsCursorCloud(
+                model=cursor_cloud_model,
+                auto_create_pr=cursor_auto_create_pr,
+                work_on_current_branch=cursor_work_current_branch,
+                default_cloud_target=default_cloud_target_value,
+            ),
+            claude=UserPrefsClaude(max_turns=claude_max_turns),
+            codex=UserPrefsCodex(sandbox=codex_sandbox),
+            lark=UserPrefsLark(
+                notify_on_completed=lark_completed,
+                notify_on_failed=lark_failed,
+                notify_on_canceled=lark_canceled,
+                notify_on_cancel_escalated=lark_cancel_escalated,
+                prompt_truncate=lark_prompt_truncate,
+            ),
+            dispatch=UserPrefsDispatch(
+                ambiguity_resolution=ambiguity_resolution,
+                ask_dimensions=ask_dimensions,
+            ),
             last_set_at=datetime.now(UTC).isoformat(timespec="seconds"),
             last_set_by=getpass.getuser() or "wizard",
         )

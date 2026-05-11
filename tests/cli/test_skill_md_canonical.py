@@ -156,7 +156,7 @@ def test_skill_md_version_matches_package(
 
 
 def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
-    """Body length sits in ``[8 000, 34 000]`` chars (~ 2 000–8 500 tokens).
+    """Body length sits in ``[8 000, 40 000]`` chars (~ 2 000–10 000 tokens).
 
     Bump history:
       - Original Stage S3 window: ``[8 000, 16 000]`` (target ~ 11 000
@@ -180,14 +180,16 @@ def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
         ``--cli=cursor-cloud``. Compressed to a single 14-line block
         (mental model + 4-verb summary + minimal command surface);
         full prose lives in ``docs/USER_GUIDE.md``).
-    Any further growth past 34 000 must re-trigger the trim-vs-bump
+      - **v1.1.0 bump: 34 000 → 40 000** (Workflow 11 guided dispatch
+        Q&A + Workflow 12 Path-B advanced dispatch).
+    Any further growth past 40 000 must re-trigger the trim-vs-bump
     discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v0.9.1 bump: 32_000 → 34_000 (Workflow 10 self-hosted worker handoff)
-    assert 8_000 <= body_len <= 34_000, (
+    # v1.1.0 bump: 34_000 → 40_000 (guided dispatch + Path-B workflows)
+    assert 8_000 <= body_len <= 40_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 34 000] token-budget window (target ~ 11 000–30 000)."
+        f"[8 000, 40 000] token-budget window (target ~ 11 000–36 000)."
     )
 
 
@@ -205,6 +207,21 @@ def test_skill_md_body_has_all_canonical_sections(skill_body: str) -> None:
     )
 
 
+def test_skill_md_documents_ambiguity_protocol(skill_body: str) -> None:
+    """v1.1.0 guided dispatch and Path-B docs are present."""
+    required = [
+        "## Ambiguity Resolution Protocol",
+        "target/model/thinking depth/special modes",
+        "AskQuestion",
+        "Workflow 11 — Guided dispatch with option-group Q&A",
+        "Workflow 12 — Path-B advanced dispatch",
+        "popola dispatch <prompt> --wizard",
+        "schema_version = 2",
+    ]
+    for needle in required:
+        assert needle in skill_body
+
+
 def test_skill_md_no_residual_todo_marker(skill_text: str) -> None:
     """Neither frontmatter nor body contains a leftover ``TODO`` marker.
 
@@ -217,3 +234,5 @@ def test_skill_md_no_residual_todo_marker(skill_text: str) -> None:
         "Canonical SKILL.md still contains a `TODO` literal; remove the "
         "Stage S2 placeholder leftover or move it into a non-shipping doc."
     )
+
+

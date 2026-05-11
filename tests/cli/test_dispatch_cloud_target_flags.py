@@ -175,7 +175,7 @@ def test_apply_cloud_preferences_pref_only(tmp_path: Path) -> None:
     """Pref-only path: pref's ``default_cloud_target`` is consumed when no flag."""
     prefs = UserPreferencesConfig(default_cloud_target="cursor-managed")
     out = _apply_cloud_preferences(prefs, {}, cwd=tmp_path)
-    assert out == {"cloud_target": "cursor-managed"}
+    assert out["cloud_target"] == "cursor-managed"
 
 
 def test_apply_cloud_preferences_default_only_no_pref(tmp_path: Path) -> None:
@@ -201,7 +201,8 @@ def test_apply_cloud_preferences_self_hosted_pref_with_marker(
     (tmp_path / ".popola-worker").write_text("marker-w1\n", encoding="utf-8")
     prefs = UserPreferencesConfig(default_cloud_target="self-hosted")
     out = _apply_cloud_preferences(prefs, {}, cwd=tmp_path)
-    assert out == {"cloud_target": "self-hosted", "worker_name": "marker-w1"}
+    assert out["cloud_target"] == "self-hosted"
+    assert out["worker_name"] == "marker-w1"
 
 
 def test_apply_cloud_preferences_self_hosted_pref_no_worker_fails(
@@ -248,7 +249,7 @@ def test_apply_cloud_preferences_ignores_legacy_cloud_target_priority(
         cloud_target_priority=("self-hosted", "cursor-managed"),
     )
     out = _apply_cloud_preferences(prefs, {}, cwd=tmp_path)
-    assert out == {"cloud_target": "cursor-managed"}
+    assert out["cloud_target"] == "cursor-managed"
 
 
 def test_apply_cloud_preferences_escape_hatch_passthrough(tmp_path: Path) -> None:
@@ -343,7 +344,7 @@ def test_dispatch_pref_only_resolves_to_cursor_managed(
     )
     mock_client = _mock_dispatch_client(monkeypatch, "pref-only-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "pref dispatch"])
+    result = runner.invoke(main_app, ["dispatch", "pref dispatch", "--no-wizard"])
 
     assert result.exit_code == 0, _combined_output(result)
     body = _posted_body(mock_client)
@@ -565,7 +566,7 @@ def test_dispatch_self_hosted_pref_with_marker_routes_self_hosted(
     (project / ".popola-worker").write_text("marker-w1\n", encoding="utf-8")
     mock_client = _mock_dispatch_client(monkeypatch, "marker-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "marker dispatch"])
+    result = runner.invoke(main_app, ["dispatch", "marker dispatch", "--no-wizard"])
 
     assert result.exit_code == 0, _combined_output(result)
     body = _posted_body(mock_client)
@@ -590,7 +591,7 @@ def test_dispatch_self_hosted_pref_without_worker_fails(
         )
     )
 
-    result = runner.invoke(main_app, ["dispatch", "no worker hint"])
+    result = runner.invoke(main_app, ["dispatch", "no worker hint", "--no-wizard"])
 
     assert result.exit_code == _EXIT_INVALID_ARGS
     output = _combined_output(result)

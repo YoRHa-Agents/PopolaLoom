@@ -193,9 +193,39 @@ def test_apply_path_b_flags_rest_with_mode_rejects() -> None:
 
 
 def test_apply_path_b_flags_session_jwt_exits_until_wired() -> None:
-    """session-jwt rejects after validation so extras are not silently dropped downstream."""
+    """v1.1.0 (Track 6) — session-jwt is now WIRED through popolad.
+
+    The historical assertion (exit ``_EXIT_INVALID_ARGS`` because
+    ``--auth-mode=session-jwt`` was not yet wired) is obsolete; v1.1.0
+    Track 6 wires the Connect-RPC ``StartBackgroundComposerFromSnapshot``
+    end-to-end. The legacy test name is preserved so the diff stays
+    bisectable but the body now pins the new (wired) contract:
+
+    - With a loadable JWT the call returns normally (no exception).
+    - ``extra`` is mutated to carry ``__auth_mode__="session-jwt"``
+      plus the explicit Path-B knobs the operator passed.
+
+    The full per-knob coverage (effort / long_running / preset
+    interaction / JWTAuthError-on-missing-JWT) lives in
+    :mod:`tests.cli.test_path_b_e2e_wiring`.
+    """
+    import time
+    from unittest.mock import patch
+
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="fake-jwt-test",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=int(time.time()) + 3600,
+    )
     extra: dict[str, object] = {}
-    with pytest.raises(Exception) as exc_info:
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=fake_bundle,
+    ):
         _apply_path_b_flags(
             extra,
             cli="cursor-cloud",
@@ -208,14 +238,42 @@ def test_apply_path_b_flags_session_jwt_exits_until_wired() -> None:
             auto_proceed_after_plan=True,
             preset="",
         )
-    assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
-    assert extra == {}
+    assert extra["__auth_mode__"] == "session-jwt"
+    assert extra["mode"] == "plan"
+    assert extra["effort"] == "high"
+    assert extra["long_running"] is True
+    assert extra["auto_proceed_after_plan"] is True
+    assert extra["max_mode"] is True
+    assert extra["time_budget"] == "30m"
 
 
 def test_apply_path_b_flags_preset_under_session_jwt_exits_until_wired() -> None:
-    with pytest.raises(Exception) as exc_info:
+    """v1.1.0 (Track 6) — preset under session-jwt expands and routes (no exit).
+
+    Like :func:`test_apply_path_b_flags_session_jwt_exits_until_wired`,
+    the legacy name pinned a removed behavior. Body now pins the new
+    contract: preset values populate ``extra`` and ``__auth_mode__``
+    is set so the supervisor branches to Connect-RPC.
+    """
+    import time
+    from unittest.mock import patch
+
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="fake-jwt-test",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=int(time.time()) + 3600,
+    )
+    extra: dict[str, object] = {}
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=fake_bundle,
+    ):
         _apply_path_b_flags(
-            {},
+            extra,
             cli="cursor-cloud",
             auth_mode="session-jwt",
             mode="",
@@ -226,7 +284,12 @@ def test_apply_path_b_flags_preset_under_session_jwt_exits_until_wired() -> None
             auto_proceed_after_plan=False,
             preset="long-running-plan",
         )
-    assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
+    assert extra["__auth_mode__"] == "session-jwt"
+    assert extra["mode"] == "plan"
+    assert extra["effort"] == "high"
+    assert extra["long_running"] is True
+    assert extra["auto_proceed_after_plan"] is True
+    assert extra["time_budget"] == "3600s"
 
 
 def test_apply_path_b_flags_invalid_auth_mode_exits_2() -> None:

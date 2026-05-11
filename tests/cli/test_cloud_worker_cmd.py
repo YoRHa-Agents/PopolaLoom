@@ -68,6 +68,7 @@ def isolated_home(
     """
     monkeypatch.setenv("POPOLA_HOME", str(tmp_path))
     monkeypatch.setenv("HOME", str(tmp_path))
+    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
     monkeypatch.chdir(tmp_path)
     metadata = tmp_path / "credentials.toml"
     metadata.write_text(

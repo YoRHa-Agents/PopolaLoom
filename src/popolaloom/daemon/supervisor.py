@@ -36,6 +36,7 @@ import dataclasses
 import json
 import logging
 import os
+import re
 import subprocess
 import threading
 from collections.abc import Callable
@@ -59,6 +60,44 @@ Was 5.0s in v0.0.1; bumped to 30.0s for large-output scenarios (e.g. ``cursor
 agent --print`` 18000-char outputs). On timeout, the supervisor emits a
 ``stream.truncated`` event so callers see explicit evidence of truncation
 (No Silent Failures — see R-007 in 09-iter1-self-eval.md §5)."""
+
+
+_PATH_B_TIME_BUDGET_RE = re.compile(r"(\d+)([smh]?)")
+"""v1.1.0 (Track 6) — parser regex for ``extra.time_budget`` on Path-B dispatch.
+
+Mirrors :func:`popolaloom.cli.main._parse_time_budget`'s grammar so the
+daemon's strict re-parse is byte-identical to the CLI's accept rule.
+Accepted: bare integer (seconds), or ``<int>s`` / ``<int>m`` / ``<int>h``.
+Empty string parses to 0 (caller treats 0 as "no budget").
+"""
+
+
+def _parse_path_b_time_budget(value: str) -> int:
+    """Parse the marker-payload ``extra.time_budget`` string into seconds.
+
+    Mirrors :func:`popolaloom.cli.main._parse_time_budget` so the
+    supervisor accepts exactly what the CLI accepted (No Silent
+    Failures: a daemon that quietly accepted broader values than the
+    CLI would let buggy markers through).
+
+    Returns:
+        int: parsed seconds (``0`` for empty string).
+
+    Raises:
+        ValueError: when the value is not in the accepted grammar.
+    """
+    if not value:
+        return 0
+    match = _PATH_B_TIME_BUDGET_RE.fullmatch(value.strip())
+    if not match:
+        raise ValueError(
+            f"time_budget={value!r} not in accepted forms "
+            f"(integer-seconds | <int>s | <int>m | <int>h)"
+        )
+    n = int(match.group(1))
+    suffix = match.group(2) or "s"
+    multiplier = {"s": 1, "m": 60, "h": 3600}[suffix]
+    return n * multiplier
 
 
 _SILENCE_TIMEOUT_SECS: float = 30.0
@@ -371,6 +410,29 @@ class Supervisor:
                 error_detail="marker payload requires string 'prompt'",
             )
 
+        # v1.1.0 (Track 6) — Path-B (--auth-mode=session-jwt) branch.
+        # The CLI's `_apply_path_b_flags` injects `extra["__auth_mode__"]
+        # = "session-jwt"` after eagerly verifying the JWT loads. Here we
+        # route to the experimental Connect-RPC
+        # `StartBackgroundComposerFromSnapshot` client instead of the
+        # stable REST `POST /v1/agents` flow, so the dispatch carries
+        # the Path-B-only knobs (mode/effort/time_budget/long_running/
+        # auto_proceed_after_plan/max_mode/thinking_level/
+        # starting_message_type) the REST gateway rejects.
+        #
+        # No Silent Failures: every failure path here re-uses `_fail`
+        # which emits `task.failed` with a Path-B-tagged `error_kind`
+        # and the JWT/RPC `hint`.
+        if extra.get("__auth_mode__") == "session-jwt":
+            return self._spawn_cloud_path_b(
+                task_id=task_id,
+                prompt=prompt,
+                extra=extra,
+                event_log=event_log,
+                on_exit=on_exit,
+                fail_fn=_fail,
+            )
+
         # v0.9.2: route through the credential resolver so dispatch
         # honours OS keyring storage in addition to the historical
         # CURSOR_API_KEY env var. The resolver enforces precedence:
@@ -675,6 +737,211 @@ class Supervisor:
         )
         with self._lock:
             self._workers[task_id] = [poll_thread]
+        return 0
+
+    def _spawn_cloud_path_b(
+        self,
+        *,
+        task_id: str,
+        prompt: str,
+        extra: dict[str, Any],
+        event_log: EventLog,
+        on_exit: Callable[[str, int], None] | None,
+        fail_fn: Callable[..., int],
+    ) -> int:
+        """Cloud-runtime spawn for ``--auth-mode=session-jwt`` (Path-B, v1.1.0 Track 6).
+
+        Differs from :meth:`_spawn_cloud`'s REST flow on two axes:
+
+        - **Auth transport**: loads the JWT bundle via
+          :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle`
+          (``CURSOR_SESSION_JWT`` env > ``~/.config/cursor/auth.json``)
+          and uses it for ``Authorization: Bearer <jwt>`` headers
+          instead of the REST ``CURSOR_API_KEY`` Basic-auth header.
+        - **RPC body**: hand-rolls the 74-field
+          ``StartBackgroundComposerFromSnapshotRequest`` JSON body via
+          :func:`popolaloom.cloud.internal.cursor_cloud_internal.build_start_composer_request`
+          so the dispatch carries the Path-B-only knobs (``mode`` /
+          ``effort`` / ``time_budget`` / ``long_running`` / etc.) the
+          REST gateway rejects.
+
+        Both paths converge on the same downstream surface: the new
+        ``background_composer_id`` is stored as ``cursor_agent_id`` and
+        a ``cloud.queued`` event is appended (with the additional
+        ``auth_mode="session-jwt"`` discriminator field). The poller is
+        intentionally NOT started here — Path-B is experimental (Q-22)
+        and the REST poller (``CloudCursorClient.get_run``) requires a
+        REST API key that the operator may not have configured. The
+        operator can always inspect progress via the Cursor dashboard
+        URL surfaced in the ``cloud.queued`` event.
+        """
+        from popolaloom.cloud.internal import (
+            CursorCloudInternalClient,
+            CursorCloudInternalError,
+        )
+        from popolaloom.cloud.internal.cursor_cloud_internal import (
+            build_start_composer_request,
+        )
+        from popolaloom.cloud.internal.jwt_auth import (
+            JWTAuthError,
+            load_jwt_bundle,
+        )
+        from popolaloom.daemon.state import TaskState
+
+        try:
+            bundle = load_jwt_bundle()
+        except JWTAuthError as exc:
+            return fail_fn(
+                error_kind="path_b_jwt_load_failed",
+                error_detail=f"{exc} | hint: {exc.hint}",
+            )
+
+        repo_url = extra.get("repo_url")
+        if not isinstance(repo_url, str) or not repo_url:
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=(
+                    "path-B requires extra.repo_url (Connect-RPC body needs "
+                    "repos[0].url); pr_url-only dispatch is not supported "
+                    "on the StartBackgroundComposerFromSnapshot RPC"
+                ),
+            )
+
+        starting_ref_raw = extra.get("starting_ref", "main")
+        if not isinstance(starting_ref_raw, str) or not starting_ref_raw:
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail="extra.starting_ref must be non-empty str",
+            )
+
+        model_raw = extra.get("model")
+        model_name: str | None = None
+        if isinstance(model_raw, str) and model_raw and model_raw != "default":
+            model_name = model_raw
+
+        time_budget_raw = extra.get("time_budget", "")
+        if not isinstance(time_budget_raw, (str, int)):
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=(
+                    "extra.time_budget must be str (e.g. '14400s') or int "
+                    "(seconds) when present"
+                ),
+            )
+        try:
+            time_budget_s = _parse_path_b_time_budget(str(time_budget_raw))
+        except ValueError as exc:
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=f"invalid extra.time_budget: {exc}",
+            )
+
+        max_mode_raw = extra.get("max_mode")
+        long_running_raw = extra.get("long_running")
+        auto_proceed_raw = extra.get("auto_proceed_after_plan")
+        for field_name, field_value in (
+            ("max_mode", max_mode_raw),
+            ("long_running", long_running_raw),
+            ("auto_proceed_after_plan", auto_proceed_raw),
+        ):
+            if field_value is not None and not isinstance(field_value, bool):
+                return fail_fn(
+                    error_kind="marker_decode_error",
+                    error_detail=(
+                        f"extra.{field_name} must be bool when present, "
+                        f"got {type(field_value).__name__}"
+                    ),
+                )
+
+        agent_mode = extra.get("mode") or None
+        effort_mode = extra.get("effort") or None
+        thinking_level = extra.get("thinking_level") or None
+        starting_message_type = extra.get("starting_message_type") or None
+        for field_name, field_value in (
+            ("mode", agent_mode),
+            ("effort", effort_mode),
+            ("thinking_level", thinking_level),
+            ("starting_message_type", starting_message_type),
+        ):
+            if field_value is not None and not isinstance(field_value, str):
+                return fail_fn(
+                    error_kind="marker_decode_error",
+                    error_detail=(
+                        f"extra.{field_name} must be str when present, "
+                        f"got {type(field_value).__name__}"
+                    ),
+                )
+
+        try:
+            body = build_start_composer_request(
+                prompt=prompt,
+                repo_url=repo_url,
+                starting_ref=starting_ref_raw,
+                model_name=model_name,
+                max_mode=max_mode_raw,
+                thinking_level=thinking_level,
+                agent_mode=agent_mode,
+                effort_mode=effort_mode,
+                time_budget_s=time_budget_s if time_budget_s > 0 else None,
+                long_running=long_running_raw,
+                auto_proceed_after_planning=auto_proceed_raw,
+                starting_message_type=starting_message_type,
+            )
+        except ValueError as exc:
+            return fail_fn(
+                error_kind="path_b_body_build_failed",
+                error_detail=str(exc),
+            )
+
+        try:
+            with CursorCloudInternalClient(bundle) as client:
+                outcome = client.start_background_composer_from_snapshot(body)
+        except CursorCloudInternalError as exc:
+            return fail_fn(
+                error_kind="path_b_rpc_failed",
+                error_detail=f"{exc} | hint: {exc.hint}",
+            )
+
+        bc_id = outcome.background_composer_id
+        existing_handle = self._state_store.get(task_id) if self._state_store else None
+        if existing_handle is None:
+            return fail_fn(
+                error_kind="path_b_rpc_failed",
+                error_detail=(
+                    f"task_id {task_id} missing from state_store before path-B "
+                    "seed (Popolad pre-register contract violated)"
+                ),
+            )
+        seeded_handle = dataclasses.replace(
+            existing_handle,
+            state=TaskState.STARTING,
+            runtime="cloud",
+            cursor_agent_id=bc_id,
+            cloud_phase="CREATING",
+        )
+        if self._state_store is not None:
+            self._state_store.rehydrate([seeded_handle])
+
+        event_log.append(
+            "cloud.queued",
+            {
+                "task_id": task_id,
+                "agent_id": bc_id,
+                "cursor_agent_id": bc_id,
+                "run_id": None,
+                "runtime": "cloud",
+                "initial_phase": "CREATING",
+                "auth_mode": "session-jwt",
+                "dashboard_url": outcome.dashboard_url,
+            },
+        )
+        logger.info(
+            "cloud (path-B / session-jwt) task queued task=%s "
+            "background_composer_id=%s dashboard=%s",
+            task_id,
+            bc_id,
+            outcome.dashboard_url,
+        )
         return 0
 
     def _drain_stream(

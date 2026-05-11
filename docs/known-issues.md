@@ -16,6 +16,31 @@ addressed in future versions* — file an issue under
 [`.local/feedbacks/`](../.local/feedbacks/) if you hit one and the
 listed workaround does not unblock you.
 
+## v1.1.0 — experimental Path-B RPC endpoint may return HTTP 404
+
+<!-- updated: 2026-05-11 -->
+
+**Limitation.** `--auth-mode=session-jwt` now routes through popolad instead
+of hard-exiting, but Cursor's private
+`StartBackgroundComposerFromSnapshot` Connect-RPC service path is
+reverse-engineered and may drift. A known live probe returned HTTP 404 for
+`https://api2.cursor.sh/aiserver.v1.BackgroundComposerService/StartBackgroundComposerFromSnapshot`.
+
+**Workaround.** Use the stable REST lane for production dispatches:
+
+```bash
+popola dispatch "..." --cli=cursor-cloud --auth-mode=rest
+```
+
+Keep Path-B for experimental advanced controls (`--mode`, `--effort`,
+`--long-running`, `--preset=grind`). The gated test
+`pytest -m real_cursor_cloud_jwt tests/cloud/internal/test_rpc_mock.py`
+records the live endpoint shape when a valid Cursor session JWT and
+`POPOLA_REAL_CURSOR_REPO_URL` are available.
+
+**Tracking.** v1.2.0 follow-up: re-capture Cursor's current private RPC
+descriptor and update `SERVICE_PATH` / method naming if upstream moved it.
+
 ## v0.9.0 — `popola init --target=cloud-only` scaffold expectations (Q-D-4 偏离默认)
 
 <!-- updated: 2026-05-10 -->

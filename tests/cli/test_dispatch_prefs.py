@@ -93,7 +93,7 @@ def test_dispatch_uses_local_default_when_cli_omitted(
     _patch_availability(monkeypatch, {"claude": True})
     mock_client = _mock_dispatch_client(monkeypatch, "claude-pref-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "do local work"])
+    result = runner.invoke(main_app, ["dispatch", "do local work", "--no-wizard"])
 
     assert result.exit_code == 0, _combined_output(result)
     body = _posted_body(mock_client)
@@ -110,7 +110,7 @@ def test_dispatch_uses_cloud_default_and_warns_when_no_self_hosted_worker(
     write_user_preferences_for_cli(UserPreferencesConfig(default_runtime="cloud"))
     mock_client = _mock_dispatch_client(monkeypatch, "cursor-cloud-pref-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "do cloud work"])
+    result = runner.invoke(main_app, ["dispatch", "do cloud work", "--no-wizard"])
 
     assert result.exit_code == 0, _combined_output(result)
     body = _posted_body(mock_client)
@@ -128,7 +128,7 @@ def test_dispatch_ask_each_time_prompts_once(
     _patch_availability(monkeypatch, {"claude": True})
     mock_client = _mock_dispatch_client(monkeypatch, "claude-ask-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "ask me"], input="claude\n")
+    result = runner.invoke(main_app, ["dispatch", "ask me", "--no-wizard"], input="claude\n")
 
     assert result.exit_code == 0, _combined_output(result)
     assert _posted_body(mock_client)["cli"] == "claude"
@@ -148,7 +148,7 @@ def test_dispatch_fallback_chain_uses_next_available_cli(
     _patch_availability(monkeypatch, {"cursor": False, "claude": True, "codex": True})
     mock_client = _mock_dispatch_client(monkeypatch, "claude-fallback-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "fall back"])
+    result = runner.invoke(main_app, ["dispatch", "fall back", "--no-wizard"])
 
     assert result.exit_code == 0, _combined_output(result)
     assert _posted_body(mock_client)["cli"] == "claude"
@@ -166,7 +166,11 @@ def test_dispatch_prompt_each_dispatch_overrides_local_default(
     _patch_availability(monkeypatch, {"cursor": True, "codex": True})
     mock_client = _mock_dispatch_client(monkeypatch, "codex-prompt-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "prompt each"], input="codex\n")
+    result = runner.invoke(
+        main_app,
+        ["dispatch", "prompt each", "--no-wizard"],
+        input="codex\n",
+    )
 
     assert result.exit_code == 0, _combined_output(result)
     assert _posted_body(mock_client)["cli"] == "codex"
