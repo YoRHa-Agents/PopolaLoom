@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "1.0.0"
+version = "1.1.0"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -149,6 +149,7 @@ markers = [
     "nightly: tests run nightly only (Tier 5)",
     "real_cli: tests requiring real cursor/claude/codex binaries",
     "real_cursor_cloud: tests requiring a real CURSOR_API_KEY env var (Tier 4+)",
+    "real_cursor_cloud_jwt: tests requiring a real Cursor session JWT and repo URL",
     "real_lark: tests requiring real Lark bot credentials",
     "real_cloud_hitl: tests requiring CURSOR_API_KEY + Lark webhook + Self-Hosted Worker; not run in default CI",
 ]

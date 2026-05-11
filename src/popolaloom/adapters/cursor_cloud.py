@@ -2788,4 +2788,29 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
         out["cloud_target"] = cloud_target
     if api_key is not None:
         out["api_key"] = api_key
+
+    # v1.1.0 (Track 6) — Path-B (--auth-mode=session-jwt) routing marker
+    # plus the Path-B-only knobs the CLI injected after JWT validation.
+    # The marker is opaque to the REST path (REST never sets it) but the
+    # supervisor reads it to branch into the Connect-RPC client. Without
+    # this allow-list the historical "strip unknown keys" behaviour would
+    # silently drop the Path-B routing data — a No-Silent-Failures
+    # regression that would surface as "session-jwt dispatched but the
+    # daemon ran the REST path anyway".
+    auth_mode_marker = extra.get("__auth_mode__")
+    if auth_mode_marker == "session-jwt":
+        out["__auth_mode__"] = "session-jwt"
+        for path_b_key in (
+            "mode",
+            "max_mode",
+            "effort",
+            "time_budget",
+            "long_running",
+            "auto_proceed_after_plan",
+            "thinking_level",
+            "starting_message_type",
+        ):
+            if path_b_key in extra:
+                out[path_b_key] = extra[path_b_key]
+
     return out

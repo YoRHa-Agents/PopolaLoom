@@ -25,6 +25,7 @@ The wire format expectations below are verbatim from
 from __future__ import annotations
 
 import json
+import os
 import time
 from typing import Any
 
@@ -42,7 +43,7 @@ from popolaloom.cloud.internal.cursor_cloud_internal import (
     user_mode_to_agent_mode,
     user_thinking_level_to_proto,
 )
-from popolaloom.cloud.internal.jwt_auth import JWTBundle
+from popolaloom.cloud.internal.jwt_auth import JWTBundle, load_jwt_bundle
 
 
 def _fake_bundle() -> JWTBundle:
@@ -53,6 +54,29 @@ def _fake_bundle() -> JWTBundle:
         path=None,
         exp_unix_s=int(time.time()) + 7200,
     )
+
+
+@pytest.mark.real_cursor_cloud_jwt
+def test_real_start_background_composer_endpoint_shape() -> None:
+    """Live smoke for the experimental Path-B RPC endpoint.
+
+    Skipped unless the operator opts in with ``pytest -m real_cursor_cloud_jwt``
+    and provides ``POPOLA_REAL_CURSOR_REPO_URL``. This intentionally exercises
+    the current ``SERVICE_PATH`` so Cursor-side 404 drift is caught by the
+    gated lane without burning real cloud runs in default CI.
+    """
+    repo_url = os.environ.get("POPOLA_REAL_CURSOR_REPO_URL", "")
+    if not repo_url:
+        pytest.skip("set POPOLA_REAL_CURSOR_REPO_URL to run live Path-B smoke")
+    bundle = load_jwt_bundle()
+    body = build_start_composer_request(
+        prompt="PopolaLoom Path-B endpoint smoke test. Reply with a short status.",
+        repo_url=repo_url,
+        model_name="default",
+    )
+    with CursorCloudInternalClient(bundle) as client:
+        outcome = client.start_background_composer_from_snapshot(body, timeout_s=30)
+    assert outcome.background_composer_id
 
 
 # ── enum-translation helpers ───────────────────────────────────────────
@@ -102,7 +126,7 @@ def test_build_request_minimal() -> None:
     """Minimum body has prompt + repos with starting_ref defaulting to 'main'."""
     body = build_start_composer_request(prompt="hi", repo_url="https://github.com/x/y")
     assert body == {
-        "prompt": {"text": "hi"},
+        "prompt": "hi",
         "repos": [{"url": "https://github.com/x/y", "starting_ref": "main"}],
     }
 
@@ -365,9 +389,7 @@ def test_start_composer_warns_when_jwt_within_safety_margin(
     soon_exp = int(_time.time()) + 5  # within the 30s safety margin
     header_b64 = _b64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
     payload_b64 = (
-        _b64.urlsafe_b64encode(_json.dumps({"exp": soon_exp}).encode())
-        .rstrip(b"=")
-        .decode()
+        _b64.urlsafe_b64encode(_json.dumps({"exp": soon_exp}).encode()).rstrip(b"=").decode()
     )
     expiring = JWTBundle(
         access_token=f"{header_b64}.{payload_b64}.sig",
@@ -387,13 +409,9 @@ def test_start_composer_warns_when_jwt_within_safety_margin(
     rpc_logger = "popolaloom.cloud.internal.cursor_cloud_internal"
     with caplog.at_level(_logging.WARNING, logger=rpc_logger):
         client.start_background_composer_from_snapshot(
-            build_start_composer_request(
-                prompt="x", repo_url="https://github.com/x/y"
-            )
+            build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
         )
-    assert any(
-        "safety margin" in rec.message for rec in caplog.records
-    ), caplog.text
+    assert any("safety margin" in rec.message for rec in caplog.records), caplog.text
 
 
 def test_start_composer_propagates_httpx_request_error_as_internal_error() -> None:
