@@ -30,6 +30,7 @@ Signal handling:
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import logging
 import os
 import re
@@ -226,16 +227,13 @@ rationale ("regex matches accidentally too much").
 
 _CLOUD_RELAY_LOCK_ERROR_MESSAGES: Final[dict[str, str]] = {
     "require_confirm_allowlist_flag": (
-        "v0.8.8 release lock: require_confirm_allowlist_flag must stay true "
-        "(Q-C-4 mitigation M1)"
+        "v0.8.8 release lock: require_confirm_allowlist_flag must stay true (Q-C-4 mitigation M1)"
     ),
     "secret_scan_enabled": (
-        "v0.8.8 release lock: secret_scan_enabled must stay true "
-        "(Q-C-4 mitigation M3)"
+        "v0.8.8 release lock: secret_scan_enabled must stay true (Q-C-4 mitigation M3)"
     ),
     "dry_run_emits_audit": (
-        "v0.8.8 release lock: dry_run_emits_audit must stay true "
-        "(Q-C-4 mitigation M2)"
+        "v0.8.8 release lock: dry_run_emits_audit must stay true (Q-C-4 mitigation M2)"
     ),
 }
 """Spec-locked error messages for the three v0.8.8-locked bool keys.
@@ -249,14 +247,10 @@ the messages match verbatim.
 
 # ── popolad.toml [user_preferences] loader (v0.9.10) ─────────────────────
 
-USER_PREF_VALID_RUNTIMES: Final[frozenset[str]] = frozenset(
-    {"local", "cloud", "ask-each-time"}
-)
+USER_PREF_VALID_RUNTIMES: Final[frozenset[str]] = frozenset({"local", "cloud", "ask-each-time"})
 """Accepted values for ``[user_preferences].default_runtime``."""
 
-USER_PREF_VALID_CLOUD_TARGETS: Final[frozenset[str]] = frozenset(
-    {"self-hosted", "cursor-managed"}
-)
+USER_PREF_VALID_CLOUD_TARGETS: Final[frozenset[str]] = frozenset({"self-hosted", "cursor-managed"})
 """Accepted entries for ``cloud_target_priority`` (order-sensitive).
 
 Deprecated in v0.10.0 (DECISIONS Q-5): superseded by the single-value
@@ -280,7 +274,7 @@ USER_PREF_VALID_LOCAL_CLIS: Final[frozenset[str]] = frozenset(
 )
 """Accepted local CLI adapter names for preferences."""
 
-_USER_PREF_KNOWN_KEYS: Final[frozenset[str]] = frozenset(
+_USER_PREF_LEGACY_KEYS: Final[frozenset[str]] = frozenset(
     {
         "default_runtime",
         "cloud_target_priority",
@@ -294,12 +288,75 @@ _USER_PREF_KNOWN_KEYS: Final[frozenset[str]] = frozenset(
         "last_set_by",
     }
 )
+"""Legacy flat keys recognised under ``[user_preferences]``."""
+
+_USER_PREF_SECTION_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "schema_version",
+        "routing",
+        "defaults",
+        "cursor",
+        "cursor-cloud",
+        "claude",
+        "codex",
+        "lark",
+        "dispatch",
+    }
+)
+"""Nested v2 child tables recognised under ``[user_preferences]``."""
+
+_USER_PREF_KNOWN_KEYS: Final[frozenset[str]] = _USER_PREF_LEGACY_KEYS | _USER_PREF_SECTION_KEYS
 """All keys recognised under ``[user_preferences]``.
 
 Unlike the cloud v0.8.8 blocks, this section is user-authored by the init
 wizard and CI flags. Unknown keys are therefore rejected so typos do not
 silently change dispatch behavior.
 """
+
+_USER_PREF_ROUTING_KEYS: Final[frozenset[str]] = frozenset(
+    {"default_runtime", "default_local_cli", "fallback_chain", "cloud_target_priority"}
+)
+_USER_PREF_DEFAULTS_KEYS: Final[frozenset[str]] = frozenset(
+    {"wait_timeout_s", "hitl_enabled", "follow_devola_flow", "prompt_each_dispatch"}
+)
+_USER_PREF_CURSOR_KEYS: Final[frozenset[str]] = frozenset({"output_format", "cli_args"})
+_USER_PREF_CURSOR_CLOUD_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "model",
+        "starting_ref",
+        "auto_create_pr",
+        "work_on_current_branch",
+        "skip_reviewer_request",
+        "default_cloud_target",
+        "worker_name",
+        "pool_name",
+    }
+)
+_USER_PREF_CLAUDE_KEYS: Final[frozenset[str]] = frozenset({"max_turns"})
+_USER_PREF_CODEX_KEYS: Final[frozenset[str]] = frozenset({"sandbox"})
+_USER_PREF_LARK_KEYS: Final[frozenset[str]] = frozenset(
+    {
+        "notify_on_completed",
+        "notify_on_failed",
+        "notify_on_canceled",
+        "notify_on_cancel_escalated",
+        "prompt_truncate",
+    }
+)
+_USER_PREF_DISPATCH_KEYS: Final[frozenset[str]] = frozenset(
+    {"ambiguity_resolution", "ask_dimensions"}
+)
+
+USER_PREF_VALID_CURSOR_OUTPUT_FORMATS: Final[frozenset[str]] = frozenset({"text", "stream-json"})
+USER_PREF_VALID_CODEX_SANDBOXES: Final[frozenset[str]] = frozenset(
+    {"read-only", "workspace-write", "danger-full-access"}
+)
+USER_PREF_VALID_AMBIGUITY_RESOLUTION: Final[frozenset[str]] = frozenset(
+    {"prompt", "use-defaults", "fail"}
+)
+USER_PREF_VALID_ASK_DIMENSIONS: Final[frozenset[str]] = frozenset(
+    {"target", "model", "thinking_depth", "special_modes"}
+)
 
 
 _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED: bool = False
@@ -431,30 +488,204 @@ class CloudConfig:
 
 
 @dataclass(frozen=True)
-class UserPreferencesConfig:
-    """Validated ``[user_preferences]`` section of ``popolad.toml``.
-
-    The whole section is optional: :class:`PopoladConfig` stores ``None`` when
-    it is absent so v0.9.9 dispatch behavior (``--cli`` required) is preserved.
-    When the section is present, per-key defaults apply.
-
-    The ``default_cloud_target`` field (v0.10.0, DECISIONS Q-5) is the
-    single-value successor to ``cloud_target_priority`` (now deprecated).
-    Both fields are loaded for the v0.10.x window; the dispatch resolver
-    consults ``default_cloud_target`` first and falls back to
-    ``cloud_target_priority[0]`` only when the new field is at its default.
-    """
+class UserPrefsRouting:
+    """Routing preferences shared by local and cloud dispatch."""
 
     default_runtime: str = "local"
-    cloud_target_priority: tuple[str, ...] = ("self-hosted", "cursor-managed")
-    default_cloud_target: str = "ask-each-time"
     default_local_cli: str = "cursor"
     fallback_chain: tuple[str, ...] = ()
+    cloud_target_priority: tuple[str, ...] = ("self-hosted", "cursor-managed")
+
+
+@dataclass(frozen=True)
+class UserPrefsDefaults:
+    """General dispatch defaults that are not adapter-specific."""
+
+    wait_timeout_s: int = 60
     hitl_enabled: bool = True
     follow_devola_flow: bool = False
     prompt_each_dispatch: bool = False
-    last_set_at: str = ""
-    last_set_by: str = ""
+
+
+@dataclass(frozen=True)
+class UserPrefsCursor:
+    """Local Cursor CLI defaults."""
+
+    output_format: str = "text"
+    cli_args: tuple[str, ...] = ()
+
+
+@dataclass(frozen=True)
+class UserPrefsCursorCloud:
+    """Cursor Cloud defaults."""
+
+    model: str = "default"
+    starting_ref: str = "main"
+    auto_create_pr: bool = False
+    work_on_current_branch: bool = False
+    skip_reviewer_request: bool = False
+    default_cloud_target: str = "ask-each-time"
+    worker_name: str = ""
+    pool_name: str = ""
+
+
+@dataclass(frozen=True)
+class UserPrefsClaude:
+    """Claude Code defaults."""
+
+    max_turns: int = 0
+
+
+@dataclass(frozen=True)
+class UserPrefsCodex:
+    """Codex defaults."""
+
+    sandbox: str = "workspace-write"
+
+
+@dataclass(frozen=True)
+class UserPrefsLark:
+    """Lark notification defaults."""
+
+    notify_on_completed: bool = True
+    notify_on_failed: bool = True
+    notify_on_canceled: bool = True
+    notify_on_cancel_escalated: bool = False
+    prompt_truncate: int = 200
+
+
+@dataclass(frozen=True)
+class UserPrefsDispatch:
+    """Dispatch ambiguity-resolution preferences."""
+
+    ambiguity_resolution: str = "prompt"
+    ask_dimensions: tuple[str, ...] = (
+        "target",
+        "model",
+        "thinking_depth",
+        "special_modes",
+    )
+
+
+@dataclass(frozen=True)
+class UserPreferencesConfig:
+    """Validated ``[user_preferences]`` section of ``popolad.toml``.
+
+    v1.1.0 stores preferences as nested adapter-specific child tables.
+    Compatibility properties keep the historical flat attributes readable
+    for existing dispatch code and tests while newly-written TOML uses
+    ``schema_version = 2``.
+    """
+
+    schema_version: int = field(default=2, init=False)
+    routing: UserPrefsRouting = field(default_factory=UserPrefsRouting, init=False)
+    defaults: UserPrefsDefaults = field(default_factory=UserPrefsDefaults, init=False)
+    cursor: UserPrefsCursor = field(default_factory=UserPrefsCursor, init=False)
+    cursor_cloud: UserPrefsCursorCloud = field(default_factory=UserPrefsCursorCloud, init=False)
+    claude: UserPrefsClaude = field(default_factory=UserPrefsClaude, init=False)
+    codex: UserPrefsCodex = field(default_factory=UserPrefsCodex, init=False)
+    lark: UserPrefsLark = field(default_factory=UserPrefsLark, init=False)
+    dispatch: UserPrefsDispatch = field(default_factory=UserPrefsDispatch, init=False)
+    last_set_at: str = field(default="", init=False)
+    last_set_by: str = field(default="", init=False)
+
+    def __init__(
+        self,
+        *,
+        schema_version: int = 2,
+        routing: UserPrefsRouting | None = None,
+        defaults: UserPrefsDefaults | None = None,
+        cursor: UserPrefsCursor | None = None,
+        cursor_cloud: UserPrefsCursorCloud | None = None,
+        claude: UserPrefsClaude | None = None,
+        codex: UserPrefsCodex | None = None,
+        lark: UserPrefsLark | None = None,
+        dispatch: UserPrefsDispatch | None = None,
+        last_set_at: str = "",
+        last_set_by: str = "",
+        default_runtime: str | None = None,
+        cloud_target_priority: tuple[str, ...] | list[str] | None = None,
+        default_cloud_target: str | None = None,
+        default_local_cli: str | None = None,
+        fallback_chain: tuple[str, ...] | list[str] | None = None,
+        hitl_enabled: bool | None = None,
+        follow_devola_flow: bool | None = None,
+        prompt_each_dispatch: bool | None = None,
+    ) -> None:
+        """Create a v2 config while accepting v1 flat constructor kwargs."""
+        routing_value = routing or UserPrefsRouting()
+        defaults_value = defaults or UserPrefsDefaults()
+        cursor_cloud_value = cursor_cloud or UserPrefsCursorCloud()
+        if default_runtime is not None:
+            routing_value = dataclasses.replace(routing_value, default_runtime=default_runtime)
+        if cloud_target_priority is not None:
+            routing_value = dataclasses.replace(
+                routing_value, cloud_target_priority=tuple(cloud_target_priority)
+            )
+        if default_local_cli is not None:
+            routing_value = dataclasses.replace(routing_value, default_local_cli=default_local_cli)
+        if fallback_chain is not None:
+            routing_value = dataclasses.replace(
+                routing_value, fallback_chain=tuple(fallback_chain)
+            )
+        if default_cloud_target is not None:
+            cursor_cloud_value = dataclasses.replace(
+                cursor_cloud_value, default_cloud_target=default_cloud_target
+            )
+        if hitl_enabled is not None:
+            defaults_value = dataclasses.replace(defaults_value, hitl_enabled=hitl_enabled)
+        if follow_devola_flow is not None:
+            defaults_value = dataclasses.replace(
+                defaults_value, follow_devola_flow=follow_devola_flow
+            )
+        if prompt_each_dispatch is not None:
+            defaults_value = dataclasses.replace(
+                defaults_value, prompt_each_dispatch=prompt_each_dispatch
+            )
+
+        object.__setattr__(self, "schema_version", schema_version)
+        object.__setattr__(self, "routing", routing_value)
+        object.__setattr__(self, "defaults", defaults_value)
+        object.__setattr__(self, "cursor", cursor or UserPrefsCursor())
+        object.__setattr__(self, "cursor_cloud", cursor_cloud_value)
+        object.__setattr__(self, "claude", claude or UserPrefsClaude())
+        object.__setattr__(self, "codex", codex or UserPrefsCodex())
+        object.__setattr__(self, "lark", lark or UserPrefsLark())
+        object.__setattr__(self, "dispatch", dispatch or UserPrefsDispatch())
+        object.__setattr__(self, "last_set_at", last_set_at)
+        object.__setattr__(self, "last_set_by", last_set_by)
+
+    @property
+    def default_runtime(self) -> str:
+        return self.routing.default_runtime
+
+    @property
+    def cloud_target_priority(self) -> tuple[str, ...]:
+        return self.routing.cloud_target_priority
+
+    @property
+    def default_cloud_target(self) -> str:
+        return self.cursor_cloud.default_cloud_target
+
+    @property
+    def default_local_cli(self) -> str:
+        return self.routing.default_local_cli
+
+    @property
+    def fallback_chain(self) -> tuple[str, ...]:
+        return self.routing.fallback_chain
+
+    @property
+    def hitl_enabled(self) -> bool:
+        return self.defaults.hitl_enabled
+
+    @property
+    def follow_devola_flow(self) -> bool:
+        return self.defaults.follow_devola_flow
+
+    @property
+    def prompt_each_dispatch(self) -> bool:
+        return self.defaults.prompt_each_dispatch
 
 
 @dataclass(frozen=True)
@@ -504,9 +735,7 @@ def _require_range(
 ) -> int:
     """Reject ``value`` when outside ``[lo, hi]`` (No Silent Failures)."""
     if value < lo or value > hi:
-        raise ValueError(
-            f"[{section}].{key} in {source} must be in [{lo}, {hi}]; got {value}"
-        )
+        raise ValueError(f"[{section}].{key} in {source} must be in [{lo}, {hi}]; got {value}")
     return value
 
 
@@ -559,8 +788,7 @@ def _require_str_list(
     """Validate that ``value`` is a TOML list of strings."""
     if not isinstance(value, list):
         raise ValueError(
-            f"[{section}].{key} in {source} must be a list of strings; "
-            f"got {type(value).__name__}"
+            f"[{section}].{key} in {source} must be a list of strings; got {type(value).__name__}"
         )
     out: list[str] = []
     for idx, item in enumerate(value):
@@ -588,8 +816,7 @@ def _require_iso_string(
         datetime.fromisoformat(text.replace("Z", "+00:00"))
     except ValueError as exc:
         raise ValueError(
-            f"[{section}].{key} in {source} must be an ISO-8601 string; "
-            f"got {text!r}"
+            f"[{section}].{key} in {source} must be an ISO-8601 string; got {text!r}"
         ) from exc
     return text
 
@@ -678,20 +905,15 @@ def load_popolad_config(path: Path | None = None) -> PopoladConfig:
 
     hitl_section = raw.get("hitl", {})
     if not isinstance(hitl_section, dict):
-        raise ValueError(
-            f"[hitl] in {p} must be a table; got {type(hitl_section).__name__}"
-        )
+        raise ValueError(f"[hitl] in {p} must be a table; got {type(hitl_section).__name__}")
     cloud_section = hitl_section.get("cloud", {})
     if not isinstance(cloud_section, dict):
         raise ValueError(
-            f"[hitl.cloud] in {p} must be a table; "
-            f"got {type(cloud_section).__name__}"
+            f"[hitl.cloud] in {p} must be a table; got {type(cloud_section).__name__}"
         )
 
     timeout_raw = cloud_section.get("timeout_seconds", 1800)
-    timeout_int = _require_int(
-        timeout_raw, section="hitl.cloud", key="timeout_seconds", source=p
-    )
+    timeout_int = _require_int(timeout_raw, section="hitl.cloud", key="timeout_seconds", source=p)
     timeout_int = _require_range(
         timeout_int,
         section="hitl.cloud",
@@ -760,168 +982,520 @@ def _load_user_preferences(
     """Parse + validate optional ``[user_preferences]``.
 
     Missing section returns ``None`` to preserve the v0.9.9 CLI contract.
-    A present empty section returns defaults, and every present key is strictly
-    typed/enum-validated so malformed preferences fail loudly.
+    A present empty section returns defaults. v1 flat keys are accepted,
+    migrated to v2 in memory, and persisted back to disk with a ``.v1.bak``
+    backup when the source file exists.
     """
     if "user_preferences" not in raw:
         return None
     section = raw["user_preferences"]
     if not isinstance(section, dict):
         raise ValueError(
-            f"[user_preferences] in {source} must be a table; "
-            f"got {type(section).__name__}"
+            f"[user_preferences] in {source} must be a table; got {type(section).__name__}"
         )
 
+    _reject_unknown_keys("user_preferences", section, _USER_PREF_KNOWN_KEYS, source)
+    migrated = _migrate_flat_to_nested(section, source=source)
+    prefs = _parse_user_preferences_v2(migrated, source=source)
+    if migrated is not section:
+        _persist_user_preferences_migration(raw, migrated, source=source)
+    return prefs
+
+
+def _migrate_flat_to_nested(
+    section: dict[str, Any],
+    *,
+    source: Path,
+) -> dict[str, Any]:
+    """Return a v2-shaped section, preserving nested keys over legacy flats."""
+    schema_version = _require_int(
+        section.get("schema_version", 1),
+        section="user_preferences",
+        key="schema_version",
+        source=source,
+    )
+    migration_keys = set(section) & (_USER_PREF_LEGACY_KEYS - {"last_set_at", "last_set_by"})
+    has_legacy = bool(migration_keys)
+    if schema_version == 2 and not has_legacy:
+        return section
+    if schema_version not in {1, 2}:
+        raise ValueError(
+            f"[user_preferences].schema_version in {source} must be 1 or 2; got {schema_version}"
+        )
+
+    out: dict[str, Any] = {
+        key: value
+        for key, value in section.items()
+        if key in _USER_PREF_SECTION_KEYS and key != "schema_version"
+    }
+    out["schema_version"] = 2
+    routing = dict(out.get("routing", {}))
+    defaults = dict(out.get("defaults", {}))
+    cursor_cloud = dict(out.get("cursor-cloud", {}))
+
+    legacy_routing = {
+        "default_runtime",
+        "default_local_cli",
+        "fallback_chain",
+        "cloud_target_priority",
+    }
+    for key in legacy_routing:
+        if key in section and key not in routing:
+            routing[key] = section[key]
+    for key in {"hitl_enabled", "follow_devola_flow", "prompt_each_dispatch"}:
+        if key in section and key not in defaults:
+            defaults[key] = section[key]
+    if "default_cloud_target" in section and "default_cloud_target" not in cursor_cloud:
+        cursor_cloud["default_cloud_target"] = section["default_cloud_target"]
+    if routing:
+        out["routing"] = routing
+    if defaults:
+        out["defaults"] = defaults
+    if cursor_cloud:
+        out["cursor-cloud"] = cursor_cloud
+    if "last_set_at" in section:
+        out["last_set_at"] = section["last_set_at"]
+    if "last_set_by" in section:
+        out["last_set_by"] = section["last_set_by"]
+
+    logger.info(
+        "migrated [user_preferences] from flat schema v%s to nested schema v2 "
+        "(legacy keys remain readable); source=%s",
+        schema_version,
+        source,
+    )
+    return out
+
+
+def _table(section: dict[str, Any], key: str, *, source: Path) -> dict[str, Any]:
+    value = section.get(key, {})
+    if not isinstance(value, dict):
+        raise ValueError(
+            f"[user_preferences.{key}] in {source} must be a table; got {type(value).__name__}"
+        )
+    return value
+
+
+def _validate_enum(
+    value: str,
+    valid: frozenset[str],
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> str:
+    if value not in valid:
+        raise ValueError(
+            f"[{section}].{key} in {source} must be one of {sorted(valid)}; got {value!r}"
+        )
+    return value
+
+
+def _validate_str_list_members(
+    values: list[str],
+    valid: frozenset[str],
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> tuple[str, ...]:
+    for idx, item in enumerate(values):
+        if item not in valid:
+            raise ValueError(
+                f"[{section}].{key}[{idx}] in {source} must be one of "
+                f"{sorted(valid)}; got {item!r}"
+            )
+    return tuple(values)
+
+
+def _parse_user_preferences_v2(
+    section: dict[str, Any],
+    *,
+    source: Path,
+) -> UserPreferencesConfig:
+    schema_version = _require_int(
+        section.get("schema_version", 2),
+        section="user_preferences",
+        key="schema_version",
+        source=source,
+    )
+    if schema_version != 2:
+        raise ValueError(
+            f"[user_preferences].schema_version in {source} must be 2 after "
+            f"migration; got {schema_version}"
+        )
+
+    routing_section = _table(section, "routing", source=source)
+    defaults_section = _table(section, "defaults", source=source)
+    cursor_section = _table(section, "cursor", source=source)
+    cursor_cloud_section = _table(section, "cursor-cloud", source=source)
+    claude_section = _table(section, "claude", source=source)
+    codex_section = _table(section, "codex", source=source)
+    lark_section = _table(section, "lark", source=source)
+    dispatch_section = _table(section, "dispatch", source=source)
+
     _reject_unknown_keys(
-        "user_preferences", section, _USER_PREF_KNOWN_KEYS, source
+        "user_preferences.routing", routing_section, _USER_PREF_ROUTING_KEYS, source
+    )
+    _reject_unknown_keys(
+        "user_preferences.defaults", defaults_section, _USER_PREF_DEFAULTS_KEYS, source
+    )
+    _reject_unknown_keys("user_preferences.cursor", cursor_section, _USER_PREF_CURSOR_KEYS, source)
+    _reject_unknown_keys(
+        "user_preferences.cursor-cloud", cursor_cloud_section, _USER_PREF_CURSOR_CLOUD_KEYS, source
+    )
+    _reject_unknown_keys("user_preferences.claude", claude_section, _USER_PREF_CLAUDE_KEYS, source)
+    _reject_unknown_keys("user_preferences.codex", codex_section, _USER_PREF_CODEX_KEYS, source)
+    _reject_unknown_keys("user_preferences.lark", lark_section, _USER_PREF_LARK_KEYS, source)
+    _reject_unknown_keys(
+        "user_preferences.dispatch", dispatch_section, _USER_PREF_DISPATCH_KEYS, source
     )
 
-    default_runtime = _require_str(
-        section.get("default_runtime", "local"),
-        section="user_preferences",
+    default_runtime = _validate_enum(
+        _require_str(
+            routing_section.get("default_runtime", "local"),
+            section="user_preferences.routing",
+            key="default_runtime",
+            source=source,
+        ),
+        USER_PREF_VALID_RUNTIMES,
+        section="user_preferences.routing",
         key="default_runtime",
         source=source,
     )
-    if default_runtime not in USER_PREF_VALID_RUNTIMES:
-        raise ValueError(
-            f"[user_preferences].default_runtime in {source} must be one of "
-            f"{sorted(USER_PREF_VALID_RUNTIMES)}; got {default_runtime!r}"
-        )
-
-    cloud_target_priority = _require_str_list(
-        section.get("cloud_target_priority", ["self-hosted", "cursor-managed"]),
-        section="user_preferences",
-        key="cloud_target_priority",
-        source=source,
-    )
-    for idx, item in enumerate(cloud_target_priority):
-        if item not in USER_PREF_VALID_CLOUD_TARGETS:
-            raise ValueError(
-                f"[user_preferences].cloud_target_priority[{idx}] in {source} "
-                f"must be one of {sorted(USER_PREF_VALID_CLOUD_TARGETS)}; "
-                f"got {item!r}"
-            )
-
-    default_cloud_target = _require_str(
-        section.get("default_cloud_target", "ask-each-time"),
-        section="user_preferences",
-        key="default_cloud_target",
-        source=source,
-    )
-    if default_cloud_target not in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
-        raise ValueError(
-            f"[user_preferences].default_cloud_target in {source} must be one "
-            f"of {sorted(USER_PREF_VALID_DEFAULT_CLOUD_TARGET)}; "
-            f"got {default_cloud_target!r}"
-        )
-
-    default_local_cli = _require_str(
-        section.get("default_local_cli", "cursor"),
-        section="user_preferences",
+    default_local_cli = _validate_enum(
+        _require_str(
+            routing_section.get("default_local_cli", "cursor"),
+            section="user_preferences.routing",
+            key="default_local_cli",
+            source=source,
+        ),
+        USER_PREF_VALID_LOCAL_CLIS,
+        section="user_preferences.routing",
         key="default_local_cli",
         source=source,
     )
-    if default_local_cli not in USER_PREF_VALID_LOCAL_CLIS:
-        raise ValueError(
-            f"[user_preferences].default_local_cli in {source} must be one of "
-            f"{sorted(USER_PREF_VALID_LOCAL_CLIS)}; got {default_local_cli!r}"
-        )
-
-    fallback_chain = _require_str_list(
-        section.get("fallback_chain", []),
-        section="user_preferences",
+    fallback_chain = _validate_str_list_members(
+        _require_str_list(
+            routing_section.get("fallback_chain", []),
+            section="user_preferences.routing",
+            key="fallback_chain",
+            source=source,
+        ),
+        USER_PREF_VALID_LOCAL_CLIS,
+        section="user_preferences.routing",
         key="fallback_chain",
         source=source,
     )
-    for idx, item in enumerate(fallback_chain):
-        if item not in USER_PREF_VALID_LOCAL_CLIS:
-            raise ValueError(
-                f"[user_preferences].fallback_chain[{idx}] in {source} "
-                f"must be one of {sorted(USER_PREF_VALID_LOCAL_CLIS)}; "
-                f"got {item!r}"
-            )
+    cloud_target_priority = _validate_str_list_members(
+        _require_str_list(
+            routing_section.get("cloud_target_priority", ["self-hosted", "cursor-managed"]),
+            section="user_preferences.routing",
+            key="cloud_target_priority",
+            source=source,
+        ),
+        USER_PREF_VALID_CLOUD_TARGETS,
+        section="user_preferences.routing",
+        key="cloud_target_priority",
+        source=source,
+    )
+    cursor_output_format = _validate_enum(
+        _require_str(
+            cursor_section.get("output_format", "text"),
+            section="user_preferences.cursor",
+            key="output_format",
+            source=source,
+        ),
+        USER_PREF_VALID_CURSOR_OUTPUT_FORMATS,
+        section="user_preferences.cursor",
+        key="output_format",
+        source=source,
+    )
+    default_cloud_target = _validate_enum(
+        _require_str(
+            cursor_cloud_section.get("default_cloud_target", "ask-each-time"),
+            section="user_preferences.cursor-cloud",
+            key="default_cloud_target",
+            source=source,
+        ),
+        USER_PREF_VALID_DEFAULT_CLOUD_TARGET,
+        section="user_preferences.cursor-cloud",
+        key="default_cloud_target",
+        source=source,
+    )
+    codex_sandbox = _validate_enum(
+        _require_str(
+            codex_section.get("sandbox", "workspace-write"),
+            section="user_preferences.codex",
+            key="sandbox",
+            source=source,
+        ),
+        USER_PREF_VALID_CODEX_SANDBOXES,
+        section="user_preferences.codex",
+        key="sandbox",
+        source=source,
+    )
+    ambiguity_resolution = _validate_enum(
+        _require_str(
+            dispatch_section.get("ambiguity_resolution", "prompt"),
+            section="user_preferences.dispatch",
+            key="ambiguity_resolution",
+            source=source,
+        ),
+        USER_PREF_VALID_AMBIGUITY_RESOLUTION,
+        section="user_preferences.dispatch",
+        key="ambiguity_resolution",
+        source=source,
+    )
+    ask_dimensions = _validate_str_list_members(
+        _require_str_list(
+            dispatch_section.get(
+                "ask_dimensions", ["target", "model", "thinking_depth", "special_modes"]
+            ),
+            section="user_preferences.dispatch",
+            key="ask_dimensions",
+            source=source,
+        ),
+        USER_PREF_VALID_ASK_DIMENSIONS,
+        section="user_preferences.dispatch",
+        key="ask_dimensions",
+        source=source,
+    )
 
-    hitl_enabled = _require_bool(
-        section.get("hitl_enabled", True),
-        section="user_preferences",
-        key="hitl_enabled",
-        source=source,
-    )
-    follow_devola_flow = _require_bool(
-        section.get("follow_devola_flow", False),
-        section="user_preferences",
-        key="follow_devola_flow",
-        source=source,
-    )
-    prompt_each_dispatch = _require_bool(
-        section.get("prompt_each_dispatch", False),
-        section="user_preferences",
-        key="prompt_each_dispatch",
-        source=source,
-    )
-    last_set_at = _require_iso_string(
-        section.get("last_set_at", ""),
-        section="user_preferences",
-        key="last_set_at",
-        source=source,
-    )
-    last_set_by = _require_str(
-        section.get("last_set_by", ""),
-        section="user_preferences",
-        key="last_set_by",
-        source=source,
-    )
-
-    # v0.10.0 DECISIONS Q-5 / PLAN B1 AC 6: deprecation WARN for the legacy
-    # `cloud_target_priority` field. Fires exactly once per process — only
-    # when (a) the operator's TOML explicitly sets `cloud_target_priority`
-    # (so we don't pester users on fresh installs) AND (b) the operator has
-    # NOT yet migrated (i.e. `default_cloud_target` is still at default).
     global _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED
     if (
         not _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED
-        and "cloud_target_priority" in section
+        and "cloud_target_priority" in routing_section
         and default_cloud_target == "ask-each-time"
     ):
         logger.warning(
-            "cloud_target_priority is deprecated as of v0.10.0; "
-            "use default_cloud_target instead"
+            "cloud_target_priority is deprecated as of v0.10.0; use default_cloud_target instead"
         )
         _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED = True
 
     return UserPreferencesConfig(
-        default_runtime=default_runtime,
-        cloud_target_priority=tuple(cloud_target_priority),
-        default_cloud_target=default_cloud_target,
-        default_local_cli=default_local_cli,
-        fallback_chain=tuple(fallback_chain),
-        hitl_enabled=hitl_enabled,
-        follow_devola_flow=follow_devola_flow,
-        prompt_each_dispatch=prompt_each_dispatch,
-        last_set_at=last_set_at,
-        last_set_by=last_set_by,
+        schema_version=2,
+        routing=UserPrefsRouting(
+            default_runtime=default_runtime,
+            default_local_cli=default_local_cli,
+            fallback_chain=fallback_chain,
+            cloud_target_priority=cloud_target_priority,
+        ),
+        defaults=UserPrefsDefaults(
+            wait_timeout_s=_require_int(
+                defaults_section.get("wait_timeout_s", 60),
+                section="user_preferences.defaults",
+                key="wait_timeout_s",
+                source=source,
+            ),
+            hitl_enabled=_require_bool(
+                defaults_section.get("hitl_enabled", True),
+                section="user_preferences.defaults",
+                key="hitl_enabled",
+                source=source,
+            ),
+            follow_devola_flow=_require_bool(
+                defaults_section.get("follow_devola_flow", False),
+                section="user_preferences.defaults",
+                key="follow_devola_flow",
+                source=source,
+            ),
+            prompt_each_dispatch=_require_bool(
+                defaults_section.get("prompt_each_dispatch", False),
+                section="user_preferences.defaults",
+                key="prompt_each_dispatch",
+                source=source,
+            ),
+        ),
+        cursor=UserPrefsCursor(
+            output_format=cursor_output_format,
+            cli_args=tuple(
+                _require_str_list(
+                    cursor_section.get("cli_args", []),
+                    section="user_preferences.cursor",
+                    key="cli_args",
+                    source=source,
+                )
+            ),
+        ),
+        cursor_cloud=UserPrefsCursorCloud(
+            model=_require_str(
+                cursor_cloud_section.get("model", "default"),
+                section="user_preferences.cursor-cloud",
+                key="model",
+                source=source,
+            ),
+            starting_ref=_require_str(
+                cursor_cloud_section.get("starting_ref", "main"),
+                section="user_preferences.cursor-cloud",
+                key="starting_ref",
+                source=source,
+            ),
+            auto_create_pr=_require_bool(
+                cursor_cloud_section.get("auto_create_pr", False),
+                section="user_preferences.cursor-cloud",
+                key="auto_create_pr",
+                source=source,
+            ),
+            work_on_current_branch=_require_bool(
+                cursor_cloud_section.get("work_on_current_branch", False),
+                section="user_preferences.cursor-cloud",
+                key="work_on_current_branch",
+                source=source,
+            ),
+            skip_reviewer_request=_require_bool(
+                cursor_cloud_section.get("skip_reviewer_request", False),
+                section="user_preferences.cursor-cloud",
+                key="skip_reviewer_request",
+                source=source,
+            ),
+            default_cloud_target=default_cloud_target,
+            worker_name=_require_str(
+                cursor_cloud_section.get("worker_name", ""),
+                section="user_preferences.cursor-cloud",
+                key="worker_name",
+                source=source,
+            ),
+            pool_name=_require_str(
+                cursor_cloud_section.get("pool_name", ""),
+                section="user_preferences.cursor-cloud",
+                key="pool_name",
+                source=source,
+            ),
+        ),
+        claude=UserPrefsClaude(
+            max_turns=_require_int(
+                claude_section.get("max_turns", 0),
+                section="user_preferences.claude",
+                key="max_turns",
+                source=source,
+            )
+        ),
+        codex=UserPrefsCodex(sandbox=codex_sandbox),
+        lark=UserPrefsLark(
+            notify_on_completed=_require_bool(
+                lark_section.get("notify_on_completed", True),
+                section="user_preferences.lark",
+                key="notify_on_completed",
+                source=source,
+            ),
+            notify_on_failed=_require_bool(
+                lark_section.get("notify_on_failed", True),
+                section="user_preferences.lark",
+                key="notify_on_failed",
+                source=source,
+            ),
+            notify_on_canceled=_require_bool(
+                lark_section.get("notify_on_canceled", True),
+                section="user_preferences.lark",
+                key="notify_on_canceled",
+                source=source,
+            ),
+            notify_on_cancel_escalated=_require_bool(
+                lark_section.get("notify_on_cancel_escalated", False),
+                section="user_preferences.lark",
+                key="notify_on_cancel_escalated",
+                source=source,
+            ),
+            prompt_truncate=_require_int(
+                lark_section.get("prompt_truncate", 200),
+                section="user_preferences.lark",
+                key="prompt_truncate",
+                source=source,
+            ),
+        ),
+        dispatch=UserPrefsDispatch(
+            ambiguity_resolution=ambiguity_resolution,
+            ask_dimensions=ask_dimensions,
+        ),
+        last_set_at=_require_iso_string(
+            section.get("last_set_at", ""),
+            section="user_preferences",
+            key="last_set_at",
+            source=source,
+        ),
+        last_set_by=_require_str(
+            section.get("last_set_by", ""),
+            section="user_preferences",
+            key="last_set_by",
+            source=source,
+        ),
     )
+
+
+def _persist_user_preferences_migration(
+    raw: dict[str, Any],
+    migrated_section: dict[str, Any],
+    *,
+    source: Path,
+) -> None:
+    """Write ``popolad.toml.v1.bak`` + migrated v2 TOML when loading a file."""
+    if not source.exists():
+        return
+    try:
+        import shutil
+
+        import tomli_w
+
+        backup = source.with_name(f"{source.name}.v1.bak")
+        if not backup.exists():
+            shutil.copy2(source, backup)
+        updated = dict(raw)
+        updated["user_preferences"] = migrated_section
+        source.write_text(tomli_w.dumps(updated), encoding="utf-8", newline="\n")
+    except OSError as exc:
+        logger.warning(
+            "failed to persist [user_preferences] v2 migration for %s: %s",
+            source,
+            exc,
+        )
 
 
 def user_preferences_to_toml_dict(
     config: UserPreferencesConfig,
 ) -> dict[str, Any]:
-    """Return a TOML-serializable ``[user_preferences]`` dict.
-
-    v0.10.0 (DECISIONS Q-5 / PLAN B1 AC 5) added ``default_cloud_target``
-    alongside the legacy ``cloud_target_priority`` list — both are
-    serialized for the v0.10.x window so a freshly-written TOML file can
-    be re-loaded round-trip without losing fields.
-    """
+    """Return a TOML-serializable nested ``[user_preferences]`` dict."""
     return {
-        "default_runtime": config.default_runtime,
-        "cloud_target_priority": list(config.cloud_target_priority),
-        "default_cloud_target": config.default_cloud_target,
-        "default_local_cli": config.default_local_cli,
-        "fallback_chain": list(config.fallback_chain),
-        "hitl_enabled": config.hitl_enabled,
-        "follow_devola_flow": config.follow_devola_flow,
-        "prompt_each_dispatch": config.prompt_each_dispatch,
+        "schema_version": 2,
+        "routing": {
+            "default_runtime": config.routing.default_runtime,
+            "default_local_cli": config.routing.default_local_cli,
+            "fallback_chain": list(config.routing.fallback_chain),
+            "cloud_target_priority": list(config.routing.cloud_target_priority),
+        },
+        "defaults": {
+            "wait_timeout_s": config.defaults.wait_timeout_s,
+            "hitl_enabled": config.defaults.hitl_enabled,
+            "follow_devola_flow": config.defaults.follow_devola_flow,
+            "prompt_each_dispatch": config.defaults.prompt_each_dispatch,
+        },
+        "cursor": {
+            "output_format": config.cursor.output_format,
+            "cli_args": list(config.cursor.cli_args),
+        },
+        "cursor-cloud": {
+            "model": config.cursor_cloud.model,
+            "starting_ref": config.cursor_cloud.starting_ref,
+            "auto_create_pr": config.cursor_cloud.auto_create_pr,
+            "work_on_current_branch": config.cursor_cloud.work_on_current_branch,
+            "skip_reviewer_request": config.cursor_cloud.skip_reviewer_request,
+            "default_cloud_target": config.cursor_cloud.default_cloud_target,
+            "worker_name": config.cursor_cloud.worker_name,
+            "pool_name": config.cursor_cloud.pool_name,
+        },
+        "claude": {"max_turns": config.claude.max_turns},
+        "codex": {"sandbox": config.codex.sandbox},
+        "lark": {
+            "notify_on_completed": config.lark.notify_on_completed,
+            "notify_on_failed": config.lark.notify_on_failed,
+            "notify_on_canceled": config.lark.notify_on_canceled,
+            "notify_on_cancel_escalated": config.lark.notify_on_cancel_escalated,
+            "prompt_truncate": config.lark.prompt_truncate,
+        },
+        "dispatch": {
+            "ambiguity_resolution": config.dispatch.ambiguity_resolution,
+            "ask_dimensions": list(config.dispatch.ask_dimensions),
+        },
         "last_set_at": config.last_set_at,
         "last_set_by": config.last_set_by,
     }
@@ -943,19 +1517,14 @@ def _load_cloud_backoff(raw: dict[str, Any], *, source: Path) -> BackoffConfig:
     """
     cloud_top = raw.get("cloud", {})
     if not isinstance(cloud_top, dict):
-        raise ValueError(
-            f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}"
-        )
+        raise ValueError(f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}")
     backoff_section = cloud_top.get("backoff", {})
     if not isinstance(backoff_section, dict):
         raise ValueError(
-            f"[cloud.backoff] in {source} must be a table; "
-            f"got {type(backoff_section).__name__}"
+            f"[cloud.backoff] in {source} must be a table; got {type(backoff_section).__name__}"
         )
 
-    _warn_unknown_keys(
-        "cloud.backoff", backoff_section, _CLOUD_BACKOFF_KNOWN_KEYS, source
-    )
+    _warn_unknown_keys("cloud.backoff", backoff_section, _CLOUD_BACKOFF_KNOWN_KEYS, source)
 
     max_retries_raw = backoff_section.get("max_retries", 5)
     max_retries_int = _require_int(
@@ -1066,19 +1635,14 @@ def _load_cloud_relay(raw: dict[str, Any], *, source: Path) -> CloudRelayConfig:
     """
     cloud_top = raw.get("cloud", {})
     if not isinstance(cloud_top, dict):
-        raise ValueError(
-            f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}"
-        )
+        raise ValueError(f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}")
     relay_section = cloud_top.get("relay", {})
     if not isinstance(relay_section, dict):
         raise ValueError(
-            f"[cloud.relay] in {source} must be a table; "
-            f"got {type(relay_section).__name__}"
+            f"[cloud.relay] in {source} must be a table; got {type(relay_section).__name__}"
         )
 
-    _warn_unknown_keys(
-        "cloud.relay", relay_section, _CLOUD_RELAY_KNOWN_KEYS, source
-    )
+    _warn_unknown_keys("cloud.relay", relay_section, _CLOUD_RELAY_KNOWN_KEYS, source)
 
     mode_raw = relay_section.get("mode", "auto")
     if not isinstance(mode_raw, str):
@@ -1160,9 +1724,7 @@ def _load_cloud_relay(raw: dict[str, Any], *, source: Path) -> CloudRelayConfig:
         source=source,
     )
     if not confirm_flag_bool:
-        raise ValueError(
-            _CLOUD_RELAY_LOCK_ERROR_MESSAGES["require_confirm_allowlist_flag"]
-        )
+        raise ValueError(_CLOUD_RELAY_LOCK_ERROR_MESSAGES["require_confirm_allowlist_flag"])
 
     scan_raw = relay_section.get("secret_scan_enabled", True)
     scan_bool = _require_bool(
@@ -1196,9 +1758,7 @@ def _load_cloud_relay(raw: dict[str, Any], *, source: Path) -> CloudRelayConfig:
     )
 
 
-def _load_cloud_busy_strategy(
-    raw: dict[str, Any], *, source: Path
-) -> BusyStrategyConfig:
+def _load_cloud_busy_strategy(raw: dict[str, Any], *, source: Path) -> BusyStrategyConfig:
     """Parse + validate ``[cloud.busy_strategy]`` per ``quota-config.md`` §2.2.
 
     v0.8.8 T2.2.2. The TOML loader returns dicts for tables; an absent
@@ -1224,14 +1784,11 @@ def _load_cloud_busy_strategy(
     """
     cloud_top = raw.get("cloud", {})
     if not isinstance(cloud_top, dict):
-        raise ValueError(
-            f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}"
-        )
+        raise ValueError(f"[cloud] in {source} must be a table; got {type(cloud_top).__name__}")
     busy_section = cloud_top.get("busy_strategy", {})
     if not isinstance(busy_section, dict):
         raise ValueError(
-            f"[cloud.busy_strategy] in {source} must be a table; "
-            f"got {type(busy_section).__name__}"
+            f"[cloud.busy_strategy] in {source} must be a table; got {type(busy_section).__name__}"
         )
 
     _warn_unknown_keys(
@@ -1302,11 +1859,7 @@ def _load_cloud_busy_strategy(
     # the poll interval must fit within the wait window — else the queue
     # would expire before it is polled even once. The error names both
     # keys so the operator sees the relationship, not just one half.
-    if (
-        mode_raw == "queue"
-        and max_wait_int > 0
-        and poll_int > max_wait_int
-    ):
+    if mode_raw == "queue" and max_wait_int > 0 and poll_int > max_wait_int:
         raise ValueError(
             f"[cloud.busy_strategy] in {source}: queue_poll_interval_s "
             f"({poll_int}) must be <= queue_max_wait_s ({max_wait_int}) "
@@ -1385,9 +1938,7 @@ def _configure_logging(level: int = logging.INFO) -> None:
     enough for journalctl / log file scraping but no third-party dep.
     """
     handler = logging.StreamHandler(sys.stderr)
-    handler.setFormatter(
-        logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s")
-    )
+    handler.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s %(message)s"))
     root = logging.getLogger()
     root.handlers.clear()
     root.addHandler(handler)
@@ -1539,9 +2090,7 @@ def _maybe_wire_lark_supervisor(popolad: Any) -> None:
         return
     target = lark_target_open_id()
     if target is None:
-        logger.info(
-            "lark.supervisor.skipped reason=lark_target_open_id_unset"
-        )
+        logger.info("lark.supervisor.skipped reason=lark_target_open_id_unset")
         return
 
     from popolaloom.lark import lark_allowed_responders
@@ -1628,15 +2177,12 @@ def _build_lark_callbacks(popolad: Any) -> Any:
     from popolaloom.hitl.cloud_bridge import bridge_for_daemon
     from popolaloom.lark.listener import LarkEventCallbacks
 
-    async def on_card_action(
-        event: dict[str, Any], parsed: tuple[str, str]
-    ) -> None:
+    async def on_card_action(event: dict[str, Any], parsed: tuple[str, str]) -> None:
         hitl_id, option_id = parsed
         store = getattr(popolad, "hitl_store", None)
         if store is None:
             logger.debug(
-                "lark.listener.card_action: hitl_store unwired; dropping "
-                "hitl_id=%s option=%s",
+                "lark.listener.card_action: hitl_store unwired; dropping hitl_id=%s option=%s",
                 hitl_id,
                 option_id,
             )
@@ -1702,8 +2248,7 @@ def _build_lark_callbacks(popolad: Any) -> Any:
 
         if not ok and descriptor and descriptor.startswith("mis-route:"):
             logger.warning(
-                "lark.listener.card_action rejected mis-route hitl_id=%s "
-                "sender=%s descriptor=%s",
+                "lark.listener.card_action rejected mis-route hitl_id=%s sender=%s descriptor=%s",
                 hitl_id,
                 sender,
                 descriptor,
@@ -1725,16 +2270,13 @@ def _build_lark_callbacks(popolad: Any) -> Any:
             responder=sender,
         )
 
-    async def on_text_feedback(
-        event: dict[str, Any], parsed: dict[str, str]
-    ) -> None:
+    async def on_text_feedback(event: dict[str, Any], parsed: dict[str, str]) -> None:
         hitl_id = parsed.get("hitl_id", "")
         option_id = parsed.get("option_id", "")
         store = getattr(popolad, "hitl_store", None)
         if store is None:
             logger.debug(
-                "lark.listener.text_feedback: hitl_store unwired; dropping "
-                "hitl_id=%s option=%s",
+                "lark.listener.text_feedback: hitl_store unwired; dropping hitl_id=%s option=%s",
                 hitl_id,
                 option_id,
             )
@@ -1809,6 +2351,7 @@ def _make_supervisor_event_logger() -> Any:
     health alongside the existing ``lark.send.*`` envelopes (v0.3.3
     round-3 lark_health real fixture pattern).
     """
+
     async def _on_event(event: dict[str, str]) -> None:
         logger.info(
             "lark.supervisor.event %s",
@@ -1855,9 +2398,7 @@ async def main(
     # ``CURSOR_API_KEY`` env var are no-ops (env-var precedence wins);
     # malformed lines log a WARN and the daemon continues.
     if credentials.load_env_fallback_into_environ(logger=logger):
-        logger.info(
-            "cursor_api_key.env auto-sourced into environ (v0.9.9 U2 fallback)"
-        )
+        logger.info("cursor_api_key.env auto-sourced into environ (v0.9.9 U2 fallback)")
 
     socket_path = socket_path or get_socket_path()
     events_dir = events_dir or get_events_dir()

@@ -33,6 +33,7 @@ import tomllib
 from pathlib import Path
 
 import pytest
+import tomli_w
 
 from popolaloom.daemon import main as daemon_main
 from popolaloom.daemon.main import (
@@ -190,8 +191,7 @@ def test_user_preferences_to_toml_dict_serializes_new_key() -> None:
     """:func:`user_preferences_to_toml_dict` includes ``default_cloud_target`` (AC 5)."""
     cfg = UserPreferencesConfig(default_cloud_target="cursor-managed")
     payload = user_preferences_to_toml_dict(cfg)
-    assert "default_cloud_target" in payload
-    assert payload["default_cloud_target"] == "cursor-managed"
+    assert payload["cursor-cloud"]["default_cloud_target"] == "cursor-managed"
 
 
 def test_round_trip_serialize_parse(tmp_path: Path) -> None:
@@ -203,20 +203,11 @@ def test_round_trip_serialize_parse(tmp_path: Path) -> None:
     )
     payload = user_preferences_to_toml_dict(cfg_in)
 
-    lines = ["[user_preferences]"]
-    for key, value in payload.items():
-        if isinstance(value, bool):
-            lines.append(f"{key} = {'true' if value else 'false'}")
-        elif isinstance(value, list):
-            inner = ", ".join(f'"{item}"' for item in value)
-            lines.append(f"{key} = [{inner}]")
-        else:
-            lines.append(f'{key} = "{value}"')
-    body = "\n".join(lines) + "\n"
+    body = tomli_w.dumps({"user_preferences": payload})
     p = _write_toml(tmp_path / "popolad.toml", body)
 
     raw = tomllib.loads(p.read_text(encoding="utf-8"))
-    assert raw["user_preferences"]["default_cloud_target"] == "self-hosted"
+    assert raw["user_preferences"]["cursor-cloud"]["default_cloud_target"] == "self-hosted"
 
     cfg_out = load_popolad_config(p).user_preferences
     assert cfg_out is not None
