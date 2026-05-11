@@ -10,12 +10,36 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-Accumulating for the next v1.0.x patch:
+Accumulating for the next v1.1.x patch:
 
-- `BL-v1.0.x-supervisor-path-b` — wire `--auth-mode=session-jwt` through `popolad` so path-B dispatches actually route through `CursorCloudInternalClient` end-to-end.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. v1.0.0 GA temporarily relaxed it 94 → 93 to absorb the 0.69pp transient regression from the v0.10.0 + v1.0.0 GA wave (~5500 net-new LOC; the path-B scaffolding is already at 99 % but the broader cloud_worker_cmd.py / cursor_cloud.py error paths need post-merge soak before targeted test additions). Same pattern as v0.3.0 → v0.3.1 (88 → 90); restoration is a single PR adding ~70 net-new tests on the high-miss-count files.
 
 <!-- updated: 2026-05-11 -->
+
+## [1.1.0] — 2026-05-11
+
+### Added
+
+- Nested v2 `[user_preferences]` schema with routing/defaults/adapter/lark/dispatch sections and automatic v1 flat-key migration with `popolad.toml.v1.bak`.
+- Expanded `popola init prefs --wizard`, `popola init prefs --set section.key=value`, nested `prefs show`, and standalone `popola init prefs --wizard`.
+- `popola dispatch --wizard` option-group Q&A plus implicit ambiguity prompting from `[user_preferences.dispatch]`.
+- Skill Ambiguity Resolution Protocol plus Workflow 11 (guided dispatch) and Workflow 12 (Path-B advanced dispatch).
+- `popola doctor` "User preferences schema" audit row.
+
+### Changed
+
+- Version bumped to `1.1.0` across package metadata, skill frontmatter, and skill marker files.
+- `popolad.toml` sample now documents the nested preferences schema.
+
+### Fixed
+
+- Wired `--auth-mode=session-jwt` through `popolad` to the experimental `CursorCloudInternalClient` branch instead of hard-exiting.
+- Registered `--preset=grind` and forwarded Path-B extras through cursor-cloud normalization.
+- Corrected the Path-B prompt body shape to a plain string per live HTTP 400 feedback.
+
+### Known limitations
+
+- Path-B's private Cursor Connect-RPC endpoint may return HTTP 404 if Cursor moves the service path. Use stable REST (`--auth-mode=rest`) for production dispatches; see `docs/known-issues.md`.
 
 ## [1.0.0] — 2026-05-11
 
