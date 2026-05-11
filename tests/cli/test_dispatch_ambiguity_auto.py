@@ -61,6 +61,7 @@ def test_no_wizard_uses_preferences_silently(
 ) -> None:
     write_user_preferences_for_cli(UserPreferencesConfig(default_local_cli="claude"))
     mock_client = _mock_dispatch_client(monkeypatch)
+    monkeypatch.setattr("popolaloom.cli.main._local_cli_available", lambda _name: True)
     runner = CliRunner()
 
     result = runner.invoke(main_app, ["dispatch", "precise task", "--no-wizard"])

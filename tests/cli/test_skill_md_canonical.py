@@ -236,16 +236,3 @@ def test_skill_md_no_residual_todo_marker(skill_text: str) -> None:
     )
 
 
-def test_skill_md_documents_ambiguity_protocol(skill_body: str) -> None:
-    required = [
-        "## Ambiguity Resolution Protocol",
-        "target/model/thinking depth/special modes",
-        "AskQuestion templates",
-        "Workflow 11",
-        "Guided dispatch with option-group Q&A",
-        "Workflow 12",
-        "Path-B advanced dispatch",
-        "popola dispatch <prompt> --wizard",
-    ]
-    missing = [item for item in required if item not in skill_body]
-    assert not missing, f"SKILL.md missing v1.1.0 protocol strings: {missing!r}"

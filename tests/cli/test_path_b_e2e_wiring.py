@@ -23,6 +23,7 @@ from typing import Any
 from unittest.mock import patch
 
 import pytest
+import typer
 
 from popolaloom.cli.main import (
     _BUILTIN_PRESETS,
@@ -97,23 +98,25 @@ def test_apply_path_b_flags_session_jwt_missing_jwt() -> None:
         hint="Run `cursor login` or export CURSOR_SESSION_JWT.",
     )
     extra: dict[str, Any] = {}
-    with patch(
-        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
-        side_effect=err,
+    with (
+        patch(
+            "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+            side_effect=err,
+        ),
+        pytest.raises(typer.Exit) as exc_info,
     ):
-        with pytest.raises(Exception) as exc_info:
-            _apply_path_b_flags(
-                extra,
-                cli="cursor-cloud",
-                auth_mode="session-jwt",
-                mode="",
-                max_mode=False,
-                effort="high",
-                time_budget="",
-                long_running=True,
-                auto_proceed_after_plan=False,
-                preset="",
-            )
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="high",
+            time_budget="",
+            long_running=True,
+            auto_proceed_after_plan=False,
+            preset="",
+        )
     assert getattr(exc_info.value, "exit_code", None) == 1
     assert extra == {}
 
@@ -126,23 +129,25 @@ def test_apply_path_b_flags_session_jwt_missing_jwt_prints_hint(
         "no JWT available",
         hint="Run `cursor login` 在本机生成 ~/.config/cursor/auth.json",
     )
-    with patch(
-        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
-        side_effect=err,
+    with (
+        patch(
+            "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+            side_effect=err,
+        ),
+        pytest.raises(typer.Exit),
     ):
-        with pytest.raises(Exception):
-            _apply_path_b_flags(
-                {},
-                cli="cursor-cloud",
-                auth_mode="session-jwt",
-                mode="",
-                max_mode=False,
-                effort="",
-                time_budget="",
-                long_running=False,
-                auto_proceed_after_plan=False,
-                preset="",
-            )
+        _apply_path_b_flags(
+            {},
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+        )
     captured = capsys.readouterr()
     assert "could not load a JWT" in captured.err
     assert "cursor login" in captured.err
