@@ -1,4 +1,4 @@
-/* PopolaLoom v0.9.7 — UX extras (vanilla, no deps).
+/* PopolaLoom v1.0.0-pre.1 — UX extras (vanilla, no deps).
  *
  * Two progressive enhancements injected at DOMContentLoaded:
  *
@@ -46,8 +46,22 @@
   function onCopyClick(pre, btn) {
     const text = readCodeText(pre, btn);
     if (!navigator.clipboard || typeof navigator.clipboard.writeText !== 'function') {
-      console.error('[popola.extras] navigator.clipboard unavailable (insecure context?)');
-      flashFeedback(btn, COPY_ERR_GLYPH);
+      const ta = document.createElement('textarea');
+      ta.value = text;
+      ta.setAttribute('readonly', '');
+      ta.style.position = 'fixed';
+      ta.style.left = '-9999px';
+      document.body.appendChild(ta);
+      ta.select();
+      try {
+        const ok = document.execCommand('copy');
+        flashFeedback(btn, ok ? COPY_OK_GLYPH : COPY_ERR_GLYPH);
+      } catch (err) {
+        console.error('[popola.extras] copy fallback failed:', err);
+        flashFeedback(btn, COPY_ERR_GLYPH);
+      } finally {
+        ta.remove();
+      }
       return;
     }
     navigator.clipboard.writeText(text).then(
@@ -60,7 +74,7 @@
   }
 
   function initCopyButtons() {
-    document.querySelectorAll('pre').forEach(pre => {
+    document.querySelectorAll('pre, .terminal-block').forEach(pre => {
       if (pre.querySelector('[data-copy-btn]')) return;
       const btn = document.createElement('button');
       btn.type = 'button';

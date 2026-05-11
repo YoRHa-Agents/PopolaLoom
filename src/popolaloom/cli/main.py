@@ -38,6 +38,7 @@ import logging
 import os
 import threading
 import time
+import tomllib
 import uuid
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -141,6 +142,25 @@ _TERMINAL_STATES: frozenset[str] = frozenset({"completed", "failed", "canceled"}
 
 _POLL_INTERVAL_S: float = 0.5
 _DEFAULT_WAIT_TIMEOUT_S: float = 60.0
+
+_EXIT_INVALID_ARGS: int = 2
+"""Exit code emitted when ``popola dispatch`` rejects an invalid flag combination.
+
+Mirrors the Typer convention (``code=2``) used by other CLI command groups
+(``cli/cloud_cmd.py``, ``cli/relay_cmd.py``, ``cli/auth_cmd.py``) for
+argument-validation failures so script-level branching stays consistent.
+"""
+
+_VALID_CLOUD_TARGETS_DISPATCH: frozenset[str] = frozenset(
+    {"self-hosted", "cursor-managed"}
+)
+"""Cloud targets accepted by ``--cloud-target`` at dispatch time.
+
+``ask-each-time`` is INTENTIONALLY excluded — it is a valid value only for
+``[user_preferences].default_cloud_target`` (Q-5); the dispatch resolver
+must collapse it to ``self-hosted`` or ``cursor-managed`` BEFORE leaving the
+CLI process (DECISIONS Q-6, PLAN B3 AC 3).
+"""
 
 
 # ── transport helpers ────────────────────────────────────────────────────
@@ -277,6 +297,132 @@ def dispatch(
             "cursor-cloud routing: worker_name/pool_name/labels). R-012."
         ),
     ),
+    cloud_target: str = typer.Option(
+        "",
+        "--cloud-target",
+        help=(
+            "Cloud target for this dispatch: 'self-hosted' (route to your own "
+            "registered worker via env={type:'machine',name:<X>}) or "
+            "'cursor-managed' (Cursor's hosted cloud). When set and --cli is "
+            "empty, --cli is auto-set to 'cursor-cloud' (Q-6). Per-task value "
+            "wins over [user_preferences].default_cloud_target (Q-5). "
+            "本次派发的云端目标:'self-hosted'(派发到自己注册的 Worker)或 "
+            "'cursor-managed'(Cursor 托管云)。设定后若 --cli 为空将自动设为 "
+            "'cursor-cloud'。本次任务值优先于 [user_preferences].default_cloud_target。"
+        ),
+    ),
+    worker_name: str = typer.Option(
+        "",
+        "--worker-name",
+        help=(
+            "Self-hosted worker name; REQUIRED iff --cloud-target=self-hosted; "
+            "REJECTED when --cloud-target=cursor-managed (mutual exclusion "
+            "per Q-6). When --cloud-target=self-hosted and the named worker "
+            "is missing, dispatch hard-exits per Q-7's no-fallback contract. "
+            "自托管 Worker 名称;仅在 --cloud-target=self-hosted 时必填,与 "
+            "--cloud-target=cursor-managed 互斥。当 Worker 不存在时,直接退出,"
+            "不会回退到本地执行。"
+        ),
+    ),
+    model: str = typer.Option(
+        "",
+        "--model",
+        help=(
+            "Model id forwarded to the Cursor cloud agent (Q-A1, v1.0.0). "
+            "Equivalent to --cli-flag model=<id>; this flag is the "
+            "discoverable / self-documenting form. Accepted ids are listed "
+            "by GET /v1/models (e.g. 'default', 'gpt-5.5', 'claude-sonnet-4'). "
+            "When empty, Cursor picks the recommended model for the user's "
+            "plan (the v0.10.0 'default' marker). Only consumed by "
+            "cursor-cloud dispatches; ignored for other --cli adapters. "
+            "派发到 Cursor 云端时使用的 model id;留空交由 Cursor 选择默认 model。"
+        ),
+    ),
+    auth_mode: str = typer.Option(
+        "rest",
+        "--auth-mode",
+        help=(
+            "EXPERIMENTAL (v1.0.0 Q-13/Q-22) — auth transport for cursor-cloud "
+            "dispatches: 'rest' (default; uses CURSOR_API_KEY against the "
+            "stable POST /v1/agents schema) or 'session-jwt' (opt-in; uses "
+            "the JWT at ~/.config/cursor/auth.json against the experimental "
+            "Connect-RPC StartBackgroundComposerFromSnapshot endpoint to "
+            "unlock --mode/--max-mode/--effort/--time-budget/--long-running/"
+            "--auto-proceed-after-plan/--preset). Path-B (session-jwt) is "
+            "NOT part of the v1.x SemVer stability surface; Cursor may "
+            "change the wire format without notice. "
+            "(实验性) cursor-cloud 派发使用的鉴权通道;'rest' 为默认稳定接口,"
+            "'session-jwt' 启用实验性 RPC 路径以支持 --mode 等高级控制项。"
+        ),
+    ),
+    mode: str = typer.Option(
+        "",
+        "--mode",
+        help=(
+            "EXPERIMENTAL — agent mode (path-B only): "
+            "agent|ask|plan|debug|triage|project|multitask. "
+            "Requires --auth-mode=session-jwt. "
+            "Agent 工作模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    max_mode: bool = typer.Option(
+        False,
+        "--max-mode/--no-max-mode",
+        help=(
+            "EXPERIMENTAL — enable max-context mode on the chosen model "
+            "(path-B only). Requires --auth-mode=session-jwt. "
+            "启用 max-context 模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    effort: str = typer.Option(
+        "",
+        "--effort",
+        help=(
+            "EXPERIMENTAL — effort_mode (path-B only): low|medium|high. "
+            "Requires --auth-mode=session-jwt. "
+            "Agent 投入深度;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    time_budget: str = typer.Option(
+        "",
+        "--time-budget",
+        help=(
+            "EXPERIMENTAL — time budget (path-B only). Accepted forms: "
+            "bare integer (= seconds), or suffixed '60s' / '30m' / '1h'. "
+            "Requires --auth-mode=session-jwt. "
+            "时间预算;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    long_running: bool = typer.Option(
+        False,
+        "--long-running/--no-long-running",
+        help=(
+            "EXPERIMENTAL — enable long_running_agent_mode (path-B only). "
+            "Requires --auth-mode=session-jwt. "
+            "启用长任务模式;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    auto_proceed_after_plan: bool = typer.Option(
+        False,
+        "--auto-proceed-after-plan/--no-auto-proceed-after-plan",
+        help=(
+            "EXPERIMENTAL — auto_proceed_after_planning (path-B only); "
+            "typically paired with --mode=plan. "
+            "Requires --auth-mode=session-jwt. "
+            "规划完成后自动执行;需要 --auth-mode=session-jwt。"
+        ),
+    ),
+    preset: str = typer.Option(
+        "",
+        "--preset",
+        help=(
+            "EXPERIMENTAL — flag preset (path-B only). Built-in: "
+            "'quick-fix' / 'long-running-plan' / 'exploration' / 'review' "
+            "(Q-17). Custom presets via ~/.config/popola/presets.toml. "
+            "Requires --auth-mode=session-jwt. "
+            "标志预设;需要 --auth-mode=session-jwt。"
+        ),
+    ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,
         "--events-dir",
@@ -326,10 +472,55 @@ def dispatch(
         if not prompt:
             typer.echo("error: missing prompt (or use --replay HANDOFF_ID)", err=True)
             raise typer.Exit(code=2)
-        if not cli:
-            typer.echo("error: --cli is required (or use --replay HANDOFF_ID)", err=True)
-            raise typer.Exit(code=2)
         extra = _parse_cli_flags(cli_flag)
+
+        if cloud_target or worker_name:
+            _validate_cloud_target_flags(cloud_target, worker_name)
+
+        if cloud_target and not cli:
+            logger.info(
+                "auto-setting --cli=cursor-cloud due to --cloud-target=%s",
+                cloud_target,
+            )
+            cli = "cursor-cloud"
+
+        if model:
+            _apply_model_flag(extra, model, cli)
+
+        if not cli:
+            prefs = _load_dispatch_preferences_or_exit()
+            if prefs is None:
+                typer.echo("error: --cli is required (or use --replay HANDOFF_ID)", err=True)
+                raise typer.Exit(code=2)
+            cli, extra = _select_cli_from_preferences(
+                prefs,
+                extra=extra,
+                cwd=cwd,
+                cloud_target_flag=cloud_target,
+                worker_name_flag=worker_name,
+            )
+        elif cli == "cursor-cloud":
+            prefs = _load_dispatch_preferences_or_exit()
+            extra = _apply_cloud_preferences(
+                prefs,
+                extra,
+                cwd=cwd,
+                cloud_target_flag=cloud_target,
+                worker_name_flag=worker_name,
+            )
+
+        _apply_path_b_flags(
+            extra,
+            cli=cli,
+            auth_mode=auth_mode,
+            mode=mode,
+            max_mode=max_mode,
+            effort=effort,
+            time_budget=time_budget,
+            long_running=long_running,
+            auto_proceed_after_plan=auto_proceed_after_plan,
+            preset=preset,
+        )
 
     if events_dir is not None:
         extra.setdefault("__events_dir", str(events_dir))
@@ -1414,6 +1605,573 @@ def _parse_cli_flags(flags: list[str]) -> dict[str, Any]:
             parsed = value
         result[key] = parsed
     return result
+
+
+def _load_dispatch_preferences_or_exit() -> Any | None:
+    """Load ``[user_preferences]`` for dispatch or exit 1 on invalid config."""
+    from popolaloom.cli.init_cmd import load_user_preferences_for_cli
+
+    try:
+        return load_user_preferences_for_cli()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        typer.echo(f"error: invalid popolad.toml user_preferences: {exc}", err=True)
+        raise typer.Exit(code=1) from exc
+
+
+def _select_cli_from_preferences(
+    prefs: Any,
+    *,
+    extra: dict[str, Any],
+    cwd: Path | None,
+    cloud_target_flag: str = "",
+    worker_name_flag: str = "",
+) -> tuple[str, dict[str, Any]]:
+    """Resolve an omitted ``--cli`` using the present preferences block.
+
+    The per-task ``cloud_target_flag`` / ``worker_name_flag`` are forwarded to
+    :func:`_apply_cloud_preferences` so the precedence resolver (B3 AC 4)
+    sees them whenever the runtime resolves to ``cursor-cloud``.
+    """
+    runtime = str(prefs.default_runtime)
+    if bool(prefs.prompt_each_dispatch) or runtime == "ask-each-time":
+        cli = _prompt_cli_from_preferences(prefs)
+    elif runtime == "cloud":
+        cli = "cursor-cloud"
+    else:
+        cli = str(prefs.default_local_cli)
+
+    selected_extra = dict(extra)
+    if bool(prefs.follow_devola_flow):
+        selected_extra.setdefault("follow_devola_flow", True)
+
+    if cli in {"cloud", "cursor-cloud"}:
+        return "cursor-cloud", _apply_cloud_preferences(
+            prefs,
+            selected_extra,
+            cwd=cwd,
+            cloud_target_flag=cloud_target_flag,
+            worker_name_flag=worker_name_flag,
+        )
+
+    if cli not in {"cursor", "claude", "codex", "copilot"}:
+        typer.echo(
+            "error: preference prompt must select one of "
+            "cursor, claude, codex, copilot, cursor-cloud",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+    return _select_available_local_cli(cli, prefs, extra=selected_extra)
+
+
+def _prompt_cli_from_preferences(prefs: Any) -> str:
+    """Prompt once for the runtime/CLI when preferences request it."""
+    default = "cursor-cloud" if prefs.default_runtime == "cloud" else prefs.default_local_cli
+    raw = typer.prompt(
+        "[prefs] CLI for this dispatch (cursor/claude/codex/copilot/cursor-cloud)",
+        default=default,
+    )
+    return str(raw).strip()
+
+
+def _select_available_local_cli(
+    requested: str,
+    prefs: Any,
+    *,
+    extra: dict[str, Any],
+) -> tuple[str, dict[str, Any]]:
+    """Return the first available local CLI from requested + fallback_chain."""
+    candidates: list[str] = []
+    for name in [requested, *list(prefs.fallback_chain)]:
+        if name not in candidates:
+            candidates.append(name)
+
+    unavailable: list[str] = []
+    for candidate in candidates:
+        if _local_cli_available(candidate):
+            if candidate != requested:
+                typer.echo(
+                    f"[prefs] {requested} unavailable; falling back to {candidate}",
+                    err=True,
+                )
+            return candidate, extra
+        unavailable.append(candidate)
+
+    typer.echo(
+        "error: no preferred local CLI adapter is available "
+        f"(checked: {', '.join(unavailable)})",
+        err=True,
+    )
+    raise typer.Exit(code=1)
+
+
+def _local_cli_available(name: str) -> bool:
+    """Return adapter availability, treating unregistered local names as missing."""
+    try:
+        adapter = get_adapter(name)
+    except KeyError:
+        return False
+    try:
+        return bool(adapter.is_available())
+    except Exception as exc:  # noqa: BLE001 - availability failures must be visible
+        typer.echo(f"[prefs] {name} availability check failed: {exc}", err=True)
+        return False
+
+
+def _validate_cloud_target_flags(cloud_target: str, worker_name: str) -> None:
+    """Validate the per-task ``--cloud-target`` / ``--worker-name`` pair.
+
+    Per DECISIONS Q-6 + Q-7 and PLAN B3 AC 3:
+
+    * ``--cloud-target=ask-each-time`` is rejected at dispatch time — the
+      value is only valid as ``[user_preferences].default_cloud_target``;
+      the resolver MUST collapse it before dispatch.
+    * Any other ``--cloud-target`` value outside
+      :data:`_VALID_CLOUD_TARGETS_DISPATCH` (i.e. not in
+      ``{"self-hosted", "cursor-managed"}``) is rejected.
+    * ``--cloud-target=self-hosted`` REQUIRES ``--worker-name``; the
+      resolver has no pref-level fallback for the worker name (the
+      ``[user_preferences]`` schema records a default target only, not a
+      default worker name) — and Q-7 forbids any local-CLI fallback.
+    * ``--cloud-target=cursor-managed`` REJECTS ``--worker-name``: the
+      cursor-managed cloud has no notion of a per-worker route.
+    * ``--worker-name`` outside ``--cloud-target=self-hosted`` is rejected
+      (the ``iff`` semantics in AC 3).
+
+    All invalid combinations exit with :data:`_EXIT_INVALID_ARGS` (2) and a
+    bilingual (English + Chinese) error message — No Silent Failures.
+    """
+    if cloud_target == "ask-each-time":
+        typer.echo(
+            "error: --cloud-target=ask-each-time is invalid at dispatch time; "
+            "use it only as [user_preferences].default_cloud_target. "
+            "Choose --cloud-target=self-hosted or --cloud-target=cursor-managed. "
+            "(--cloud-target=ask-each-time 仅可作为 [user_preferences].default_cloud_target "
+            "的默认值,派发时请明确指定 --cloud-target=self-hosted "
+            "或 --cloud-target=cursor-managed)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if cloud_target and cloud_target not in _VALID_CLOUD_TARGETS_DISPATCH:
+        typer.echo(
+            f"error: --cloud-target={cloud_target!r} is not one of "
+            "{'self-hosted', 'cursor-managed', 'ask-each-time'}. "
+            f"(--cloud-target={cloud_target!r} 取值非法,必须是 "
+            "'self-hosted'、'cursor-managed' 或 'ask-each-time' 之一)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if cloud_target == "self-hosted" and not worker_name:
+        typer.echo(
+            "error: --cloud-target=self-hosted requires --worker-name=<X>. "
+            "Hint: register the worker first with "
+            "`popola cloud worker start --name <X> --worker-dir <repo-root>`; "
+            "no local fallback is taken (Q-7). "
+            "(--cloud-target=self-hosted 必须同时提供 --worker-name=<名称>;"
+            "请先运行 `popola cloud worker start --name <X> --worker-dir <repo-root>` "
+            "注册 Worker;此处不会回退到本地执行)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if cloud_target == "cursor-managed" and worker_name:
+        typer.echo(
+            "error: --cloud-target=cursor-managed cannot be combined with "
+            "--worker-name (mutual exclusion per Q-6); cursor-managed "
+            "dispatches do not route to a named self-hosted worker. "
+            "(--cloud-target=cursor-managed 与 --worker-name 互斥,"
+            "cursor-managed 云端派发不会路由到指定的自托管 Worker)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    if not cloud_target and worker_name:
+        typer.echo(
+            "error: --worker-name requires --cloud-target=self-hosted "
+            "(per Q-6 the iff semantics: --worker-name is meaningful only "
+            "alongside --cloud-target=self-hosted). "
+            "(--worker-name 必须搭配 --cloud-target=self-hosted 使用,"
+            "其它场景下 --worker-name 无意义)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+
+# Q-17 LOCKED — built-in preset catalog. Each entry is a partial dict
+# of (mode, max_mode, effort, time_budget, long_running,
+# auto_proceed_after_plan); the resolver expands it into the equivalent
+# explicit flags (later flags override preset values).
+_BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
+    "quick-fix": {
+        "mode": "agent",
+        "effort": "medium",
+        "time_budget": "600s",
+    },
+    "long-running-plan": {
+        "mode": "plan",
+        "effort": "high",
+        "time_budget": "3600s",
+        "long_running": True,
+        "auto_proceed_after_plan": True,
+    },
+    "exploration": {
+        "mode": "ask",
+        "effort": "medium",
+    },
+    "review": {
+        "mode": "ask",
+        "effort": "high",
+        "max_mode": True,
+    },
+}
+
+
+def _parse_time_budget(value: str) -> int:
+    """Parse a ``--time-budget`` value (Q-18) → seconds (int).
+
+    Accepted forms: ``"60"`` / ``"60s"`` / ``"30m"`` / ``"1h"``. Empty
+    string returns 0; negative values are rejected.
+
+    Raises:
+        typer.BadParameter: with a bilingual hint when the value is
+            unparseable. The CLI surface translates this to exit 2.
+    """
+    import re
+
+    if not value:
+        return 0
+    match = re.fullmatch(r"(\d+)([smh]?)", value.strip())
+    if not match:
+        raise typer.BadParameter(
+            f"--time-budget={value!r} not in accepted forms "
+            f"(integer-seconds | <int>s | <int>m | <int>h); "
+            f"(--time-budget={value!r} 取值非法,可使用 60 / 60s / 30m / 1h)"
+        )
+    n = int(match.group(1))
+    suffix = match.group(2) or "s"
+    multiplier = {"s": 1, "m": 60, "h": 3600}[suffix]
+    return n * multiplier
+
+
+def _apply_preset(
+    extra: dict[str, Any],
+    preset: str,
+    *,
+    explicit: dict[str, Any],
+) -> dict[str, Any]:
+    """Expand ``--preset <name>`` into the path-B extras (Q-17).
+
+    Built-in catalog: see :data:`_BUILTIN_PRESETS`. Custom catalog: read
+    from ``~/.config/popola/presets.toml`` (TOML overlay; v1.0.0 ships
+    the loader but does not require the file to exist). Explicit per-task
+    flags override preset values when both are set (preset is sugar for
+    a flag combination; explicit flags WIN).
+
+    Returns the merged dict (preset defaults + explicit overrides),
+    suitable for direct merge into the ``extra`` dict the dispatcher
+    consumes.
+    """
+    if not preset:
+        return explicit
+    catalog: dict[str, dict[str, Any]] = dict(_BUILTIN_PRESETS)
+    overlay_path = Path.home() / ".config" / "popola" / "presets.toml"
+    if overlay_path.exists():
+        try:
+            import tomllib
+
+            with overlay_path.open("rb") as fp:
+                overlay_data = tomllib.load(fp)
+        except (OSError, tomllib.TOMLDecodeError) as exc:
+            logger.warning(
+                "failed to load custom presets from %s: %s; using built-ins only",
+                overlay_path,
+                exc,
+            )
+        else:
+            for k, v in overlay_data.items():
+                if isinstance(v, dict):
+                    catalog[k] = v
+    if preset not in catalog:
+        valid = sorted(catalog.keys())
+        typer.echo(
+            f"error: --preset={preset!r} not in {valid}; "
+            f"(--preset={preset!r} 必须是 {valid} 之一)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+    base = dict(catalog[preset])
+    base.update(explicit)
+    return base
+
+
+def _apply_path_b_flags(
+    extra: dict[str, Any],
+    *,
+    cli: str,
+    auth_mode: str,
+    mode: str,
+    max_mode: bool,
+    effort: str,
+    time_budget: str,
+    long_running: bool,
+    auto_proceed_after_plan: bool,
+    preset: str,
+) -> None:
+    """Validate Path-B Typer knobs before POST /dispatch (Q-13 / Q-19 / Q-22).
+
+    ``--auth-mode=rest`` (default) rejects Path-B-exclusive flags because the
+    stable REST gateway does not accept those fields.
+
+    ``--auth-mode=session-jwt`` is **not wired** through ``popolad`` yet —
+    callers always receive exit code :data:`_EXIT_INVALID_ARGS` with a bilingual
+    hint recommending ``rest`` so we never enqueue extras that downstream
+    :func:`~popolaloom.adapters.cursor_cloud._normalize_cloud_extra` would
+    silently discard (No Silent Failures).
+    """
+    raw_auth = auth_mode.strip().replace("_", "-").lower()
+    if raw_auth == "jwt":
+        raw_auth = "session-jwt"
+    normalized_auth_modes = frozenset({"rest", "session-jwt"})
+    if raw_auth not in normalized_auth_modes:
+        typer.echo(
+            "error: --auth-mode="
+            f"{auth_mode!r} must be one of {sorted(normalized_auth_modes)} "
+            "(or the shorthand jwt). "
+            f"( --auth-mode 只能是 rest / session-jwt / jwt; "
+            f"当前为 {auth_mode!r} )",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    auth_mode_normalized = raw_auth
+
+    explicit: dict[str, Any] = {}
+    if mode:
+        explicit["mode"] = mode
+    if max_mode:
+        explicit["max_mode"] = True
+    if effort:
+        explicit["effort"] = effort
+    if time_budget:
+        explicit["time_budget"] = time_budget
+    if long_running:
+        explicit["long_running"] = True
+    if auto_proceed_after_plan:
+        explicit["auto_proceed_after_plan"] = True
+
+    merged = _apply_preset(extra, preset, explicit=explicit)
+    if not merged and auth_mode_normalized == "rest":
+        return
+
+    if cli != "cursor-cloud":
+        if merged or auth_mode_normalized == "session-jwt":
+            logger.warning(
+                "path-B flags (--auth-mode=session-jwt or Path-B knobs) apply only "
+                "to cursor-cloud dispatches; ignoring for --cli=%r "
+                "(Path-B/session-jwt 仅作用于 cursor-cloud,已在 --cli=%s 忽略)",
+                cli,
+                cli,
+            )
+        return
+
+    if merged and auth_mode_normalized == "rest":
+        flag_list = sorted(
+            {
+                "--mode" if k == "mode" else (
+                    "--max-mode" if k == "max_mode" else (
+                        "--effort" if k == "effort" else (
+                            "--time-budget" if k == "time_budget" else (
+                                "--long-running" if k == "long_running" else (
+                                    "--auto-proceed-after-plan"
+                                    if k == "auto_proceed_after_plan"
+                                    else f"--{k.replace('_', '-')}"
+                                )
+                            )
+                        )
+                    )
+                )
+                for k in merged
+            }
+        )
+        typer.echo(
+            f"error: path-B flags {flag_list} require --auth-mode=session-jwt "
+            f"(currently --auth-mode=rest). The Cursor REST schema does NOT "
+            f"accept these fields (the gateway returns 'Unrecognized key'). "
+            f"(path-B 标志 {flag_list} 需要 --auth-mode=session-jwt;"
+            f"当前 --auth-mode=rest 不支持这些字段)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    if auth_mode_normalized == "session-jwt":
+        typer.echo(
+            "error: --auth-mode=session-jwt is not wired into popolad yet "
+            "(cursor-cloud supervisor still uses POST /v1/agents / REST). "
+            "Use --auth-mode=rest, or omit Path-B knobs. "
+            "(--auth-mode=session-jwt / Path-B RPC 暂未接入派发器,"
+            "请改用 --auth-mode=rest)",
+            err=True,
+        )
+        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+
+def _apply_model_flag(extra: dict[str, Any], model: str, cli: str) -> None:
+    """Translate the ``--model`` first-class flag into ``extra["model"]``.
+
+    v1.0.0 (Q-A1) — promotes the previously-stringly-typed
+    ``--cli-flag model=<id>`` extras key into a discoverable Typer flag.
+    The flag is only meaningful for cursor-cloud dispatches; non-cloud
+    adapters (cursor / claude / codex / ...) get a soft WARN and the
+    flag is dropped (the adapter would have ignored it anyway).
+
+    Conflict: when both ``--model`` and ``--cli-flag model=<X>`` are
+    supplied, the explicit ``--model`` flag wins, matching the precedent
+    set by ``--cloud-target`` over ``--cli-flag cloud_target=`` in v0.10.0.
+    A bilingual WARN is emitted in that case (No Silent Failures).
+
+    Empty-string ``model`` is a no-op (callers gate on truthiness before
+    calling), preserving the v0.10.0 ``"default"`` model fallback in
+    :func:`popolaloom.adapters.cursor_cloud._normalize_cloud_extra`.
+    """
+    if not model:
+        return
+    if cli and cli != "cursor-cloud":
+        logger.warning(
+            "--model=%r is only consumed by cursor-cloud dispatches; "
+            "ignored for --cli=%r (--model 仅对 cursor-cloud 有效, "
+            "已忽略当前 --cli=%s 的 --model 值)",
+            model,
+            cli,
+            cli,
+        )
+        return
+    existing = extra.get("model")
+    if existing is not None and existing != model:
+        logger.warning(
+            "--model=%r overrides --cli-flag model=%r "
+            "(--model 与 --cli-flag model= 冲突,以 --model 为准)",
+            model,
+            existing,
+        )
+    extra["model"] = model
+
+
+def _apply_cloud_preferences(
+    prefs: Any | None,
+    extra: dict[str, Any],
+    *,
+    cwd: Path | None,
+    cloud_target_flag: str = "",
+    worker_name_flag: str = "",
+) -> dict[str, Any]:
+    """Resolve cloud target precedence: per-task flag > pref > default.
+
+    DECISIONS Q-6 + Q-7 / PLAN B3 AC 4-5 — the precedence is, highest first:
+
+    1. The per-task ``--cloud-target`` / ``--worker-name`` flags (already
+       validated upstream by :func:`_validate_cloud_target_flags`).
+    2. ``[user_preferences].default_cloud_target`` (B1 — single-value
+       field; replaces v0.9.10's ``cloud_target_priority`` list-of-targets).
+    3. The hard-coded ``"ask-each-time"`` default — collapses to a no-op
+       (no ``cloud_target`` / ``worker_name`` written to extras), so the
+       cursor-cloud adapter routes to Cursor's managed cloud without an
+       ``env`` field on the request body.
+
+    The resolver writes the resolved pair into ``extra``:
+    ``extra["cloud_target"] = "self-hosted"|"cursor-managed"`` and (for
+    self-hosted only) ``extra["worker_name"] = <X>``. ``ask-each-time``
+    omits both.
+
+    The legacy ``cloud_target_priority`` list-of-targets path is REMOVED
+    (B1's loader still parses it for back-compat with a one-time
+    deprecation WARN; this resolver no longer consults it).
+
+    Q-7 no-fallback contract: when the resolved target is ``self-hosted``
+    and no worker name is recoverable from (a) the per-task flag, (b) the
+    legacy ``--cli-flag worker_name=`` extra, (c) ``POPOLA_WORKER_NAME`` /
+    ``POPOLA_SELF_HOSTED_WORKER_NAME`` env, or (d) a ``.popola-worker`` /
+    ``.popola/worker_name`` file marker, the resolver hard-fails with
+    :data:`_EXIT_INVALID_ARGS` (2) and a bilingual hint pointing at
+    ``popola cloud worker start --name <X> --worker-dir <repo-root>`` —
+    NOT at any ``--cli=cursor`` local path (No Silent Failures + the
+    user's explicit "no Fall Back" constraint in feedback_for_v0.10.0
+    L5+L11).
+
+    The legacy ``--cli-flag worker_name=`` / ``--cli-flag use_private_worker=``
+    escape hatches still work (per AC 6): they flow through ``extra``
+    unchanged and are translated by A1's ``_normalize_cloud_extra`` inside
+    ``cursor_cloud.py`` (with a ``DeprecationWarning``).
+    """
+    out = dict(extra)
+
+    resolved_target: str
+    resolved_worker_name: str
+    if cloud_target_flag:
+        resolved_target = cloud_target_flag
+        resolved_worker_name = worker_name_flag
+    elif prefs is not None:
+        pref_target = str(getattr(prefs, "default_cloud_target", "ask-each-time"))
+        if pref_target in _VALID_CLOUD_TARGETS_DISPATCH:
+            resolved_target = pref_target
+        else:
+            resolved_target = "ask-each-time"
+        resolved_worker_name = ""
+    else:
+        resolved_target = "ask-each-time"
+        resolved_worker_name = ""
+
+    if resolved_target == "self-hosted" and not resolved_worker_name:
+        detected = _detect_self_hosted_worker_name(cwd, out)
+        if detected:
+            resolved_worker_name = detected
+        else:
+            typer.echo(
+                "error: cloud_target=self-hosted requires a worker name "
+                "(--worker-name=<X>, POPOLA_WORKER_NAME env, or "
+                ".popola-worker / .popola/worker_name file marker). "
+                "Hint: register the worker first with "
+                "`popola cloud worker start --name <X> --worker-dir <repo-root>`; "
+                "no local fallback is taken (Q-7). "
+                "(cloud_target=self-hosted 需要 Worker 名称("
+                "--worker-name=<名称>、POPOLA_WORKER_NAME 环境变量或 "
+                ".popola-worker / .popola/worker_name 文件)。"
+                "请先运行 `popola cloud worker start --name <X> --worker-dir <repo-root>` "
+                "注册 Worker;此处不会回退到本地执行)",
+                err=True,
+            )
+            raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    if resolved_target in _VALID_CLOUD_TARGETS_DISPATCH:
+        out["cloud_target"] = resolved_target
+    elif resolved_target == "ask-each-time":
+        typer.echo(
+            "[prefs] no explicit cloud target (default_cloud_target=ask-each-time); "
+            "falling back to cursor-managed cloud",
+            err=True,
+        )
+    if resolved_worker_name:
+        out["worker_name"] = resolved_worker_name
+    return out
+
+
+def _detect_self_hosted_worker_name(
+    cwd: Path | None,
+    extra: dict[str, Any],
+) -> str | None:
+    """Detect a self-hosted worker route from explicit extras, env, or markers."""
+    raw_extra_worker = extra.get("worker_name")
+    if isinstance(raw_extra_worker, str) and raw_extra_worker.strip():
+        return raw_extra_worker.strip()
+    for env_name in ("POPOLA_SELF_HOSTED_WORKER_NAME", "POPOLA_WORKER_NAME"):
+        value = os.environ.get(env_name, "").strip()
+        if value:
+            return value
+    root = (cwd or Path.cwd()).expanduser()
+    for marker in (root / ".popola-worker", root / ".popola" / "worker_name"):
+        try:
+            value = marker.read_text(encoding="utf-8").strip()
+        except OSError:
+            continue
+        if value:
+            return value
+    return None
 
 
 @dataclass(frozen=True, slots=True)

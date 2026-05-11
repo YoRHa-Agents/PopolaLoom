@@ -111,12 +111,18 @@ def test_new_class_exposes_bilingual_hints_and_cli_exit(
     assert isinstance(raised, CursorCloudError)
 
 
-def test_catalog_has_exactly_17_entries_with_required_fields() -> None:
-    """AC (a): ``_ERROR_CATALOG`` mirrors the §4 YAML — 17 entries, full shape.
+def test_catalog_has_exactly_19_entries_with_required_fields() -> None:
+    """AC5 (v0.10.0): ``_ERROR_CATALOG`` grew 17 → 19 entries.
 
     v0.9.9 Wave-B (B1) appended ``integration_github_app_branch_not_found``
-    so the canonical row count grew from 16 to 17 (closes
-    ``feedback_for_v0.9.7.md`` F4).
+    bringing the count to 17 (closes ``feedback_for_v0.9.7.md`` F4).
+
+    v0.10.0 (DECISIONS Q-9, Wave C2) appended TWO more entries
+    (``repository_required`` for missing ``repos[]``, and
+    ``pr_resolution_failed`` for ``prUrl`` against an uninstalled-App
+    repo) bringing the count to 19. Renamed from
+    ``test_catalog_has_exactly_17_entries_with_required_fields`` so a
+    grep for the old function name surfaces this rename annotation.
     """
     expected_ids = {
         "unauthorized_invalid_key",
@@ -133,11 +139,17 @@ def test_catalog_has_exactly_17_entries_with_required_fields() -> None:
         "integration_github_app_missing",
         "integration_github_app_perms",
         "integration_github_app_branch_not_found",
+        # v0.10.0 (Q-9) additions:
+        "repository_required",
+        "pr_resolution_failed",
         "validation_request_body",
         "rate_limit",
         "backend_5xx",
     }
     assert set(_ERROR_CATALOG.keys()) == expected_ids
+    assert len(_ERROR_CATALOG) == 19, (
+        f"expected catalog count 19 after Q-9 inserts; got {len(_ERROR_CATALOG)}"
+    )
 
     required_fields = {"http", "code", "subclass", "retry", "cli_exit", "hint_en", "hint_zh"}
     for entry_id, entry in _ERROR_CATALOG.items():

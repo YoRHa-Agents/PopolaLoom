@@ -72,7 +72,12 @@ verify the contract end-to-end with ``tmp_path``.
 
 from __future__ import annotations
 
+import getpass
+import json
+import os
+import tomllib
 from collections.abc import Sequence
+from datetime import UTC, datetime
 from enum import StrEnum
 from pathlib import Path
 
@@ -81,6 +86,15 @@ from rich.console import Console
 from rich.table import Table
 
 from popolaloom.cli._skill_source import resolve_skill_source
+from popolaloom.daemon.main import (
+    USER_PREF_VALID_CLOUD_TARGETS,
+    USER_PREF_VALID_DEFAULT_CLOUD_TARGET,
+    USER_PREF_VALID_LOCAL_CLIS,
+    USER_PREF_VALID_RUNTIMES,
+    UserPreferencesConfig,
+    _load_user_preferences,
+    user_preferences_to_toml_dict,
+)
 
 __all__ = ["InitTarget", "app"]
 
@@ -144,6 +158,262 @@ VALID_MODES: frozenset[str] = frozenset({"core", "standard", "full"})
 VALID_TARGETS: frozenset[str] = frozenset(
     {"cursor", "claude", "copilot", "codex", "local"}
 )
+
+
+# ── user_preferences helpers (v0.9.10) ───────────────────────────────────
+
+
+class _PreferencesWizardSkipError(Exception):
+    """Internal sentinel for q/ESC skip during the preferences wizard step."""
+
+
+def _popola_home_for_cli() -> Path:
+    """Return ``$POPOLA_HOME`` or ``~/.popola`` without importing daemon side effects."""
+    home = os.environ.get("POPOLA_HOME")
+    path = Path(home).expanduser().resolve() if home else Path.home() / ".popola"
+    return path
+
+
+def prefs_config_path() -> Path:
+    """Return the ``popolad.toml`` path used by init preference helpers."""
+    return _popola_home_for_cli() / "popolad.toml"
+
+
+def _load_popolad_toml_raw(path: Path) -> dict[str, object]:
+    """Load TOML from ``path`` or return an empty dict when absent."""
+    if not path.exists():
+        return {}
+    with path.open("rb") as fh:
+        raw = tomllib.load(fh)
+    if not isinstance(raw, dict):
+        raise ValueError(f"{path} must contain a TOML table at top level")
+    return raw
+
+
+def load_user_preferences_for_cli(
+    path: Path | None = None,
+) -> UserPreferencesConfig | None:
+    """Load only ``[user_preferences]`` for CLI paths.
+
+    Missing file or missing block returns ``None``. Corrupt TOML or invalid
+    present fields raise so callers can exit non-zero.
+    """
+    p = path or prefs_config_path()
+    raw = _load_popolad_toml_raw(p)
+    return _load_user_preferences(raw, source=p)
+
+
+def write_user_preferences_for_cli(
+    prefs: UserPreferencesConfig,
+    *,
+    path: Path | None = None,
+) -> Path:
+    """Write ``[user_preferences]`` while preserving other TOML sections."""
+    import tomli_w
+
+    p = path or prefs_config_path()
+    raw = _load_popolad_toml_raw(p)
+    raw["user_preferences"] = user_preferences_to_toml_dict(prefs)
+    _load_user_preferences(raw, source=p)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(tomli_w.dumps(raw), encoding="utf-8", newline="\n")
+    return p
+
+
+def delete_user_preferences_for_cli(*, path: Path | None = None) -> bool:
+    """Delete ``[user_preferences]`` while preserving other TOML sections."""
+    import tomli_w
+
+    p = path or prefs_config_path()
+    raw = _load_popolad_toml_raw(p)
+    existed = "user_preferences" in raw
+    if existed:
+        raw.pop("user_preferences", None)
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text(tomli_w.dumps(raw), encoding="utf-8", newline="\n")
+    return existed
+
+
+def _parse_bool_pref(value: str, *, key: str) -> bool:
+    token = value.strip().lower()
+    if token in {"1", "true", "yes", "y", "on"}:
+        return True
+    if token in {"0", "false", "no", "n", "off"}:
+        return False
+    raise ValueError(f"{key} must be a bool (true/false), got {value!r}")
+
+
+def _parse_csv_pref(value: str) -> list[str]:
+    if not value.strip():
+        return []
+    return [item.strip() for item in value.split(",") if item.strip()]
+
+
+def apply_user_preference_sets(
+    assignments: list[str],
+    *,
+    base: UserPreferencesConfig | None = None,
+) -> UserPreferencesConfig:
+    """Apply ``key=value`` assignments to an existing/default preferences block."""
+    prefs = base or UserPreferencesConfig()
+    values = user_preferences_to_toml_dict(prefs)
+    for raw in assignments:
+        if "=" not in raw:
+            raise ValueError(f"--set must be key=value form, got {raw!r}")
+        key, _, value = raw.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if key == "default_runtime":
+            if value not in USER_PREF_VALID_RUNTIMES:
+                raise ValueError(
+                    f"default_runtime must be one of {sorted(USER_PREF_VALID_RUNTIMES)}"
+                )
+            values[key] = value
+        elif key == "cloud_target_priority":
+            parsed = _parse_csv_pref(value)
+            invalid = [item for item in parsed if item not in USER_PREF_VALID_CLOUD_TARGETS]
+            if invalid:
+                raise ValueError(
+                    "cloud_target_priority entries must be one of "
+                    f"{sorted(USER_PREF_VALID_CLOUD_TARGETS)}; got {invalid!r}"
+                )
+            values[key] = parsed
+        elif key == "default_cloud_target":
+            if value not in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
+                raise ValueError(
+                    "default_cloud_target must be one of "
+                    f"{sorted(USER_PREF_VALID_DEFAULT_CLOUD_TARGET)}; got {value!r}"
+                )
+            values[key] = value
+        elif key == "default_local_cli":
+            if value not in USER_PREF_VALID_LOCAL_CLIS:
+                raise ValueError(
+                    f"default_local_cli must be one of {sorted(USER_PREF_VALID_LOCAL_CLIS)}"
+                )
+            values[key] = value
+        elif key == "fallback_chain":
+            parsed = _parse_csv_pref(value)
+            invalid = [item for item in parsed if item not in USER_PREF_VALID_LOCAL_CLIS]
+            if invalid:
+                raise ValueError(
+                    "fallback_chain entries must be one of "
+                    f"{sorted(USER_PREF_VALID_LOCAL_CLIS)}; got {invalid!r}"
+                )
+            values[key] = parsed
+        elif key in {"hitl_enabled", "follow_devola_flow", "prompt_each_dispatch"}:
+            values[key] = _parse_bool_pref(value, key=key)
+        elif key in {"last_set_at", "last_set_by"}:
+            values[key] = value
+        else:
+            known = ", ".join(sorted(user_preferences_to_toml_dict(UserPreferencesConfig())))
+            raise ValueError(f"unknown preference key {key!r}; known keys: {known}")
+    merged = _load_user_preferences({"user_preferences": values}, source=prefs_config_path())
+    assert merged is not None
+    return merged
+
+
+def _prefs_to_output_dict(prefs: UserPreferencesConfig | None) -> dict[str, object]:
+    if prefs is None:
+        return {}
+    return user_preferences_to_toml_dict(prefs)
+
+
+def _print_user_preferences(
+    prefs: UserPreferencesConfig | None,
+    *,
+    json_out: bool,
+) -> None:
+    data = _prefs_to_output_dict(prefs)
+    if json_out:
+        typer.echo(json.dumps(data, ensure_ascii=False, sort_keys=True))
+        return
+    if not data:
+        typer.echo("[user_preferences] not set")
+        return
+    typer.echo("[user_preferences]")
+    for key, value in data.items():
+        if isinstance(value, list):
+            rendered = ",".join(str(item) for item in value)
+        else:
+            rendered = str(value).lower() if isinstance(value, bool) else str(value)
+        typer.echo(f"{key} = {rendered}")
+
+
+def _handle_prefs_cli_error(exc: Exception) -> None:
+    typer.echo(f"error: invalid popolad.toml user_preferences: {exc}", err=True)
+    raise typer.Exit(code=1) from exc
+
+
+prefs_app = typer.Typer(
+    name="prefs",
+    help="Show, set, or reset [user_preferences] in POPOLA_HOME/popolad.toml.",
+    no_args_is_help=False,
+    add_completion=False,
+    invoke_without_command=True,
+)
+
+
+@prefs_app.callback()
+def prefs_callback(
+    ctx: typer.Context,
+    set_values: list[str] = typer.Option(  # noqa: B008
+        [],
+        "--set",
+        help=(
+            "Write a preference key=value assignment. Repeatable; lists use "
+            "comma-separated values, e.g. --set fallback_chain=cursor,claude."
+        ),
+    ),
+) -> None:
+    """Implement ``popola init prefs --set key=value`` and default show."""
+    if set_values:
+        if ctx.invoked_subcommand is not None:
+            raise typer.BadParameter("--set cannot be combined with prefs subcommands")
+        try:
+            current = load_user_preferences_for_cli()
+            prefs = apply_user_preference_sets(set_values, base=current)
+            path = write_user_preferences_for_cli(prefs)
+        except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+            _handle_prefs_cli_error(exc)
+        typer.echo(f"OK wrote [user_preferences] to {path}")
+        raise typer.Exit(code=0)
+
+    if ctx.invoked_subcommand is None:
+        loaded: UserPreferencesConfig | None
+        try:
+            loaded = load_user_preferences_for_cli()
+        except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+            _handle_prefs_cli_error(exc)
+        _print_user_preferences(loaded, json_out=False)
+        raise typer.Exit(code=0)
+
+
+@prefs_app.command("show")
+def prefs_show(
+    json_out: bool = typer.Option(False, "--json", help="Emit JSON."),
+) -> None:
+    """Show the current ``[user_preferences]`` block."""
+    try:
+        prefs = load_user_preferences_for_cli()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        _handle_prefs_cli_error(exc)
+    _print_user_preferences(prefs, json_out=json_out)
+
+
+@prefs_app.command("reset")
+def prefs_reset() -> None:
+    """Delete the ``[user_preferences]`` block."""
+    try:
+        existed = delete_user_preferences_for_cli()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        _handle_prefs_cli_error(exc)
+    if existed:
+        typer.echo("OK deleted [user_preferences]")
+    else:
+        typer.echo("[user_preferences] not set")
+
+
+app.add_typer(prefs_app, name="prefs")
 
 
 # ── path resolvers ────────────────────────────────────────────────────────
@@ -1498,7 +1768,197 @@ def _run_interactive_wizard(
         dry_run=dry_run,
     )
 
+    _run_preferences_wizard_step()
+
     typer.echo("\nInteractive setup complete.")
+
+
+def _is_skip_token(raw: str) -> bool:
+    return raw.strip().lower() in {"q", "quit", "\x1b"}
+
+
+def _prompt_pref_text(label: str, *, default: str) -> str:
+    raw = typer.prompt(label, default=default, show_default=True)
+    value = str(raw)
+    if _is_skip_token(value):
+        raise _PreferencesWizardSkipError
+    return value.strip()
+
+
+def _prompt_pref_bool(label: str, *, default: bool) -> bool:
+    default_token = "Y" if default else "n"
+    while True:
+        raw = _prompt_pref_text(f"{label} [y/n/q]", default=default_token)
+        token = raw.strip().lower()
+        if not token:
+            return default
+        if token in {"y", "yes", "true", "1", "on"}:
+            return True
+        if token in {"n", "no", "false", "0", "off"}:
+            return False
+        typer.echo("  Please answer y, n, or q.")
+
+
+def _prompt_default_cloud_target_with_skip(*, default: str) -> str | None:
+    """Prompt for ``default_cloud_target`` with ``q/ESC`` skip support.
+
+    v0.10.0 Wave B2 (DECISIONS Q-5 / PLAN B2 AC 2). Returns the chosen
+    value (one of :data:`USER_PREF_VALID_DEFAULT_CLOUD_TARGET`) or
+    ``None`` when the operator typed ``q`` / ``ESC`` to skip the prompt.
+
+    Per PLAN B2 AC 2 the prompt label is the verbatim string
+    ``Default cloud target [self-hosted | cursor-managed | ask-each-time, q to skip]``.
+    Per PLAN B2 AC 5 (and the workspace **No Silent Failures** rule)
+    invalid input is rejected with a helpful one-liner and re-prompts;
+    we never silently coerce an unknown value to a default.
+    """
+    label = (
+        "Default cloud target "
+        "[self-hosted | cursor-managed | ask-each-time, q to skip]"
+    )
+    while True:
+        try:
+            raw = typer.prompt(label, default=default, show_default=True)
+        except (typer.Abort, EOFError) as exc:
+            raise _PreferencesWizardSkipError from exc
+        value = str(raw).strip()
+        if _is_skip_token(value):
+            return None
+        if not value:
+            value = default
+        if value in USER_PREF_VALID_DEFAULT_CLOUD_TARGET:
+            return value
+        typer.echo(
+            "  Please answer one of: self-hosted, cursor-managed, "
+            "ask-each-time (or q to skip)."
+        )
+
+
+def _wizard_defaults_from_current(
+    current: UserPreferencesConfig | None,
+) -> UserPreferencesConfig:
+    if current is not None:
+        return current
+    return UserPreferencesConfig(
+        fallback_chain=("cursor", "claude", "codex"),
+        last_set_by="wizard",
+    )
+
+
+def _run_preferences_wizard_step() -> None:
+    """Step 6: collect optional dispatch preferences.
+
+    Old tests and non-interactive invocations may provide no more stdin after
+    the existing init prompts. Treat EOF/abort as "skip preferences" so the
+    original wizard flow remains compatible.
+    """
+    try:
+        current = load_user_preferences_for_cli()
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        _handle_prefs_cli_error(exc)
+    defaults = _wizard_defaults_from_current(current)
+
+    typer.echo("\nStep 6: dispatch preferences")
+    if current is not None:
+        typer.echo("Current [user_preferences]:")
+        _print_user_preferences(current, json_out=False)
+
+    default_cloud_target_value = defaults.default_cloud_target
+    cloud_target_skipped = False
+
+    try:
+        configure = _prompt_pref_text(
+            "Configure dispatch preferences now? [Y/n/q]",
+            default="Y",
+        )
+        if configure.strip().lower() in {"n", "no"}:
+            typer.echo("Preferences skipped.")
+            return
+
+        default_runtime = _prompt_pref_text(
+            "Default runtime (local/cloud/ask-each-time)",
+            default=defaults.default_runtime,
+        )
+        # v0.10.0 Wave B2 (DECISIONS Q-5 / PLAN B2 AC 2+3): the cloud-target
+        # prompt is gated on the just-answered runtime. When runtime=local
+        # we never ask (AC 3 — no implicit value written; the field stays
+        # at its B1-loader default "ask-each-time"). When runtime is cloud
+        # or ask-each-time we ask, with a `q/ESC` skip path that preserves
+        # the existing value rather than writing a wizard choice (AC 4).
+        if default_runtime in {"cloud", "ask-each-time"}:
+            chosen_cloud_target = _prompt_default_cloud_target_with_skip(
+                default=defaults.default_cloud_target,
+            )
+            if chosen_cloud_target is None:
+                cloud_target_skipped = True
+            else:
+                default_cloud_target_value = chosen_cloud_target
+        else:
+            cloud_target_skipped = True
+        cloud_target_priority = tuple(
+            _parse_csv_pref(
+                _prompt_pref_text(
+                    "Cloud target priority",
+                    default=",".join(defaults.cloud_target_priority),
+                )
+            )
+        )
+        default_local_cli = _prompt_pref_text(
+            "Default local CLI (cursor/claude/codex/copilot)",
+            default=defaults.default_local_cli,
+        )
+        fallback_chain = tuple(
+            _parse_csv_pref(
+                _prompt_pref_text(
+                    "Fallback chain (comma-separated; empty for none)",
+                    default=",".join(defaults.fallback_chain),
+                )
+            )
+        )
+        follow_devola_flow = _prompt_pref_bool(
+            "Follow DevolaFlow markers by default?",
+            default=defaults.follow_devola_flow,
+        )
+        hitl_enabled = _prompt_pref_bool(
+            "Enable HITL by default?",
+            default=defaults.hitl_enabled,
+        )
+        prompt_each_dispatch = _prompt_pref_bool(
+            "Prompt on each dispatch?",
+            default=defaults.prompt_each_dispatch,
+        )
+    except (_PreferencesWizardSkipError, typer.Abort, EOFError):
+        typer.echo("Preferences skipped.")
+        return
+
+    cloud_target_display = "(skipped)" if cloud_target_skipped else default_cloud_target_value
+    typer.echo("\nPreferences summary:")
+    typer.echo(f"  default_runtime      = {default_runtime}")
+    typer.echo(f"  default_cloud_target = {cloud_target_display}")
+    typer.echo(f"  default_local_cli    = {default_local_cli}")
+
+    try:
+        prefs = UserPreferencesConfig(
+            default_runtime=default_runtime,
+            cloud_target_priority=cloud_target_priority,
+            default_cloud_target=default_cloud_target_value,
+            default_local_cli=default_local_cli,
+            fallback_chain=fallback_chain,
+            hitl_enabled=hitl_enabled,
+            follow_devola_flow=follow_devola_flow,
+            prompt_each_dispatch=prompt_each_dispatch,
+            last_set_at=datetime.now(UTC).isoformat(timespec="seconds"),
+            last_set_by=getpass.getuser() or "wizard",
+        )
+        parsed = _load_user_preferences(
+            {"user_preferences": user_preferences_to_toml_dict(prefs)},
+            source=prefs_config_path(),
+        )
+        assert parsed is not None
+        path = write_user_preferences_for_cli(parsed)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        _handle_prefs_cli_error(exc)
+    typer.echo(f"Preferences saved to {path}")
 
 
 def _prompt_scope(*, ide: str, default_project: bool) -> str:

@@ -939,6 +939,29 @@ TOML key (which uses the underscored form, matching Python's
 """
 
 
+_DEPRECATION_WARNING_EMITTED: bool = False
+"""Process-lifetime flag gating the one-time ``account_class`` deprecation WARN.
+
+Per DECISIONS Q-10 / PLAN C3 AC 1+3, the v0.9.9 ``account_class``
+field is kept for backward-compat (the enum, ``store_account_class``,
+the ``--account-class`` CLI flag, and the on-disk TOML field all
+remain to avoid API breakage and to preserve telemetry-grade
+distinguishability for callers). The pre-flight gate that consumed
+the value has been removed (Q-4); :func:`get_account_class` now
+emits a single deprecation WARN per process when the stored value is
+non-:data:`AccountClass.UNKNOWN`. Subsequent calls observe this flag
+and stay silent. Tests reset the flag via ``monkeypatch`` between
+scenarios; the autouse fixture in
+``tests/test_credentials_account_class_deprecation.py`` flips it
+back to ``False`` on test entry.
+
+Same fire-once shape as
+:data:`popolaloom.daemon.main._CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED`
+(Wave B1) so operators see a consistent v0.10.0 deprecation cadence
+across the credentials and user-preferences subsystems.
+"""
+
+
 def store_account_class(value: str) -> None:
     """Persist the operator's declared account class into ``credentials.toml``.
 
@@ -989,10 +1012,30 @@ def get_account_class() -> AccountClass:
     ``account_class`` key is missing (pre-v0.9.9 file — backward-compat
     path), or the stored value is unrecognised (defensive: a
     hand-edited TOML with ``account_class = "garbage"`` does not crash
-    the dispatch gate; it simply blocks via the UNKNOWN refusal path).
+    callers; it simply normalises to the UNKNOWN sentinel).
 
-    Used by :func:`popolaloom.cli.cloud_worker_cmd.worker_dispatch_cmd`
-    for the F5 pre-flight gate. Pure read; never writes.
+    .. deprecated:: 0.10.0
+        The v0.9.9 F5 + U1 pre-flight gate that consumed this value
+        has been removed (DECISIONS Q-4 + Q-10): the live REST probes
+        in ``research/01-path-2-live-probe.md`` disconfirmed the
+        Spike-0 BRANCH_B verdict, so the gateway now accepts
+        ``env: {type, name?}`` for both ``personal`` and
+        ``service_account`` keys with no code-path divergence. The
+        helper, the enum, :func:`store_account_class`, the
+        ``--account-class`` CLI flag, and the TOML field are all KEPT
+        for backward compat and telemetry, but the value is no longer
+        consulted by dispatch routing. A one-time ``logger.warning``
+        fires the first time this function returns a non-UNKNOWN
+        value within a process so operators see the deprecation
+        notice once per ``popolad`` lifecycle (gated by the
+        :data:`_DEPRECATION_WARNING_EMITTED` module-level flag).
+        Removal is targeted at v1.1+ per the
+        :doc:`docs/API_STABILITY` deprecation cadence.
+
+    Pure read; never writes. The unrecognised-value branch still
+    logs its own (separate) WARNING because that is a configuration
+    error the operator should fix — independent of the deprecation
+    notice.
     """
     metadata = load_credential_metadata()
     raw = metadata.get(_ACCOUNT_CLASS_KEY)
@@ -1004,7 +1047,7 @@ def get_account_class() -> AccountClass:
     if candidate == "service-account":
         candidate = "service_account"
     try:
-        return AccountClass(candidate)
+        result = AccountClass(candidate)
     except ValueError:
         logger.warning(
             "credentials.toml has unrecognised account_class %r at %s; "
@@ -1014,6 +1057,18 @@ def get_account_class() -> AccountClass:
             metadata_path(),
         )
         return AccountClass.UNKNOWN
+
+    if result is not AccountClass.UNKNOWN:
+        global _DEPRECATION_WARNING_EMITTED
+        if not _DEPRECATION_WARNING_EMITTED:
+            logger.warning(
+                "account_class is deprecated as of v0.10.0; "
+                "the v0.9.9 pre-flight gate has been removed. "
+                "See CHANGELOG.md#v0.10.0"
+            )
+            _DEPRECATION_WARNING_EMITTED = True
+
+    return result
 
 
 def _utc_now_iso() -> str:

@@ -24,9 +24,9 @@
   --bg-primary:       #0a0807;
   --bg-secondary:     #14110d;
   --text-primary:     #e8dfd4;
-  --text-secondary:   #a89580;
-  --accent-primary:   #d4a85a;
-  --accent-secondary: #a07c3e;
+  --text-secondary:   #c2ad96;
+  --accent-primary:   #e0b86c;
+  --accent-secondary: #c79a4f;
   --border-subtle:    #2a2018;
   --code-bg:          #1a160f;
   --shadow-rgb:       0, 0, 0;
@@ -101,6 +101,11 @@ a {
   transition: color 120ms ease;
 }
 a:hover { color: var(--accent-primary); }
+a:focus-visible,
+button:focus-visible {
+  outline: 2px solid var(--accent-primary);
+  outline-offset: 3px;
+}
 
 strong { font-weight: 600; color: var(--text-primary); }
 em { font-style: italic; }
@@ -355,19 +360,60 @@ main.page-content {
   h2 { font-size: 1.6rem; }
   h3 { font-size: 1.3rem; }
 
+  .hero { padding: 3rem 1rem 2rem; }
+  .kpi-strip { grid-template-columns: 1fr 1fr; }
+
   hr.ornament { width: 80%; }
 }
 
 /* 6. Hero block (used by index.md in Stage B) — class .hero */
 .hero {
   text-align: center;
-  padding: 3rem 0 2rem;
+  position: relative;
+  overflow: hidden;
+  padding: 4.5rem 2rem 3rem;
   border-bottom: 1px solid var(--border-subtle);
   margin-bottom: 2rem;
+  background:
+    radial-gradient(circle at 50% 18%, rgba(200, 154, 74, 0.24), transparent 34%),
+    radial-gradient(circle at 16% 12%, rgba(255, 246, 217, 0.5), transparent 28%),
+    linear-gradient(135deg, rgba(255, 255, 255, 0.22), transparent 42%),
+    repeating-linear-gradient(90deg, rgba(var(--shadow-rgb), 0.035) 0 1px, transparent 1px 9px);
+  box-shadow: inset 0 -1px 0 rgba(var(--shadow-rgb), 0.08);
+}
+.hero::before,
+.hero::after {
+  content: '';
+  position: absolute;
+  pointer-events: none;
+}
+.hero::before {
+  inset: 0;
+  background-image:
+    linear-gradient(rgba(var(--shadow-rgb), 0.035) 1px, transparent 1px),
+    linear-gradient(90deg, rgba(var(--shadow-rgb), 0.025) 1px, transparent 1px);
+  background-size: 32px 32px, 32px 32px;
+  mask-image: radial-gradient(circle at center, black 0%, transparent 70%);
+}
+.hero::after {
+  width: 18rem;
+  height: 18rem;
+  left: 50%;
+  top: -8rem;
+  transform: translateX(-50%);
+  background: radial-gradient(circle, rgba(224, 184, 108, 0.36), transparent 68%);
+  filter: blur(4px);
+}
+.hero > * {
+  position: relative;
+  z-index: 1;
 }
 .hero h1 {
   margin-top: 0;
-  font-size: 3rem;
+  font-size: clamp(3.2rem, 9vw, 6.8rem);
+  letter-spacing: -0.055em;
+  line-height: 0.86;
+  text-shadow: 0 10px 36px rgba(var(--shadow-rgb), 0.18);
 }
 .hero h1::after { display: none; }
 .hero .tagline {
@@ -393,13 +439,101 @@ main.page-content {
   font-weight: 600;
   letter-spacing: 0.04em;
   font-size: 0.95rem;
-  transition: background 150ms ease, color 150ms ease;
+  transition: background 150ms ease, color 150ms ease, transform 150ms ease, box-shadow 150ms ease;
 }
 .hero .cta-button:hover,
 .hero .cta-button:focus-visible {
   background: var(--accent-primary);
   color: var(--bg-primary);
-  outline: none;
+  transform: translateY(-1px);
+  box-shadow: 0 8px 22px rgba(var(--shadow-rgb), 0.16);
+}
+
+.kpi-strip {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 0.8rem;
+  margin: -0.6rem 0 2.4rem;
+}
+
+.kpi-strip__item {
+  border: 1px solid var(--border-subtle);
+  background: linear-gradient(180deg, rgba(255, 255, 255, 0.16), transparent), var(--bg-secondary);
+  color: var(--text-primary);
+  padding: 0.9rem;
+  text-align: center;
+  font-family: 'JetBrains Mono', 'SF Mono', Consolas, monospace;
+  font-size: 0.82rem;
+  transition: transform 160ms ease, border-color 160ms ease, box-shadow 160ms ease;
+}
+
+.kpi-strip__item:hover,
+.kpi-strip__item:focus-within {
+  transform: translateY(-3px);
+  border-color: var(--accent-primary);
+  box-shadow: 0 8px 24px rgba(var(--shadow-rgb), 0.12);
+}
+
+.routing-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 1rem;
+  margin: 1.4rem 0 2.2rem;
+}
+
+.routing-card {
+  display: block;
+  padding: 1rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  text-decoration: none;
+  color: var(--text-primary);
+  transition: transform 150ms ease, border-color 150ms ease, box-shadow 150ms ease;
+}
+.routing-card:hover,
+.routing-card:focus-visible {
+  transform: translateY(-2px);
+  border-color: var(--accent-primary);
+  color: var(--text-primary);
+  box-shadow: 0 8px 22px rgba(var(--shadow-rgb), 0.11);
+}
+.routing-card strong {
+  display: block;
+  font-family: 'Cormorant Garamond', Georgia, serif;
+  font-size: 1.25rem;
+  line-height: 1.1;
+}
+.routing-card span {
+  display: block;
+  margin-top: 0.35rem;
+  color: var(--text-secondary);
+  font-size: 0.92rem;
+}
+
+.release-timeline {
+  list-style: none;
+  padding-left: 0;
+  border-left: 1px solid var(--border-subtle);
+  margin: 1.5rem 0 2.4rem 0.65rem;
+}
+.release-timeline li {
+  position: relative;
+  margin: 0;
+  padding: 0.2rem 0 1rem 1.4rem;
+}
+.release-timeline li::before {
+  content: '';
+  position: absolute;
+  left: -0.43rem;
+  top: 0.62rem;
+  width: 0.75rem;
+  height: 0.75rem;
+  border: 1px solid var(--accent-primary);
+  background: var(--bg-primary);
+  transform: rotate(45deg);
+}
+.release-timeline strong {
+  color: var(--accent-secondary);
 }
 
 /* 7. Feature grid (used by index.md) — class .feature-grid */
@@ -413,6 +547,14 @@ main.page-content {
   padding: 1.5rem;
   border: 1px solid var(--border-subtle);
   background: var(--bg-secondary);
+  transform-style: preserve-3d;
+  transition: transform 180ms ease, border-color 180ms ease, box-shadow 180ms ease;
+}
+.feature-card:hover,
+.feature-card:focus-within {
+  transform: perspective(900px) rotateX(1.2deg) rotateY(-1.4deg) translateY(-2px);
+  border-color: var(--accent-primary);
+  box-shadow: 0 10px 26px rgba(var(--shadow-rgb), 0.12);
 }
 .feature-card h3 {
   margin-top: 0;
@@ -435,9 +577,9 @@ main.page-content {
     --bg-primary:       #0a0807;
     --bg-secondary:     #14110d;
     --text-primary:     #e8dfd4;
-    --text-secondary:   #a89580;
-    --accent-primary:   #d4a85a;
-    --accent-secondary: #a07c3e;
+    --text-secondary:   #c2ad96;
+    --accent-primary:   #e0b86c;
+    --accent-secondary: #c79a4f;
     --border-subtle:    #2a2018;
     --code-bg:          #1a160f;
     --shadow-rgb:       0, 0, 0;
@@ -637,6 +779,46 @@ h3:hover .anchor-link,
   margin-top: 0.8rem;
   color: var(--accent-secondary);
   font-weight: 600;
+}
+
+.scenario-figure {
+  margin: 1rem 0 1.2rem;
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  padding: 0.6rem;
+}
+
+.scenario-deliverables {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 0.9rem;
+  margin: 1rem 0 1.4rem;
+}
+
+.scenario-deliverables > div {
+  border: 1px solid var(--border-subtle);
+  background: rgba(var(--header-bg-rgba), 0.42);
+  padding: 0.85rem;
+}
+
+.scenario-deliverables h3,
+.scenario-deliverables h4 {
+  margin-top: 0;
+  font-family: 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+  font-size: 0.95rem;
+}
+
+.command-flow {
+  border: 1px solid var(--border-subtle);
+  background: var(--bg-secondary);
+  padding: 0.8rem 1rem;
+  margin: 1rem 0 1.2rem;
+}
+
+.command-flow summary {
+  cursor: pointer;
+  font-weight: 600;
+  color: var(--accent-secondary);
 }
 
 /* 11. Terminal block (recording-style command flows) */

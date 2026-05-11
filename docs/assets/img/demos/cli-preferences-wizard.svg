@@ -1,0 +1,15 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 320" role="img" aria-labelledby="title desc">
+  <title id="title">CLI preferences wizard</title>
+  <desc id="desc">A warm terminal panel showing Step 6 user preferences.</desc>
+  <rect width="720" height="320" fill="#f4ede4"/>
+  <rect x="44" y="42" width="632" height="236" fill="#14110d" stroke="#c89a4a" stroke-width="3"/>
+  <circle cx="78" cy="72" r="7" fill="#c89a4a"/>
+  <circle cx="102" cy="72" r="7" fill="#8a6936"/>
+  <circle cx="126" cy="72" r="7" fill="#d4c4a8"/>
+  <text x="76" y="126" fill="#e8dfd4" font-family="JetBrains Mono, monospace" font-size="24">Step 6/6: User preferences</text>
+  <text x="76" y="166" fill="#c2ad96" font-family="JetBrains Mono, monospace" font-size="18">default_cli = "cursor"</text>
+  <text x="76" y="198" fill="#c2ad96" font-family="JetBrains Mono, monospace" font-size="18">prefer_streaming = true</text>
+  <text x="76" y="230" fill="#c2ad96" font-family="JetBrains Mono, monospace" font-size="18">profile = "daily-driver"</text>
+  <path d="M520 118h84v84h-84z" fill="none" stroke="#e0b86c" stroke-width="2"/>
+  <path d="M536 160l18 18 34-42" fill="none" stroke="#e0b86c" stroke-width="6"/>
+</svg>

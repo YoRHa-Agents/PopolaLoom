@@ -42,7 +42,7 @@
   "docs.release_notes": "Release Notes（v0.8.0+ 单文件持续更新）",
   "docs.changelog": "CHANGELOG —— v0.0.1 → v0.8.x 完整历史",
   "status.heading": "项目状态",
-  "status.lead": "v0.9.7 延续 v0.9.0 GA 稳定边界，并把公开文档刷新到 cloud worker、安全 key 存储和 Cloud HITL γ 的当前形态。Cursor Cloud dispatch、self-hosted worker handoff、multi-run attach、跨 PR relay 和文件化 handoff 现在共用一套清晰表述。推荐安装路径是 ./install.sh install，需要 OS keyring 时使用 ./install.sh install --with-credentials。",
+  "status.lead": "v1.0.0-pre.1 延续 v0.9.0 GA 稳定边界，同时把 Cursor Cloud dispatch pivot 到 env-shape schema、移除 v0.9.9 account_class gate，并加入 --cloud-target / --worker-name flag 与 no-fallback 契约。Cursor Cloud dispatch、self-hosted worker handoff、multi-run attach、跨 PR relay、文件化 handoff 和偏好感知派发现在共用一张公开地图。",
   "footer.tagline": "织 agent 之机。",
   "notice.en_only": "本页面暂仅有英文版 —— 仅 header / footer / 着陆页支持中文。",
   "nav.design": "设计",

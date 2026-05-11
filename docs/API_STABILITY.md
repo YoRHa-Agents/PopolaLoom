@@ -556,6 +556,33 @@ private API.
 from popolaloom.cli.main import _parse_cli_flags  # 🔴 unstable
 ```
 
+### 3.6 `[user_preferences]` schema (v0.9.10+)
+
+**Why experimental**: v0.9.10 introduces `[user_preferences]` as a
+documented operator-profile schema for repeat dispatch defaults, but it
+needs one release cycle of real usage before PopolaLoom locks key names,
+merge precedence, and profile selection semantics. It is explicitly
+experimental until v0.10.0.
+
+**What may change**: key names under `[user_preferences]` and
+`[user_preferences.dispatch]`, the exact precedence between profile,
+CLI flags, environment, and built-in defaults, and the JSON shape shown
+by `popola doctor --json | jq '.user_preferences'`.
+
+**What is stable**: preferences are never a secret store; credentials
+continue to live in the Cursor keyring, `CURSOR_API_KEY`, or the
+v0.9.9+ 0o600 fallback file. A future promotion to stable will keep
+that invariant.
+
+```toml
+[user_preferences]
+default_cli = "cursor"
+confirm_before_cloud = true
+
+[user_preferences.dispatch]
+timeout_seconds = 120
+```
+
 ---
 
 ## 4. Deprecation Policy

@@ -39,6 +39,31 @@ Design boundary (per v0.9.1 plan §"Design constraints"):
   the same resolved ``--worker-dir`` is reused unless
   ``--allow-duplicate`` is passed.
 
+v0.10.0 (DECISIONS Q-3 + Q-4 + Q-7 in
+``.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md``)
+replaces the v0.9.9 ``_enforce_account_class_pre_flight_gate`` (which was
+based on the now-disconfirmed Spike-0 BRANCH_B verdict) with
+``_enforce_self_hosted_worker_exists``:
+
+- **Q-3 (worker discovery)** — the new gate calls
+  :func:`popolaloom.cloud.preflight.check_self_hosted_worker_exists`
+  which probes ``GET /v0/private-workers`` (works under personal API
+  keys per research/01 PROBE_07/44) to verify the named worker is
+  registered before the dispatch attempt.
+- **Q-4 (pre-flight gate semantics)** — the v0.9.9 ``account_class``
+  hard-fail gate is DELETED; the worker-existence pre-check (Q-3)
+  takes its slot in :func:`worker_dispatch_cmd`. Exit code 78 is
+  preserved (renamed constant ``_EXIT_PRE_FLIGHT_GATE``) because the
+  operator-meaning ("operator must change account/config to proceed")
+  is unchanged across the gate semantics swap.
+- **Q-7 (no-fallback contract)** — when the named worker is missing
+  the gate hard-exits with a bilingual hint pointing at
+  ``popola cloud worker start --name <X> --worker-dir <repo-root>``
+  (the actual fix). It NEVER suggests ``--cli=cursor`` or any other
+  local-CLI fallback path; cloud dispatch and local execution are
+  semantically distinct per ``feedbacks/feedback_for_v0.10.0.md``
+  L5+L11.
+
 The module's three indirection points (``_resolve_agent_binary``,
 ``_run_subprocess``, ``_fetch_management_endpoint``) are factored so
 :file:`tests/cli/test_cloud_worker_cmd.py` can monkeypatch them without
@@ -85,14 +110,17 @@ _EXIT_POOL_REQUIRES_API_KEY: int = 77
 ``_EXIT_CLOUD_AUTH_ERROR`` in ``cloud_cmd.py`` so scripts can branch on
 the same code regardless of which sub-verb hit the auth gap."""
 
-_EXIT_ACCOUNT_CLASS_GATE: int = 78
-"""Pre-flight gate (v0.9.9 F5 + U1) refused: the configured Cursor API
-key class cannot drive the self-hosted-worker REST surface. Mirrors
-the ``forbidden_plan_required`` / GitHub-App integration error
-``cli_exit=78`` in ``adapters/cursor_cloud._ERROR_CATALOG`` so any
-script branching on ``78 == "operator must change something about
-their account / config to proceed"`` keeps a coherent meaning across
-cloud sub-verbs."""
+_EXIT_PRE_FLIGHT_GATE: int = 78
+"""Cloud-dispatch pre-flight gate refused — the operator must change
+account / config / worker registration to proceed.
+
+v0.10.0 (DECISIONS Q-4) re-uses the v0.9.9 ``_EXIT_ACCOUNT_CLASS_GATE``
+slot for the new worker-existence pre-check. The numeric value (78) is
+unchanged so any script branching on ``78 == "operator must change
+something about their account / config to proceed"`` keeps a coherent
+meaning across cloud sub-verbs. Mirrors ``forbidden_plan_required`` /
+GitHub-App integration error ``cli_exit=78`` in
+``adapters/cursor_cloud._ERROR_CATALOG``."""
 
 
 # ── default constants ────────────────────────────────────────────────────
@@ -1129,8 +1157,6 @@ def worker_dispatch_cmd(
         typer.echo("error: --model must be non-empty", err=True)
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
-    _enforce_account_class_pre_flight_gate()
-
     resolved_worker_dir = _resolve_worker_dir(worker_dir)
     running = _detect_running_workers_for_dir(resolved_worker_dir)
     worker = running[0] if running else None
@@ -1138,6 +1164,24 @@ def worker_dispatch_cmd(
         worker.name
         if worker is not None and worker.name
         else _default_worker_name(resolved_worker_dir)
+    )
+
+    # v0.10.0 (DECISIONS Q-3 + Q-4 + Q-7): self-hosted worker existence
+    # pre-flight. The ``popola cloud worker dispatch`` verb is, by
+    # construction, the self-hosted-target dispatch path (see module
+    # docstring), so ``target="self-hosted"`` is hard-coded here. When
+    # B3's ``popola dispatch --cloud-target=...`` lands at a sibling
+    # call site, that one will pass the resolved ``extra["cloud_target"]``
+    # value — same gate function, different caller. The gate gracefully
+    # degrades (loud WARN, then proceed) when no API key is resolvable —
+    # see ``_enforce_self_hosted_worker_exists`` docstring for rationale.
+    from popolaloom.credentials import resolve_cursor_api_key
+
+    api_key = resolve_cursor_api_key() or ""
+    _enforce_self_hosted_worker_exists(
+        api_key=api_key,
+        worker_name=worker_name,
+        target="self-hosted",
     )
     dispatch_body = _build_workspace_worker_dispatch_body(
         prompt=prompt,
@@ -1214,96 +1258,166 @@ def _has_resolvable_api_key() -> bool:
     return resolve_cursor_api_key() is not None
 
 
-_PRE_FLIGHT_BILINGUAL_HINT: str = (
-    "error: popola cloud worker dispatch is unavailable for this Cursor API key class.\n"
-    "\n"
-    "Reason: Cursor REST has no documented schema (as of 2026-05-10) for routing\n"
-    "a POST /v1/agents run to a self-hosted worker under a personal API key with\n"
-    "Dashboard visibility. Service-account / Enterprise pool keys are the only\n"
-    "supported path; see SCHEMA_INVESTIGATION.md and\n"
-    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers.\n"
-    "\n"
-    "Workarounds:\n"
-    "1. popola cloud worker handoff --worker-id <uuid>\n"
-    "   Generates a copy-paste cursor.com/agents URL; the Dashboard run becomes\n"
-    "   visible after you paste the prompt in the browser.\n"
-    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
-    "   Local cursor-agent subprocess; faster, no browser, but does NOT show on\n"
-    "   cursor.com/agents (this is a documented v0.9.x limitation).\n"
-    "3. Mention \"@Cursor worker=<your-machine-name>\" in Slack / GitHub / Linear\n"
-    "   to trigger the My Machines worker via chat.\n"
-    "\n"
-    "To switch a key from personal to service-account: re-run\n"
-    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
-    "See https://cursor.com/docs/cloud-agent/self-hosted-pool for the\n"
-    "service-account provisioning flow.\n"
-    "\n"
-    "错误：当前 Cursor API key 类别不支持 popola cloud worker dispatch。\n"
-    "原因：截至 2026-05-10，Cursor REST 在 personal API key 下没有公开的\n"
-    "self-hosted-worker 路由 schema（仅 service-account / Enterprise pool keys\n"
-    "支持）。详见 SCHEMA_INVESTIGATION.md 与\n"
-    "https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers 。\n"
-    "\n"
-    "解决方案：\n"
-    "1. popola cloud worker handoff --worker-id <uuid>\n"
-    "   生成可复制的 cursor.com/agents 链接；浏览器粘贴 prompt 后即可在\n"
-    "   Dashboard 看到该任务。\n"
-    "2. popola dispatch --cli=cursor \"<prompt>\"\n"
-    "   本机 cursor-agent 子进程；速度更快、无需浏览器，但不会出现在\n"
-    "   cursor.com/agents 看板上（v0.9.x 已知限制）。\n"
-    "3. 在 Slack / GitHub / Linear 中 @Cursor worker=<机器名> 通过 chat 触发\n"
-    "   My Machines worker。\n"
-    "\n"
-    "切换至 service-account 重新运行：\n"
-    "  popola auth cursor set --api-key <service_account_key> --account-class=service-account\n"
-)
-"""Bilingual loud-fail hint emitted by the v0.9.9 F5 + U1 pre-flight gate.
+def _build_self_hosted_worker_missing_hint(worker_name: str) -> str:
+    """Return the bilingual hint emitted when the named self-hosted worker is missing.
 
-Wording locked by the L0 brief and the Spike-0 SCHEMA_INVESTIGATION.md
-verdict (BRANCH_B, 2026-05-10): personal / unknown-class API keys
-cannot drive ``POST /v1/agents`` self-hosted-worker routing under the
-documented public schema, so the gate refuses pre-flight and points
-operators at the three v0.9.x workarounds (handoff, local cursor-agent,
-chat trigger) plus the service-account upgrade path.
+    v0.10.0 (DECISIONS Q-3 + Q-7) — replaces the v0.9.9 account-class
+    bilingual hint.  Required substrings (PLAN.md C1 AC 7, pinned by
+    Wave D3's regex tests):
 
-The hint MUST contain ALL of: ``popola cloud worker handoff``,
-``popola dispatch --cli=cursor``, ``SCHEMA_INVESTIGATION.md``,
-``https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers``,
-and the Chinese fragment ``当前 Cursor API key 类别不支持`` — verified
-by ``tests/cli/test_cloud_worker_dispatch_account_class.py``.
-"""
+    * English fragment ``popola cloud worker start --name <X>
+      --worker-dir <repo-root>`` (with the actual ``worker_name``
+      substituted for ``<X>``) — points operators at the actual fix.
+    * English fragment ``popola cloud worker dispatch`` — names the
+      verb the operator just ran so the retry instruction is concrete.
+    * Chinese fragment ``Worker '<name>' 不存在`` — name surrounded by
+      single quotes so D3's regex pin (``Worker '\\S+' 不存在``)
+      matches the rendered text exactly.
 
-
-def _enforce_account_class_pre_flight_gate() -> None:
-    """Refuse ``popola cloud worker dispatch`` when the key class cannot route.
-
-    Reads :func:`popolaloom.credentials.get_account_class` (returns
-    :data:`AccountClass.UNKNOWN` for pre-v0.9.9 ``credentials.toml``
-    files OR when no metadata file exists yet — backward-compat path)
-    and enforces the Spike-0 BRANCH_B verdict from
-    ``.local/.agent/active/v0.9.9-worker-observability/SCHEMA_INVESTIGATION.md``:
-
-    * ``SERVICE_ACCOUNT`` → return; the v0.9.8 dispatch body shape
-      proceeds unchanged.
-    * ``PERSONAL`` / ``UNKNOWN`` → emit the bilingual loud-fail hint
-      to stderr, log a WARN entry per the workspace No-Silent-Failures
-      rule, and ``raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)``
-      (78). Operators upgrade by re-running
-      ``popola auth cursor set --account-class=service-account``.
-
-    Always loud-fails (no auto-fallback) per Q-V099-8.
+    The hint NEVER suggests ``--cli=cursor`` or any other local-CLI
+    fallback path per ``feedbacks/feedback_for_v0.10.0.md`` L5+L11
+    (cloud dispatch and local execution are semantically distinct;
+    silently re-routing one to the other is a correctness bug).
     """
-    from popolaloom.credentials import AccountClass, get_account_class
-
-    account_class = get_account_class()
-    if account_class == AccountClass.SERVICE_ACCOUNT:
-        return
-    logger.warning(
-        "worker_dispatch refused: account_class=%s",
-        account_class.value,
+    return (
+        f"error: self-hosted worker '{worker_name}' is not registered with Cursor.\n"
+        "\n"
+        "Reason: popola cloud worker dispatch with --cloud-target=self-hosted "
+        "requires a registered self-hosted worker (verified via "
+        "GET /v0/private-workers per DECISIONS Q-3). The named worker "
+        f"'{worker_name}' was NOT found in the inventory returned by Cursor.\n"
+        "\n"
+        "Fix — start a worker for this workspace, then retry:\n"
+        f"  popola cloud worker start --name {worker_name} --worker-dir <repo-root>\n"
+        "  # ...wait for the worker to register, then re-run:\n"
+        f"  popola cloud worker dispatch \"<prompt>\" --worker-dir <repo-root> "
+        "--repo-url <repo-url>\n"
+        "\n"
+        "Per the v0.10.0 no-fallback contract (DECISIONS Q-7), popola will NOT "
+        "silently re-route this dispatch to a local cursor-agent subprocess — "
+        "cloud dispatch and local execution are semantically distinct.\n"
+        "\n"
+        f"错误：Worker '{worker_name}' 不存在 — 该 self-hosted worker 未在 Cursor 注册。\n"
+        "原因：popola cloud worker dispatch 在 --cloud-target=self-hosted 模式下需要"
+        "已注册的 self-hosted worker（通过 GET /v0/private-workers 校验）。\n"
+        "\n"
+        "解决方案：先在仓库根目录启动同名 worker，再重试派发：\n"
+        f"  popola cloud worker start --name {worker_name} --worker-dir <repo-root>\n"
+        "  # 等 worker 注册成功后：\n"
+        f"  popola cloud worker dispatch \"<prompt>\" --worker-dir <repo-root> "
+        "--repo-url <repo-url>\n"
+        "\n"
+        "根据 v0.10.0 no-fallback 契约（DECISIONS Q-7），popola 不会静默回退到"
+        "本地 cursor-agent 子进程 —— 云端派发与本地执行是语义不同的两件事。\n"
     )
-    typer.echo(_PRE_FLIGHT_BILINGUAL_HINT, err=True)
-    raise typer.Exit(code=_EXIT_ACCOUNT_CLASS_GATE)
+
+
+def _enforce_self_hosted_worker_exists(
+    api_key: str,
+    worker_name: str,
+    target: str,
+) -> None:
+    """Refuse ``popola cloud worker dispatch`` when the named self-hosted worker is missing.
+
+    v0.10.0 (DECISIONS Q-3 + Q-4 + Q-7) replaces the v0.9.9
+    ``_enforce_account_class_pre_flight_gate``.  The v0.9.9 gate was
+    based on the Spike-0 BRANCH_B verdict that personal API keys
+    cannot drive self-hosted-worker dispatch — research/01's 22
+    successful 2xx probes (verdict ``BRANCH_A_FEASIBLE``) DISCONFIRMED
+    that verdict, so the relevant failure mode in v0.10.0 is
+    "operator typed --worker-name=<X> but no such worker is registered
+    with Cursor".  The new gate refuses early so the operator sees an
+    actionable hint pointing at ``popola cloud worker start --name
+    <X> --worker-dir <repo-root>`` instead of waiting for the gateway
+    to surface a generic 4xx.
+
+    Behaviour matrix (PLAN.md C1 AC 5):
+
+    * ``target != "self-hosted"`` → return immediately (no-op for
+      ``cursor-managed`` / ``ask-each-time`` / empty target).
+    * ``target == "self-hosted"`` AND ``api_key`` is empty → emit a
+      loud WARN explaining the pre-flight is skipped (cannot reach
+      ``GET /v0/private-workers`` without auth) and return; the
+      downstream popolad / gateway still surfaces any auth error so
+      this is NOT a silent failure (we're skipping an additive
+      pre-flight check, not suppressing an error).
+    * ``target == "self-hosted"`` AND ``found=False`` → emit the
+      bilingual hint to stderr, log a WARN per No-Silent-Failures, and
+      ``raise typer.Exit(_EXIT_PRE_FLIGHT_GATE)`` (78). NEVER suggests
+      a local-CLI fallback per Q-7.
+    * ``target == "self-hosted"`` AND ``found=True`` AND
+      ``is_in_use=True`` → log a WARN ("the run will queue until the
+      worker is free") and return; the dispatch is allowed because
+      Cursor's gateway accepts the POST and queues the run (Q-3 soft-
+      warn semantics).
+    * ``target == "self-hosted"`` AND ``found=True`` AND
+      ``is_in_use=False`` → return silently (gate passed).
+    * Any :class:`CursorCloudError` from the underlying
+      ``client.list_workers()`` propagates UNCHANGED so the caller's
+      error catalog can format the bilingual hint (No-Silent-Failures
+      rule). The gate does NOT swallow transient HTTP errors.
+
+    Args:
+        api_key: Resolved Cursor API key. When empty, the gate
+            gracefully degrades (loud WARN, then proceed) — this is
+            an explicit choice so callers that mock the downstream
+            popolad RPC don't need to also mock the Cursor REST
+            ``list_workers`` call when no API key is configured.
+        worker_name: The display name of the self-hosted worker the
+            dispatch will route to. Compared against ``worker["name"]``
+            returned by ``GET /v0/private-workers``.
+        target: The resolved cloud target. Only ``"self-hosted"`` triggers
+            the gate; any other value (including ``""``,
+            ``"cursor-managed"``, ``"ask-each-time"``) is a no-op.
+
+    Raises:
+        typer.Exit: with code :data:`_EXIT_PRE_FLIGHT_GATE` (78) when
+            the named worker is not registered.
+        popolaloom.adapters.cursor_cloud.CursorCloudError: any HTTP /
+            JSON / auth error from the underlying ``list_workers()``
+            call propagates unchanged so the popolad / dispatch path's
+            error-catalog handling kicks in.
+    """
+    if target != "self-hosted":
+        return
+
+    if not api_key:
+        logger.warning(
+            "self-hosted worker existence pre-flight SKIPPED for worker_name=%r: "
+            "no Cursor API key resolvable via env or keyring (cannot call "
+            "GET /v0/private-workers). The dispatch will continue but if the "
+            "worker is not registered, the failure will surface as a generic "
+            "downstream gateway error rather than a friendly pre-flight hint. "
+            "Set CURSOR_API_KEY or run `popola auth cursor set` to enable the "
+            "pre-flight check.",
+            worker_name,
+        )
+        return
+
+    from popolaloom.adapters.cursor_cloud import CloudCursorClient
+    from popolaloom.cloud.preflight import check_self_hosted_worker_exists
+
+    with CloudCursorClient(api_key) as client:
+        result = check_self_hosted_worker_exists(client, worker_name)
+
+    if not result.found:
+        typer.echo(
+            _build_self_hosted_worker_missing_hint(worker_name),
+            err=True,
+        )
+        logger.warning(
+            "worker_dispatch refused: worker %r not registered (%s)",
+            worker_name,
+            result.message,
+        )
+        raise typer.Exit(code=_EXIT_PRE_FLIGHT_GATE)
+
+    if result.is_in_use:
+        logger.warning(
+            "worker %r is currently busy (is_in_use=True); your run will queue "
+            "until the worker is free",
+            worker_name,
+        )
 
 
 def _fail_pool_requires_api_key() -> NoReturn:

@@ -6,15 +6,16 @@ lang: en
 translation_url: /zh/USER_GUIDE.html
 ---
 
-# PopolaLoom — User Guide (v0.9.9)
+# PopolaLoom — User Guide (v1.0.0-pre.1)
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
 
-> **Generally Available since v0.9.0 (2026-05-08); current release v0.9.9 (2026-05-10).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v0.9.9 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v0.9.9`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v0.9.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v0.9.9`; avoid the bare package-name form until the promotion patch lands.
+> **Generally Available since v0.9.0 (2026-05-08); current release v1.0.0-pre.1 (2026-05-11).** See [API stability boundary](API_STABILITY.md) and [v0.7.x → v0.9.0 migration](MIGRATION_v07_to_v09.md). The CLI verb table + flag spellings + daemon RPC paths + `--json` schemas + `popolad.toml` section names are now under SemVer; experimental surfaces are marked `[experimental]` per [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee). **For v1.0.0-pre.1 install via `./install.sh install`** (canonical), **`./install.sh install --ref=v1.0.0-pre.1`** (tag-pinned), or **`./install.sh install --with-credentials`** (keyring extra) — PyPI publish remains deferred to a v1.0.0-pre.x patch (Q-D-5 偏离默认; see `BL-v0.9.x-PyPI` in TRACKER and [`RELEASE_NOTES.md`](../RELEASE_NOTES.md)). The manual tag fallback is `pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1`; avoid the bare package-name form until the promotion patch lands.
 
 > Comprehensive reference for the `popola` CLI, MCP integration, HITL flows, Lark notifications, and the configuration surface. For first-time users, start with [`QUICKSTART.md`](QUICKSTART.md). For walkthroughs and example outputs, see [`DEMO.md`](DEMO.md). Cloud operators jump to the copy-paste-ready [`cloud-quickstart.sh`](../cloud-quickstart.sh) (v0.9.0+).
 
-## Table of Contents
+<details class="toc" open>
+<summary>Table of Contents</summary>
 
 - [Mental model](#mental-model)
 - [CLI verb reference](#cli-verb-reference)
@@ -31,6 +32,7 @@ translation_url: /zh/USER_GUIDE.html
 - [Credentials & secure storage (v0.9.2+)](#credentials--secure-storage-v092)
 - [`popola init` Interactive Intake (v0.9.5+)](#popola-init-interactive-intake-v095)
 - [Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)](#self-hosted-worker-handoff-popola-cloud-worker-v091)
+- [Cloud dispatch (v1.0.0-pre.1)](#cloud-dispatch-v100-pre1)
 - [Cloud HITL (Enterprise / Self-Hosted) (v0.8.7+)](#cloud-hitl-enterprise--self-hosted)
 - [Multi-run cloud agents (v0.8.8+)](#multi-run-cloud-agents-v088)
 - [Cost transparency — `status --verbose` (v0.8.8+)](#cost-transparency--status---verbose-v088)
@@ -38,10 +40,13 @@ translation_url: /zh/USER_GUIDE.html
 - [Quota-aware retry (`[cloud.backoff]` / `[cloud.busy_strategy]`) (v0.8.8+)](#quota-aware-retry-cloudbackoff--cloudbusy_strategy-v088)
 - [`popola cloud runs` — list cloud-agent run history (v0.8.8+)](#popola-cloud-runs--list-cloud-agent-run-history-v088)
 - [Hands-off envelope (v0.8.0+)](#hands-off-envelope)
+- [User preferences (v0.9.10+)](#user-preferences-v0910)
 - [Configuration (env vars)](#configuration)
 - [Troubleshooting](#troubleshooting)
 - [Architecture deep-dive](#architecture-deep-dive)
 - [Reference](#reference)
+
+</details>
 
 ## Mental model
 
@@ -1101,6 +1106,143 @@ Connection failures (worker not running, wrong `--management-addr`, firewall) ex
 
 When you do want a popola-tracked task id (so `popola list` / `popola attach` work) and you have a `CURSOR_API_KEY`, use `popola dispatch --cli=cursor-cloud` instead — that path creates a run via REST, persists `cursor_agent_id` / `cursor_run_id` in the daemon, and surfaces the task in `popola list` with `runtime=cloud`.
 
+## Cloud dispatch (v1.0.0-pre.1)
+
+<!-- updated: 2026-05-11 -->
+
+> **What changed in v1.0.0-pre.1.** This section folds the v0.9.x [Cloud Agent dispatch](#cloud-agent-dispatch-v085) and [Self-hosted worker handoff](#self-hosted-worker-handoff-popola-cloud-worker-v091) flows into a single mental model: **two cloud paths, one CLI**. The [`Cursor Cloud Agents Dashboard`](https://cursor.com/agents) is the source of truth for what counts as "cloud dispatch" — if a run does not appear there, it is **not** a cloud dispatch (the user's verbatim definition from [`feedback_for_v0.10.0.md`](../.local/feedbacks/feedback_for_v0.10.0.md) L5: "在 Cursor 的语境下，是需要将任务在云端的 Cursor Agent 网页界面能够看到这个任务，才叫做云端派发"). The full design rationale lives in [`DECISIONS.md` Q-1..Q-12](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md).
+
+### The two cloud paths
+
+PopolaLoom v1.0.0-pre.1 recognises two — and only two — cloud-dispatch shapes. Both surface the run at [`cursor.com/agents`](https://cursor.com/agents); they differ in **where the work runs**.
+
+| Path | What runs where | Auth needed | Prerequisite | When to pick it |
+|---|---|---|---|---|
+| `cursor-managed` | Cursor's hosted VM (you do not own the executor) | Cursor API key (env or keyring) | **Cursor GitHub App** installed on `github.com/<owner>/<repo>` (the `repos[].url` host) | Pure REST flow; no local worker; works for any allowlisted repo |
+| `self-hosted` | Your own worker started via `popola cloud worker start --name X` (visible at [`cursor.com/agents`](https://cursor.com/agents) under that worker's `workerId` per Stage-1 research) | Cursor API key (env or keyring) — personal OR service-account | A **registered worker** matching `--worker-name` (verified via `GET /v0/private-workers`) | When you want full control of the executor (private network, on-prem deps, custom toolchain) |
+
+The two paths share the same CLI verb (`popola dispatch`) and the same daemon plumbing; the routing decision is encoded in the new `--cloud-target` flag.
+
+### Init UX — record the default target once
+
+When `default_runtime` is `cloud` or `ask-each-time`, `popola init --interactive` now asks for `default_cloud_target` immediately after `default_runtime`:
+
+```bash
+popola init --interactive
+# ...
+# Default runtime? [local / cloud / ask-each-time]: cloud
+# Default cloud target? [self-hosted / cursor-managed / ask-each-time]: self-hosted
+# (skipped automatically when default_runtime=local)
+```
+
+The selected value is written to `[user_preferences].default_cloud_target` in `popolad.toml`. It is the **default** for every future `popola dispatch` call; per-task overrides (next sub-section) take precedence. Non-interactive callers can set it via `popola init --set default_cloud_target=self-hosted` (or any other `--set` writer).
+
+> The legacy `cloud_target_priority` list is preserved for one release with a deprecation `WARN` on read; the resolver no longer consults it. Migrate to `default_cloud_target` (single value) in your `popolad.toml`.
+
+### Per-task override
+
+```bash
+# Self-hosted: targets a specific worker; --worker-name is REQUIRED.
+popola dispatch --cloud-target=self-hosted --worker-name=my-team-worker \
+  "Refactor the caching layer and add unit tests"
+
+# Cursor-managed: hosted VM; --worker-name MUST NOT be set.
+popola dispatch --cloud-target=cursor-managed \
+  "Plan the database migration scaffolding"
+```
+
+When `--cloud-target` is given AND `--cli` is empty, `cli="cursor-cloud"` is auto-set (so you do not need to type `--cli=cursor-cloud --cloud-target=...` every time). The legacy `popola dispatch --cli=cursor-cloud --cli-flag worker_name=W` shape from v0.9.x still works as a backward-compat escape hatch — the flag value flows into the same extras dict and is translated to the new `env: {type:"machine", name:"W"}` request shape with a `DeprecationWarning`. **Validation** is enforced at parse time:
+
+| `--cloud-target` | `--worker-name` | Outcome |
+|---|---|---|
+| `self-hosted` | non-empty | proceeds to dispatch |
+| `self-hosted` | empty | exit 2 (validation error: "--worker-name required when --cloud-target=self-hosted") |
+| `cursor-managed` | empty | proceeds to dispatch |
+| `cursor-managed` | non-empty | exit 2 (validation error: "--worker-name not allowed when --cloud-target=cursor-managed") |
+| `ask-each-time` | any | exit 2 (only valid as `default_cloud_target`, not as a per-task value) |
+
+> The precedence is **per-task `--cloud-target` flag > `[user_preferences].default_cloud_target` > `"ask-each-time"`** (per [`DECISIONS.md` Q-6](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)). The resolver collapses to a single resolved `(target, worker_name)` pair before the dispatch leaves the CLI process.
+
+### Picking a model with `--model` (v1.0.0 GA, Q-A1)
+
+`popola dispatch --model <id>` is the discoverable form of the previously-stringly-typed `--cli-flag model=<id>` extras key. It is only consumed by `cursor-cloud` dispatches; non-cloud adapters get a soft WARN and the flag is dropped.
+
+```bash
+# Pick a specific Cursor cloud model
+popola dispatch --cloud-target=self-hosted --worker-name=my-worker \
+  --model gpt-5.5 \
+  "Refactor the caching layer and add unit tests"
+
+# Discover available model ids
+curl -sH "Authorization: Bearer $CURSOR_API_KEY" \
+  https://api.cursor.com/v1/models | jq '.models[].id'
+```
+
+Empty `--model` (the default) preserves the v0.10.0 `"default"` marker so Cursor picks the recommended model for the user's plan. When both `--model X` and `--cli-flag model=Y` are supplied, the explicit `--model` flag wins and a WARN is emitted (No Silent Failures). For the higher-fidelity controls (`--mode`, `--max-mode`, `--effort`, `--time-budget`, `--long-running`, `--auto-proceed-after-plan`, `--preset`), see [Path-B advanced controls (`--auth-mode=session-jwt`)](#path-b-advanced-controls---auth-modesession-jwt-v100-ga) below.
+
+### No-fallback contract — what happens when the worker is missing
+
+When `--cloud-target=self-hosted` AND the named worker is **not registered with Cursor** (i.e. `GET /v0/private-workers` does NOT return a row whose `name == --worker-name`), `popola dispatch` exits **78** with a bilingual hint pointing at the actual fix:
+
+```text
+error: self-hosted worker 'my-team-worker' is not registered with Cursor.
+
+Reason: popola cloud worker dispatch with --cloud-target=self-hosted requires
+a registered self-hosted worker (verified via GET /v0/private-workers per
+DECISIONS Q-3). The named worker 'my-team-worker' was NOT found in the
+inventory returned by Cursor.
+
+Fix — start a worker for this workspace, then retry:
+  popola cloud worker start --name my-team-worker --worker-dir <repo-root>
+  # ...wait for the worker to register, then re-run:
+  popola cloud worker dispatch "<prompt>" --worker-dir <repo-root> --repo-url <repo-url>
+
+Per the v0.10.0 no-fallback contract (DECISIONS Q-7), popola will NOT silently
+re-route this dispatch to a local cursor-agent subprocess — cloud dispatch and
+local execution are semantically distinct.
+
+错误：Worker 'my-team-worker' 不存在 — 该 self-hosted worker 未在 Cursor 注册。
+原因：popola cloud worker dispatch 在 --cloud-target=self-hosted 模式下需要已注册的
+self-hosted worker（通过 GET /v0/private-workers 校验）。
+
+解决方案：先在仓库根目录启动同名 worker，再重试派发：
+  popola cloud worker start --name my-team-worker --worker-dir <repo-root>
+  # 等 worker 注册成功后：
+  popola cloud worker dispatch "<prompt>" --worker-dir <repo-root> --repo-url <repo-url>
+
+根据 v0.10.0 no-fallback 契约（DECISIONS Q-7），popola 不会静默回退到本地
+cursor-agent 子进程 —— 云端派发与本地执行是语义不同的两件事。
+```
+
+The contract (per [`DECISIONS.md` Q-7](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md), citing the verbatim user feedback from [`feedback_for_v0.10.0.md`](../.local/feedbacks/feedback_for_v0.10.0.md) L5+L11): popola **NEVER** silently re-routes a failing cloud dispatch to a local `cursor-agent` subprocess. Cloud dispatch and local execution are semantically distinct (a local subprocess does not appear at [`cursor.com/agents`](https://cursor.com/agents); silent re-routing would violate the user's "云端派发" definition). When the named worker is missing, the only fix is to start one — the hint above tells you exactly how. The legacy `[user_preferences].fallback_chain` is still honoured for `default_runtime=local` flows; it is explicitly NOT consulted when the resolved cloud target is `self-hosted`.
+
+If the named worker IS registered but currently busy (`isInUse=true`), the gate emits a soft `WARN` ("the run will queue until the worker is free") and proceeds — Cursor's gateway accepts the POST and queues the run, so the dispatch is allowed.
+
+### GitHub-App prerequisite for `cursor-managed` and `github.com` repos
+
+When `repos[0].url` host is `github.com` and the `--cloud-target=cursor-managed` (or self-hosted with a github.com URL), the Cursor REST gateway returns `400 validation_error: "Failed to verify existence of branch '<X>' in repository <owner>/<name>"` (or the second message variant `Failed to determine repository default branch`) **regardless of whether the branch actually exists**, when the Cursor GitHub App is not installed for that repo. v1.0.0-pre.1 surfaces this earlier:
+
+- **Pre-flight refusal** (the new path): `cursor_cloud.create_agent` calls `GET /v1/repositories` BEFORE issuing the POST. If the response is `{"items":[]}` (the App is not installed for any of your repos), the dispatch raises `GithubAppMissingError` immediately with a hint pointing at [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github). The expensive POST is skipped.
+- **Late catch** (the v0.9.x path, kept for safety): if you bypass the pre-flight (`extras["skip_github_app_preflight"] = True`) or the App IS installed but the specific repo isn't allowlisted, the gateway 400 is still routed by the `_ERROR_CATALOG` rule `integration_github_app_branch_not_found` to the same `GithubAppMissingError` with the same hint.
+
+To install the App, open [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github) and follow the org/repo allowlisting steps. PopolaLoom does NOT install the App for you (it is a per-org/per-repo permission grant outside our scope) — this is per [`DECISIONS.md` Q-9](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md). The pre-flight only fires for `github.com` hosts; GitLab / Gitea / self-hosted git providers skip it (tracked as `BL-v1.0.0-pre.2-non-github-host-preflight`).
+
+### End-to-end smoke
+
+```bash
+# Tier-4 release-gate live smoke (requires CURSOR_API_KEY).
+pytest tests/cloud/test_real_cursor_cloud_env_shape_v0_10_0.py -m real_cursor_cloud
+
+# Real dispatch on a self-hosted worker.
+popola dispatch --cloud-target=self-hosted --worker-name=$WORKER --repo-url=$REPO --cli=cursor-cloud "<prompt>"
+
+# No-fallback contract spot-check — MUST exit 78.
+popola dispatch --cloud-target=self-hosted --worker-name=ghost-worker "test prompt"
+echo "exit_code=$?"
+```
+
+> See: `src/popolaloom/adapters/cursor_cloud.py` (env-shape body builder), `src/popolaloom/cli/cloud_worker_cmd.py::_enforce_self_hosted_worker_exists` (worker-existence pre-flight gate), `src/popolaloom/cloud/preflight.py` (pure helpers), `src/popolaloom/cli/main.py` (`--cloud-target` / `--worker-name` flags) + [`DECISIONS.md` Q-1..Q-12](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md).
+
 ## Cloud HITL (Enterprise / Self-Hosted)
 
 <!-- updated: 2026-05-08 -->
@@ -2082,6 +2224,35 @@ The full module surface (`from popolaloom.handoff import ...`):
 | `DEFAULT_HANDOFF_ROOT` | constant | `Path(".local/.agent/handoff")` |
 | `DEFAULT_ARCHIVE_ROOT` | constant | `Path(".local/.agent/archive")` |
 | `HANDOFF_SCHEMA_VERSION` / `FEEDBACK_SCHEMA_VERSION` | constant | Anchor for forward-compat schema evolution |
+
+## User preferences (v0.9.10+)
+
+`[user_preferences]` is an experimental, operator-owned schema for making repeated dispatch choices explicit without hiding them in shell aliases. The schema is read by the v1.0.0-pre.1 preference-aware docs and Skill workflow, and remains experimental until v1.0.0 stable (see [API_STABILITY §3](API_STABILITY.md#3-experimental-surfaces-no-semver-guarantee)).
+
+```toml
+[user_preferences]
+default_cli = "cursor"
+default_cwd = "~/src/current-project"
+confirm_before_cloud = true
+prefer_streaming = true
+handoff_tags = ["daily-driver", "reviewable"]
+
+[user_preferences.dispatch]
+default_wait = false
+timeout_seconds = 120
+extra_cli_flags = { output_format = "stream-json" }
+```
+
+Typical commands:
+
+```bash
+popola init --interactive
+popola dispatch "summarize the repository state" --use-preferences
+popola dispatch "review the migration plan" --profile daily-driver --json
+popola doctor --json | jq '.user_preferences'
+```
+
+Preferences must never contain secrets. Keep credentials in the Cursor keyring, `CURSOR_API_KEY`, or the v0.9.9+ 0o600 fallback file; use preferences only for routing, UX defaults, and repeatable dispatch knobs.
 
 ## Configuration
 

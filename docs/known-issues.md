@@ -2,6 +2,8 @@
 layout: default
 title: Known limitations
 description: Documented limitations of PopolaLoom — workarounds and tracking links.
+lang: en
+translation_url: /zh/known-issues.html
 ---
 
 # Known limitations
@@ -249,3 +251,116 @@ correction: cloud HITL transport story aligned with `deployment-modes.md`"* —
 should land in `CHANGELOG.md` as part of T2.3.3 (W2.3 of `PLAN.md`); it
 is intentionally **not** added by this task (T2.2.2) to keep the
 file-ownership matrix disjoint.
+
+## v1.0.0-pre.1 — Cursor cloud auto-create-PR is occasionally flaky
+
+<!-- updated: 2026-05-11 -->
+
+**Limitation.** Even when `autoCreatePR=true` is set on the dispatch and
+the agent successfully `git push`es the feature branch (the upstream
+tracking ref is configured correctly), the Cursor Cloud Agent run may
+return `"No branch name available for PR creation"` and the run finishes
+without opening the PR. The commit is not lost — it is reachable from the
+branch tip on GitHub — but the PR step itself silently no-ops on
+Cursor's side.
+
+**Symptoms.**
+
+- The dispatched run reaches `completed` with the agent commit visible at
+  `https://github.com/<owner>/<repo>/commits/<branch>`, yet
+  `https://github.com/<owner>/<repo>/pulls` shows no new PR.
+- The run's status JSON (`popola attach <task_id> --no-follow`) contains
+  a `"No branch name available for PR creation"` line in the trailing
+  events.
+- This was observed on 2026-05-10 during the v1.0.0-pre.1 end-to-end
+  smoke (PR #28 — see
+  [`feedback_for_v1.0.0-pre.1.md` §2.1](../.local/feedbacks/feedback_for_v1.0.0-pre.1.md)),
+  and was not deterministically reproducible on a re-run.
+
+**Workaround.**
+
+Manually open the PR with `gh pr create` once the agent's commit is on
+the remote:
+
+```bash
+gh pr create \
+  --base main \
+  --head <feature-branch-the-agent-pushed-to> \
+  --title "<your title>" \
+  --body  "$(cat <<'EOF'
+<your description>
+EOF
+)"
+```
+
+This works because the commit, branch tracking, and remote head are all
+already correct — only the Cursor-side PR step failed. Use this whenever
+the run reports `"No branch name available for PR creation"`.
+
+**Tracking.** This is upstream-side flakiness on Cursor's
+auto-create-PR pipeline; PopolaLoom has no code path to fix it. Tracked
+in [`feedback_for_v1.0.0-pre.1.md` §2.1](../.local/feedbacks/feedback_for_v1.0.0-pre.1.md)
+as a documentation-only mitigation for v1.0.0 GA.
+
+## v1.0.0-pre.1 — Self-hosted worker pushes to the dispatch-time branch
+
+<!-- updated: 2026-05-11 -->
+
+**Limitation.** When you dispatch via `popola dispatch
+--cloud-target=self-hosted --worker-name=<W>`, the Cursor Cloud Agent VM
+runs against the worker's bound `git` checkout and uses **whichever
+branch the worker is currently on at dispatch time** as the target for
+its commit + push. The agent does NOT auto-create a new feature branch
+the way `--cloud-target=cursor-managed` does — it commits straight onto
+your current branch and pushes that branch to `origin`.
+
+**Symptoms.**
+
+- The agent's commit lands on the same branch from which you ran
+  `popola dispatch ...`, **overwriting** any in-progress work on that
+  branch (the local working tree is unaffected, but the remote branch
+  head moves under you).
+- During the v1.0.0-pre.1 end-to-end smoke (see
+  [`feedback_for_v1.0.0-pre.1.md` §2.2](../.local/feedbacks/feedback_for_v1.0.0-pre.1.md)),
+  the agent's commit was force-pushed to the operator's integration
+  branch `feature/v0.9.10-web-demo-init-prefs`; the operator had to
+  cherry-pick the agent commit onto an isolated branch
+  (`docs/readme-banner-v1.0.0-pre.1`) and reset the integration branch
+  back to its prior tip.
+
+**Workaround (one of three).**
+
+1. **Isolate the worker on a fresh branch BEFORE dispatching** — `cd`
+   into the worker's checkout and `git checkout -b <agent-task-branch>`,
+   then dispatch. The agent will commit + push to
+   `<agent-task-branch>`, leaving your integration branch untouched.
+
+   ```bash
+   cd "$(popola cloud worker info --name $WORKER --print=worker-dir)"
+   git checkout -b agent-task-$(date +%s)
+   popola dispatch --cloud-target=self-hosted --worker-name=$WORKER \
+     "<prompt>"
+   ```
+
+2. **Use `--cloud-target=cursor-managed` instead** — the Cursor cloud VM
+   auto-creates a feature branch (`cursor/<slug>-<id>`) per dispatch, so
+   your local branches are never touched. Trade-off: requires the Cursor
+   GitHub App installation (org-level), see Q-9 in
+   [`./.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`](../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md).
+
+3. **After-the-fact rescue** — if the agent already pushed onto the
+   wrong branch, recover with:
+
+   ```bash
+   git fetch origin
+   git checkout -b agent-rescue-$(date +%s) origin/<wrong-branch>
+   git checkout <wrong-branch> && git reset --hard <pre-agent-tip>
+   git push --force-with-lease origin <wrong-branch>
+   # The agent commit is preserved on the rescue branch.
+   ```
+
+**Tracking.** This is a self-hosted-worker behaviour by design (the
+worker uses its bound checkout's current branch). PopolaLoom v1.0.0 GA
+documents the workaround; an opt-in `--auto-isolate-branch` flag on
+`popola dispatch` is a candidate for v1.1+ (`BL-v1.x-auto-isolate-branch`).
+See [`feedback_for_v1.0.0-pre.1.md` §2.2](../.local/feedbacks/feedback_for_v1.0.0-pre.1.md).

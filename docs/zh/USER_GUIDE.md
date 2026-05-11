@@ -6,13 +6,14 @@ lang: zh
 translation_url: /USER_GUIDE.html
 ---
 
-# PopolaLoom — 用户指南 (v0.9.7)
+# PopolaLoom — 用户指南 (v1.0.0-pre.1)
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-11 -->
 
-> PopolaLoom 自 v0.9.0 起进入 GA 稳定边界；当前公开文档面向 v0.9.7。首次使用请先看 [`QUICKSTART.md`](QUICKSTART.md)，需要演示路径和示例输出请看 [`DEMO.md`](DEMO.md)。需要纯 Cloud Agent 启动时，先配置 Cursor API key，再运行仓库根目录的 `cloud-quickstart.sh`。
+> PopolaLoom 自 v0.9.0 起进入 GA 稳定边界；当前公开文档面向 v1.0.0-pre.1。首次使用请先看 [`QUICKSTART.md`](QUICKSTART.md)，需要演示路径和示例输出请看 [`DEMO.md`](DEMO.md)。需要纯 Cloud Agent 启动时，先配置 Cursor API key，再运行仓库根目录的 `cloud-quickstart.sh`。
 
-## 目录
+<details class="toc" open>
+<summary>目录</summary>
 
 - [心智模型](#心智模型)
 - [CLI 速查](#cli-速查)
@@ -22,10 +23,14 @@ translation_url: /USER_GUIDE.html
 - [Credentials 与安全存储（v0.9.2+）](#credentials-与安全存储v092)
 - [`popola init` 交互式 intake（v0.9.5+）](#popola-init-交互式-intakev095)
 - [Self-hosted worker handoff（v0.9.1+）](#self-hosted-worker-handoffv091)
+- [云端派发（v1.0.0-pre.1）](#云端派发v100-pre1)
 - [Hands-off envelope](#hands-off-envelope)
+- [用户偏好（v0.9.10+）](#用户偏好v0910)
 - [配置](#配置)
 - [故障排查](#故障排查)
 - [架构深挖](#架构深挖)
+
+</details>
 
 ## 心智模型
 
@@ -166,6 +171,126 @@ popola cloud worker handoff --worker-dir "$(pwd)" --prompt "Run the migration sm
 
 默认未传 `--name` 时，PopolaLoom 会按 workspace 生成稳定 worker 名，并复用已经存在的同目录 worker；只有明确传 `--allow-duplicate` 才会启动第二个。
 
+## 云端派发（v1.0.0-pre.1）
+
+<!-- updated: 2026-05-11 -->
+
+> **v1.0.0-pre.1 的核心变化。** 本节把 v0.9.x 的 [Cloud Agent dispatch](#cloud-agent-dispatchv085) 和 [Self-hosted worker handoff](#self-hosted-worker-handoffv091) 两个流合并成同一套心智模型：**两条云端路径，一个 CLI 入口**。[Cursor Cloud Agents Dashboard](https://cursor.com/agents) 是判定"云端派发"的唯一事实来源 —— 如果一次派发的运行没有出现在那里，那它**不算**云端派发（用户原话见 [`feedback_for_v0.10.0.md`](../../.local/feedbacks/feedback_for_v0.10.0.md) L5："在 Cursor 的语境下，是需要将任务在云端的 Cursor Agent 网页界面能够看到这个任务，才叫做云端派发"）。完整设计依据见 [`DECISIONS.md` Q-1..Q-12](../../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)。
+
+### 两条云端路径
+
+PopolaLoom v1.0.0-pre.1 只承认两种云端派发形态。两者的派发结果都会出现在 [`cursor.com/agents`](https://cursor.com/agents)，区别在于**实际执行任务的环境在哪里**。
+
+| 路径 | 任务在哪里执行 | 鉴权要求 | 前置条件 | 适用场景 |
+|---|---|---|---|---|
+| `cursor-managed` | Cursor 托管的云端 VM（执行环境不归你管） | Cursor API key（环境变量或 keyring 任一） | **Cursor GitHub App** 已安装到 `github.com/<owner>/<repo>`（即 `repos[].url` 的 host） | 纯 REST 流；不需要本地 worker；适合任意已授权的 GitHub 仓库 |
+| `self-hosted` | 你自己用 `popola cloud worker start --name X` 启动的 worker（在 [`cursor.com/agents`](https://cursor.com/agents) 的 `workerId` 维度可见，符合 Stage-1 调研结果） | Cursor API key（personal 或 service-account 任一） | **已注册的同名 worker**（通过 `GET /v0/private-workers` 校验） | 需要完全控制执行环境（私网、机内依赖、自定义工具链）时使用 |
+
+两条路径共享同一个 CLI 动词（`popola dispatch`）和同一套 daemon 链路；路由决策由新增的 `--cloud-target` flag 编码。
+
+### Init 阶段：一次性记录默认目标
+
+当 `default_runtime` 是 `cloud` 或 `ask-each-time` 时，`popola init --interactive` 会在询问完 `default_runtime` 之后立刻追问 `default_cloud_target`：
+
+```bash
+popola init --interactive
+# ...
+# Default runtime? [local / cloud / ask-each-time]: cloud
+# Default cloud target? [self-hosted / cursor-managed / ask-each-time]: self-hosted
+# （当 default_runtime=local 时此提示自动跳过）
+```
+
+选定的值写入 `popolad.toml` 的 `[user_preferences].default_cloud_target`。这是后续每次 `popola dispatch` 的**默认值**；按任务粒度的 override（见下一节）优先级更高。非交互场景可以用 `popola init --set default_cloud_target=self-hosted`（也支持其它任意 `--set` 写法）。
+
+> 历史字段 `cloud_target_priority`（list 形态）保留一个 release 周期，读取时输出 deprecation `WARN`；解析器不再消费它。请把 `popolad.toml` 里的旧字段迁移到 `default_cloud_target`（单值）。
+
+### 按任务粒度 override
+
+```bash
+# self-hosted：派发到指定 worker；--worker-name 必填。
+popola dispatch --cloud-target=self-hosted --worker-name=my-team-worker \
+  "Refactor the caching layer and add unit tests"
+
+# cursor-managed：托管 VM；--worker-name 必须为空。
+popola dispatch --cloud-target=cursor-managed \
+  "Plan the database migration scaffolding"
+```
+
+当 `--cloud-target` 给定且 `--cli` 没指定时，`cli="cursor-cloud"` 会被自动设置（这样不必每次都同时传 `--cli=cursor-cloud --cloud-target=...`）。v0.9.x 的旧写法 `popola dispatch --cli=cursor-cloud --cli-flag worker_name=W` 仍然向后兼容 —— 该 flag 的值会流入同一份 extras dict，内部会被翻译成新的 `env: {type:"machine", name:"W"}` 请求体形态，并发出一次 `DeprecationWarning`。CLI 解析层强校验互斥关系：
+
+| `--cloud-target` | `--worker-name` | 行为 |
+|---|---|---|
+| `self-hosted` | 非空 | 进入派发 |
+| `self-hosted` | 空 | exit 2（参数校验错误："--worker-name required when --cloud-target=self-hosted"） |
+| `cursor-managed` | 空 | 进入派发 |
+| `cursor-managed` | 非空 | exit 2（参数校验错误："--worker-name not allowed when --cloud-target=cursor-managed"） |
+| `ask-each-time` | 任意 | exit 2（仅可作为 `default_cloud_target` 默认值，不可作为单次任务参数） |
+
+> 解析优先级是 **任务级 `--cloud-target` flag > `[user_preferences].default_cloud_target` > `"ask-each-time"`**（详见 [`DECISIONS.md` Q-6](../../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)）。CLI 进程在派发出栈之前会把上述链路收敛成一对最终 `(target, worker_name)`。
+
+### no-fallback 契约 —— worker 不存在时的行为
+
+当 `--cloud-target=self-hosted` **且** 指定的 worker **未在 Cursor 注册**（即 `GET /v0/private-workers` 返回的列表里没有 `name == --worker-name` 的行）时，`popola dispatch` 会以 **78** 退出，并打印一条双语 hint 指向真正的修复路径：
+
+```text
+error: self-hosted worker 'my-team-worker' is not registered with Cursor.
+
+Reason: popola cloud worker dispatch with --cloud-target=self-hosted requires
+a registered self-hosted worker (verified via GET /v0/private-workers per
+DECISIONS Q-3). The named worker 'my-team-worker' was NOT found in the
+inventory returned by Cursor.
+
+Fix — start a worker for this workspace, then retry:
+  popola cloud worker start --name my-team-worker --worker-dir <repo-root>
+  # ...wait for the worker to register, then re-run:
+  popola cloud worker dispatch "<prompt>" --worker-dir <repo-root> --repo-url <repo-url>
+
+Per the v0.10.0 no-fallback contract (DECISIONS Q-7), popola will NOT silently
+re-route this dispatch to a local cursor-agent subprocess — cloud dispatch and
+local execution are semantically distinct.
+
+错误：Worker 'my-team-worker' 不存在 — 该 self-hosted worker 未在 Cursor 注册。
+原因：popola cloud worker dispatch 在 --cloud-target=self-hosted 模式下需要已注册的
+self-hosted worker（通过 GET /v0/private-workers 校验）。
+
+解决方案：先在仓库根目录启动同名 worker，再重试派发：
+  popola cloud worker start --name my-team-worker --worker-dir <repo-root>
+  # 等 worker 注册成功后：
+  popola cloud worker dispatch "<prompt>" --worker-dir <repo-root> --repo-url <repo-url>
+
+根据 v0.10.0 no-fallback 契约（DECISIONS Q-7），popola 不会静默回退到本地
+cursor-agent 子进程 —— 云端派发与本地执行是语义不同的两件事。
+```
+
+契约本身（详见 [`DECISIONS.md` Q-7](../../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)，引述 [`feedback_for_v0.10.0.md`](../../.local/feedbacks/feedback_for_v0.10.0.md) L5+L11 的用户原话）：popola **绝不**把一次失败的云端派发静默改路由到本地 `cursor-agent` 子进程。云端派发和本地执行是语义不同的两件事 —— 本地子进程不会出现在 [`cursor.com/agents`](https://cursor.com/agents)，静默回退会破坏用户对"云端派发"的定义。Worker 不存在时唯一正解就是先把它启动起来；上面那段 hint 已经把命令给到具体形态。`[user_preferences].fallback_chain` 仍然只对 `default_runtime=local` 流生效；当解析后的云端目标是 `self-hosted` 时，它不会被消费。
+
+如果同名 worker **已注册**但当前正忙（`isInUse=true`），pre-flight 只发一次软 `WARN`（"the run will queue until the worker is free"）然后放行 —— Cursor 网关会接受 POST 并把该 run 入队，所以这种情况下派发本身是允许的。
+
+### `cursor-managed` + `github.com` 仓库的 GitHub-App 前置条件
+
+当 `repos[0].url` 的 host 是 `github.com`，**且** 你选了 `--cloud-target=cursor-managed`（或者 self-hosted 但仓库 URL 是 github.com 域名）时，如果 Cursor GitHub App 没装到对应的仓库上，Cursor REST 网关会返回 `400 validation_error: "Failed to verify existence of branch '<X>' in repository <owner>/<name>"`（或者第二种文案变体 `Failed to determine repository default branch`），**无论那个分支真的存在与否**。v1.0.0-pre.1 把这件事提前到了真正发请求之前：
+
+- **预检拒绝**（新增路径）：`cursor_cloud.create_agent` 在发 POST 前会先调一次 `GET /v1/repositories`。若返回 `{"items":[]}`（即 App 在你的所有仓库上都未授权），派发立刻抛 `GithubAppMissingError`，hint 指向 [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github)，省下那次注定失败的 POST。
+- **后置兜底**（v0.9.x 路径，仍保留作为安全网）：如果你显式跳过预检（`extras["skip_github_app_preflight"] = True`），或者 App 已装但具体仓库未在 allowlist 内，网关那边的 400 仍然会被 `_ERROR_CATALOG` 的 `integration_github_app_branch_not_found` 规则路由到同一个 `GithubAppMissingError`，输出同样的 hint。
+
+授权 App 的入口在 [`https://cursor.com/integrations/github`](https://cursor.com/integrations/github)，按页面里的 org/repo allowlist 步骤勾选目标仓库即可。PopolaLoom 不会代你装这个 App（这是一次组织/仓库级权限授予，超出本工具范围）—— 详见 [`DECISIONS.md` Q-9](../../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)。预检只对 `github.com` host 生效；GitLab / Gitea / 私网 git provider 会跳过它（已记入 `BL-v1.0.0-pre.2-non-github-host-preflight`）。
+
+### 端到端 smoke
+
+```bash
+# Tier-4 release-gate live smoke（需要 CURSOR_API_KEY）。
+pytest tests/cloud/test_real_cursor_cloud_env_shape_v0_10_0.py -m real_cursor_cloud
+
+# 真实派发到 self-hosted worker。
+popola dispatch --cloud-target=self-hosted --worker-name=$WORKER --repo-url=$REPO --cli=cursor-cloud "<prompt>"
+
+# no-fallback 契约抽检 —— 必须 exit 78。
+popola dispatch --cloud-target=self-hosted --worker-name=ghost-worker "test prompt"
+echo "exit_code=$?"
+```
+
+> 参见：`src/popolaloom/adapters/cursor_cloud.py`（env-shape 请求体构建）、`src/popolaloom/cli/cloud_worker_cmd.py::_enforce_self_hosted_worker_exists`（worker 存在性 pre-flight gate）、`src/popolaloom/cloud/preflight.py`（纯函数 helper）、`src/popolaloom/cli/main.py`（`--cloud-target` / `--worker-name` flag）、[`DECISIONS.md` Q-1..Q-12](../../.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md)。
+
 ## Hands-off envelope
 
 每次 dispatch 都会把 payload 写成 `.local/.agent/handoff/<handoff_id>.md`：
@@ -180,6 +305,35 @@ fix the bug in foo.py
 ```
 
 这个信封是 dispatch payload 的单一事实来源：长 prompt 不再受 argv 限制影响；每次派发都有可审计的 Markdown 回执；`popola dispatch --replay <handoff_id>` 可以确定性重放；`POPOLA_HANDOFF_FILE` 和 `POPOLA_HANDOFF_ID` 会注入 agent 子进程环境。
+
+## 用户偏好（v0.9.10+）
+
+`[user_preferences]` 是实验性的操作者偏好 schema，用来把常用 dispatch 选择显式写下来，而不是藏在 shell alias 里。v1.0.0-pre.1 文档和 Skill workflow 会引用它；稳定边界仍标为 experimental，直到 v1.0.0 stable 再决定是否锁定。
+
+```toml
+[user_preferences]
+default_cli = "cursor"
+default_cwd = "~/src/current-project"
+confirm_before_cloud = true
+prefer_streaming = true
+handoff_tags = ["daily-driver", "reviewable"]
+
+[user_preferences.dispatch]
+default_wait = false
+timeout_seconds = 120
+extra_cli_flags = { output_format = "stream-json" }
+```
+
+四个典型命令：
+
+```bash
+popola init --interactive
+popola dispatch "summarize the repository state" --use-preferences
+popola dispatch "review the migration plan" --profile daily-driver --json
+popola doctor --json | jq '.user_preferences'
+```
+
+偏好文件不能放 secret。Cursor API key 仍然放 OS keyring、`CURSOR_API_KEY`，或 v0.9.9+ 的 0o600 fallback 文件；偏好只用于路由、交互默认值和可重复的 dispatch 旋钮。
 
 ## 配置
 

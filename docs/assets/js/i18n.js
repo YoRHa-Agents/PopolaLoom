@@ -1,4 +1,4 @@
-/* PopolaLoom v0.9.7 — client-side i18n switcher (vanilla, no deps).
+/* PopolaLoom v1.0.0-pre.1 — client-side i18n switcher (vanilla, no deps).
  *
  * Strategy: localStorage-persisted lang state + per-page fetch of JSON dict
  * + DOM textContent rewrite over [data-i18n="key"] attributes. No router
@@ -51,8 +51,18 @@
   const _dicts = Object.create(null);
   let _enDict = null;
 
+  function normalizeHtmlLang(lang) {
+    if (!lang) return null;
+    const normalized = String(lang).toLowerCase();
+    if (normalized.startsWith('zh')) return 'zh';
+    if (normalized.startsWith('en')) return 'en';
+    return null;
+  }
+
   function getCurrentLang() {
     if (PAGE_LANG && SUPPORTED_LANGS.includes(PAGE_LANG)) return PAGE_LANG;
+    const htmlLang = normalizeHtmlLang(document.documentElement.lang);
+    if (htmlLang && SUPPORTED_LANGS.includes(htmlLang)) return htmlLang;
     try {
       const stored = localStorage.getItem(STORAGE_KEY);
       if (stored && SUPPORTED_LANGS.includes(stored)) return stored;
@@ -218,7 +228,7 @@
         const next = cur === 'en' ? 'zh' : 'en';
         if (TRANSLATION_URL) {
           setCurrentLang(next);
-          window.location.href = TRANSLATION_URL;
+          window.location.href = TRANSLATION_URL + window.location.hash;
           return;
         }
         await setLangAndRender(next);

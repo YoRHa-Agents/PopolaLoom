@@ -42,7 +42,7 @@
   "docs.release_notes": "Release Notes (v0.8.0+ floats here)",
   "docs.changelog": "CHANGELOG — full v0.0.1 → v0.8.x history",
   "status.heading": "Project status",
-  "status.lead": "v0.9.7 carries forward the v0.9.0 GA stability boundary while refreshing the public docs for cloud workers, secure key storage, and Cloud HITL gamma. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, and file-backed handoff now share one documented surface. The safe install path is ./install.sh install, with ./install.sh install --with-credentials for OS-keyring-backed Cursor API keys.",
+  "status.lead": "v1.0.0-pre.1 carries forward the v0.9.0 GA stability boundary while pivoting Cursor Cloud dispatch to the env-shape schema, removing the v0.9.9 account_class gate, and adding --cloud-target / --worker-name flags with a no-fallback contract. Cursor Cloud dispatch, self-hosted worker handoff, multi-run attach, cross-PR relay, file-backed handoff, and preference-aware dispatch now share one public map.",
   "footer.tagline": "A loom that weaves agents.",
   "notice.en_only": "This page has no Chinese translation yet — header / footer / landing page only.",
   "nav.design": "Design",

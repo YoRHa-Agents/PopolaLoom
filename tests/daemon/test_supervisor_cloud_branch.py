@@ -1,8 +1,26 @@
-"""Tests for Supervisor cloud-marker spawn path (v0.8.5 Stage 2)."""
+"""Tests for Supervisor cloud-marker spawn path (v0.8.5 Stage 2 + v0.10.0 Wave A1.5).
+
+v0.10.0 (DECISIONS Q-2 / Q-11 / Wave A1.5): the supervisor's marker
+translator no longer forwards the legacy ``use_private_worker`` /
+``labels`` kwargs to ``CloudCursorClient.create_agent``. Instead, the
+supervisor:
+
+1. Reads ``extra["env"]`` (the v0.10.0 marker payload shape from
+   ``_normalize_cloud_extra``) and forwards it as ``env=AgentEnv``.
+2. As a defensive deprecation translator, when ``env`` is absent AND
+   legacy ``use_private_worker=True + labels.worker=X`` are both
+   present, translates the pair into ``env={type:"machine", name:X}``
+   and emits a single ``WARN`` log (so a v0.9.x CLI pinned by an
+   operator can still dispatch to a v0.10.0 daemon).
+
+Tests in this file pin both the new pass-through behaviour and the
+defensive translator (with ``caplog`` capturing the WARN line).
+"""
 
 from __future__ import annotations
 
 import json
+import logging
 import sys
 import time
 from datetime import UTC, datetime
@@ -57,6 +75,66 @@ def test_cloud_marker_triggers_create_agent_path(
     mocker: MockerFixture,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """v0.10.0 (AC6 a): supervisor forwards ``env`` (NOT ``use_private_worker`` / ``labels``).
+
+    The marker payload now carries ``extra["env"]`` (an :class:`AgentEnv`
+    discriminated union) instead of the legacy ``use_private_worker`` +
+    ``labels`` pair. The supervisor passes ``env`` through to
+    ``CloudCursorClient.create_agent`` via the typed ``env=`` kwarg and
+    NEVER reconstructs the v0.9.x kwargs.
+    """
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test")
+    sup, store, log, task_id = cloud_task_env
+    mock_cls = mocker.patch("popolaloom.adapters.cursor_cloud.CloudCursorClient")
+    instance = mock_cls.return_value
+    instance.create_agent.return_value = {
+        "agent": {"id": "bc-test"},
+        "run": {"id": "run-test"},
+    }
+    instance.get_run.return_value = {"status": "FINISHED"}
+    mocker.patch("popolaloom.daemon.cloud_poller.time.sleep", return_value=None)
+    cmd = _marker_cmd(
+        "do work",
+        {
+            "repo_url": "https://github.com/o/r",
+            "env": {"type": "machine", "name": "ci-1"},
+        },
+    )
+    pid = sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+    assert pid == 0
+    assert sup.join(task_id, timeout=5.0)
+    mock_cls.assert_called_once()
+    instance.create_agent.assert_called_once()
+    kwargs = instance.create_agent.call_args.kwargs
+    # v0.10.0 (AC6 a): the new ``env=AgentEnv`` kwarg replaces the v0.9.x
+    # ``use_private_worker`` + ``labels`` pair.
+    assert kwargs["env"] == {"type": "machine", "name": "ci-1"}
+    # Legacy v0.9.x kwargs are NEVER forwarded.
+    assert "use_private_worker" not in kwargs
+    assert "labels" not in kwargs
+    handle = store.get(task_id)
+    assert handle is not None
+    assert handle.runtime == "cloud"
+    assert handle.cursor_agent_id == "bc-test"
+    assert handle.cursor_run_id == "run-test"
+    assert handle.state == TaskState.COMPLETED
+    mock_cls.return_value.close.assert_called()
+
+
+def test_legacy_v0_9_x_extras_translated_to_env_with_warn_log(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """v0.10.0 (AC6 b): legacy ``use_private_worker=True + labels.worker=X`` translates.
+
+    Per Wave A1.5 the supervisor's defensive deprecation translator
+    accepts a v0.9.x marker payload and translates it to
+    ``env={type:"machine", name:X}`` while emitting a single WARN log.
+    This keeps a pinned v0.9.x CLI working against a v0.10.0 daemon for
+    one minor release (the one-release deprecation window per Q-11).
+    """
     monkeypatch.setenv("CURSOR_API_KEY", "k-test")
     sup, store, log, task_id = cloud_task_env
     mock_cls = mocker.patch("popolaloom.adapters.cursor_cloud.CloudCursorClient")
@@ -75,23 +153,70 @@ def test_cloud_marker_triggers_create_agent_path(
             "labels": {"pool": "popolaloom", "worker": "ci-1"},
         },
     )
-    pid = sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
-    assert pid == 0
-    assert sup.join(task_id, timeout=5.0)
-    mock_cls.assert_called_once()
+
+    with caplog.at_level(logging.WARNING, logger="popolaloom.daemon.supervisor"):
+        pid = sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+        assert pid == 0
+        assert sup.join(task_id, timeout=5.0)
+
     instance.create_agent.assert_called_once()
-    assert instance.create_agent.call_args.kwargs["use_private_worker"] is True
-    assert instance.create_agent.call_args.kwargs["labels"] == {
-        "pool": "popolaloom",
-        "worker": "ci-1",
-    }
+    kwargs = instance.create_agent.call_args.kwargs
+    # AC6 (b): legacy pair translated to env={type:"machine", name:X}.
+    assert kwargs["env"] == {"type": "machine", "name": "ci-1"}
+    assert "use_private_worker" not in kwargs
+    assert "labels" not in kwargs
+
+    # AC6 (b): WARN log captured with the documented deprecation text.
+    warn_records = [
+        r for r in caplog.records
+        if r.levelno == logging.WARNING
+        and "legacy marker payload detected" in r.getMessage()
+        and "translating use_private_worker+labels to env=AgentEnv" in r.getMessage()
+    ]
+    assert warn_records, (
+        "expected a WARN log matching 'legacy marker payload detected; translating "
+        "use_private_worker+labels to env=AgentEnv'; got "
+        f"{[r.getMessage() for r in caplog.records if r.levelno == logging.WARNING]}"
+    )
+
     handle = store.get(task_id)
     assert handle is not None
     assert handle.runtime == "cloud"
-    assert handle.cursor_agent_id == "bc-test"
-    assert handle.cursor_run_id == "run-test"
     assert handle.state == TaskState.COMPLETED
-    mock_cls.return_value.close.assert_called()
+
+
+def test_legacy_use_private_worker_without_labels_fails_early(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+    mocker: MockerFixture,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v0.10.0 (AC6 b sibling): ``use_private_worker=True`` without a worker name fails.
+
+    Per the supervisor's deprecation translator (and the No-Silent-Failures
+    workspace rule), ``use_private_worker=True`` without a paired
+    ``labels.worker=X`` would round-trip to a 400 from the gateway
+    (``env={type:"machine"}`` requires ``name``). The supervisor refuses
+    early with ``error_kind="marker_decode_error"`` rather than dispatching
+    a payload guaranteed to fail.
+    """
+    monkeypatch.setenv("CURSOR_API_KEY", "k-test")
+    sup, _, log, task_id = cloud_task_env
+    mocker.patch("popolaloom.adapters.cursor_cloud.CloudCursorClient")
+    cb = MagicMock()
+    cmd = _marker_cmd(
+        "do work",
+        {
+            "repo_url": "https://github.com/o/r",
+            "use_private_worker": True,
+            # NB: no labels.worker provided.
+        },
+    )
+    sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=cb)
+    log.fsync()
+    failed = next(e for e in log.tail() if e["type"] == "task.failed")
+    assert failed["data"]["error_kind"] == "marker_decode_error"
+    assert "use_private_worker=True requires" in failed["data"]["error_detail"]
+    cb.assert_called_once_with(task_id, 1)
 
 
 def test_local_cmd_does_not_use_cloud_client(
