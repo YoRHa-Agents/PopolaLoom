@@ -144,7 +144,8 @@ _V010_DEPRECATION_ALLOWLIST: frozenset[str] = frozenset(
 )
 """Files allowed to call ``warnings.warn(..., DeprecationWarning)`` in v0.10.0+.
 
-Per v0.10.0 DECISIONS Q-2 + Q-11 (`.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`),
+Per v0.10.0 DECISIONS Q-2 + Q-11
+(`.local/.agent/active/v0.10.0-cloud-dispatch-clarity/DECISIONS.md`),
 ``cursor_cloud.py`` translates legacy v0.9.x ``use_private_worker``/``labels``/
 ``worker_name``/``machine_name`` extras to the new ``env: AgentEnv`` shape
 during a one-minor-release deprecation window. The warning targets the

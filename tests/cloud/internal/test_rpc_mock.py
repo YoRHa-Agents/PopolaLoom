@@ -328,3 +328,103 @@ def test_client_context_manager_closes_owned_client() -> None:
     # Re-using a closed client raises (smoke that close() actually closed it)
     with pytest.raises(RuntimeError):
         client._client.get("https://example.com")  # noqa: SLF001
+
+
+def test_user_effort_to_effort_mode_rejects_unknown() -> None:
+    """Unknown --effort value → ValueError listing valid values."""
+    with pytest.raises(ValueError) as exc_info:
+        user_effort_to_effort_mode("blazing")
+    msg = str(exc_info.value)
+    assert "low" in msg and "medium" in msg and "high" in msg
+
+
+def test_user_thinking_level_to_proto_rejects_unknown() -> None:
+    """Unknown --thinking-level → ValueError listing valid values."""
+    with pytest.raises(ValueError) as exc_info:
+        user_thinking_level_to_proto("ultra")
+    msg = str(exc_info.value)
+    assert "low" in msg and "medium" in msg and "high" in msg
+
+
+def test_build_request_empty_repo_url_rejected() -> None:
+    """empty repo_url is required (No Silent Failures)."""
+    with pytest.raises(ValueError) as exc_info:
+        build_start_composer_request(prompt="x", repo_url="")
+    assert "repo_url" in str(exc_info.value)
+
+
+def test_start_composer_warns_when_jwt_within_safety_margin(
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Near-expiry JWT emits a WARN before the dispatch (callers should refresh)."""
+    import base64 as _b64
+    import json as _json
+    import logging as _logging
+    import time as _time
+
+    soon_exp = int(_time.time()) + 5  # within the 30s safety margin
+    header_b64 = _b64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+    payload_b64 = (
+        _b64.urlsafe_b64encode(_json.dumps({"exp": soon_exp}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    expiring = JWTBundle(
+        access_token=f"{header_b64}.{payload_b64}.sig",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=soon_exp,
+    )
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"background_composer_id": "bc-near"})
+
+    client = CursorCloudInternalClient(
+        expiring,
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    rpc_logger = "popolaloom.cloud.internal.cursor_cloud_internal"
+    with caplog.at_level(_logging.WARNING, logger=rpc_logger):
+        client.start_background_composer_from_snapshot(
+            build_start_composer_request(
+                prompt="x", repo_url="https://github.com/x/y"
+            )
+        )
+    assert any(
+        "safety margin" in rec.message for rec in caplog.records
+    ), caplog.text
+
+
+def test_start_composer_propagates_httpx_request_error_as_internal_error() -> None:
+    """HTTP layer ConnectError → CursorCloudInternalError with fall-back hint."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        raise httpx.ConnectError("simulated network failure")
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    with pytest.raises(CursorCloudInternalError) as exc_info:
+        client.start_background_composer_from_snapshot(
+            build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+        )
+    assert "auth-mode=rest" in exc_info.value.hint
+
+
+def test_start_composer_non_dict_response_rejected() -> None:
+    """A JSON list (not dict) at top level → CursorCloudInternalError."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json=[1, 2, 3])
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    with pytest.raises(CursorCloudInternalError) as exc_info:
+        client.start_background_composer_from_snapshot(
+            build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+        )
+    assert "non-object" in str(exc_info.value) or "auth-mode=rest" in exc_info.value.hint

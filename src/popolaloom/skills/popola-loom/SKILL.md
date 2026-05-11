@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.0.0-pre.1
+version: 1.0.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -13,7 +13,7 @@ token_estimate: 3300
 last_updated: "2026-05-11"
 ---
 
-<!-- updated: 2026-05-11; v1.0.0-pre.1 docs/skill sync -->
+<!-- updated: 2026-05-11; v1.0.0 GA docs/skill sync -->
 
 
 # PopolaLoom Skill
@@ -491,15 +491,15 @@ timeout_seconds = 120
 
 ## Version + upgrade
 
-- **Current**: v1.0.0-pre.1（2026-05-11，**stable since v0.9.0**）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
+- **Current**: v1.0.0 GA（2026-05-11，**stable since v0.9.0**, GA from v1.0.0）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
 - **Install / Upgrade**:
   ```bash
   ./install.sh install
-  ./install.sh install --ref=v1.0.0-pre.1
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0-pre.1
+  ./install.sh install --ref=v1.0.0
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.0.0
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
-  > PyPI remains deferred for v0.9.x / v1.0.0-pre.x; default installer uses GitHub.
+  > PyPI remains deferred for v0.9.x / v1.0.0; default installer uses GitHub.
 - **Check / drift**: `popola version`, `cat ~/.cursor/skills/popola-loom/.popola-loom-version`, then `popola doctor`.
 - **Idempotency**: `popola init <verb>` skips existing installs; force refresh via `popola skill upgrade`.
 - **v0.7.x → v0.9.0**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。

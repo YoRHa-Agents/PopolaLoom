@@ -42,7 +42,6 @@ from popolaloom.daemon.main import (
     user_preferences_to_toml_dict,
 )
 
-
 # ---------------------------------------------------------------------------
 # Test fixtures / helpers.
 # ---------------------------------------------------------------------------
@@ -78,9 +77,9 @@ def _reset_deprecation_flag(monkeypatch: pytest.MonkeyPatch) -> None:
 
 def test_valid_default_cloud_target_constant_shape() -> None:
     """``USER_PREF_VALID_DEFAULT_CLOUD_TARGET`` is the documented frozenset (AC 2)."""
-    assert USER_PREF_VALID_DEFAULT_CLOUD_TARGET == frozenset(
+    assert frozenset(
         {"self-hosted", "cursor-managed", "ask-each-time"}
-    )
+    ) == USER_PREF_VALID_DEFAULT_CLOUD_TARGET
     assert isinstance(USER_PREF_VALID_DEFAULT_CLOUD_TARGET, frozenset)
 
 

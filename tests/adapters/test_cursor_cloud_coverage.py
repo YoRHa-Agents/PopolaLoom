@@ -408,16 +408,15 @@ def test_normalize_cloud_extra_cloud_target_cursor_managed_rejects_worker_name()
     Per Q-2: ``cursor-managed`` routes to the Cursor cloud VM; setting a
     self-hosted-routing knob alongside it is a configuration bug.
     """
-    with pytest.raises(ValueError, match=r"mutually exclusive"):
-        with warnings.catch_warnings():
-            warnings.simplefilter("ignore", DeprecationWarning)
-            _normalize_cloud_extra(
-                {
-                    "repo_url": "https://github.com/o/r",
-                    "cloud_target": "cursor-managed",
-                    "worker_name": "ci-worker-1",
-                }
-            )
+    with pytest.raises(ValueError, match=r"mutually exclusive"), warnings.catch_warnings():
+        warnings.simplefilter("ignore", DeprecationWarning)
+        _normalize_cloud_extra(
+            {
+                "repo_url": "https://github.com/o/r",
+                "cloud_target": "cursor-managed",
+                "worker_name": "ci-worker-1",
+            }
+        )
 
 
 def test_normalize_cloud_extra_cloud_target_ask_each_time_rejected() -> None:

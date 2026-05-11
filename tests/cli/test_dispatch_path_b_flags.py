@@ -230,8 +230,16 @@ def test_apply_path_b_flags_non_cursor_cloud_cli_warns_and_drops(
 # ── Typer command signature smoke ───────────────────────────────────
 
 
-def test_dispatch_command_exposes_all_path_b_flags() -> None:
-    """All 8 path-B flags + --auth-mode appear in `popola dispatch --help`."""
+def test_dispatch_command_exposes_all_path_b_flags(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """All 8 path-B flags + --auth-mode appear in `popola dispatch --help`.
+
+    Forces COLUMNS=200 so Typer's rich-format help table does not truncate
+    flag names (CI default 80-col would render ``--auth-mode`` as
+    ``--auth…``).
+    """
+    monkeypatch.setenv("COLUMNS", "200")
     runner = CliRunner()
     result = runner.invoke(main_app, ["dispatch", "--help"])
     assert result.exit_code == 0, result.output
@@ -249,8 +257,11 @@ def test_dispatch_command_exposes_all_path_b_flags() -> None:
         assert needle in output, f"missing {needle} in dispatch --help"
 
 
-def test_dispatch_help_marks_path_b_as_experimental() -> None:
+def test_dispatch_help_marks_path_b_as_experimental(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """The --auth-mode help text labels session-jwt as experimental."""
+    monkeypatch.setenv("COLUMNS", "200")
     runner = CliRunner()
     result = runner.invoke(main_app, ["dispatch", "--help"])
     assert "EXPERIMENTAL" in result.output

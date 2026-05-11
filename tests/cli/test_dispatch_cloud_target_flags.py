@@ -37,6 +37,8 @@ from popolaloom.cli.main import (
     _EXIT_INVALID_ARGS,
     _apply_cloud_preferences,
     _validate_cloud_target_flags,
+)
+from popolaloom.cli.main import (
     app as main_app,
 )
 from popolaloom.daemon.main import UserPreferencesConfig

@@ -259,5 +259,5 @@ def test_both_skills_resolve_via_importlib() -> None:
     assert "name: popola-loom" in canon_text, "canonical SKILL.md frontmatter wrong"
     assert "name: install-popola" in inst_text, "install-popola SKILL.md frontmatter wrong"
 
-    assert "version: 1.0.0-pre.1" in canon_text, "canonical SKILL.md not at 1.0.0-pre.1"
-    assert "version: 1.0.0-pre.1" in inst_text, "install-popola SKILL.md not at 1.0.0-pre.1"
+    assert "version: 1.0.0" in canon_text, "canonical SKILL.md not at 1.0.0"
+    assert "version: 1.0.0" in inst_text, "install-popola SKILL.md not at 1.0.0"

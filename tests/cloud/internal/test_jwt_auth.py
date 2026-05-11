@@ -201,3 +201,119 @@ def test_default_auth_json_path_constant() -> None:
     """The canonical path is ~/.config/cursor/auth.json (sanity check)."""
     assert DEFAULT_AUTH_JSON_PATH.name == "auth.json"
     assert DEFAULT_AUTH_JSON_PATH.parent.name == "cursor"
+
+
+def test_decode_jwt_exp_accepts_float_payload() -> None:
+    """JWT exp claim may be a float; decoder coerces to int."""
+    import base64 as _b64
+    import json as _json
+
+    header_b64 = _b64.urlsafe_b64encode(b'{"alg":"none"}').rstrip(b"=").decode()
+    payload_b64 = (
+        _b64.urlsafe_b64encode(_json.dumps({"exp": 1_900_000_000.5}).encode())
+        .rstrip(b"=")
+        .decode()
+    )
+    token = f"{header_b64}.{payload_b64}.sig"
+    assert _decode_jwt_exp(token) == 1_900_000_000
+
+
+def test_load_raises_when_file_is_not_json(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Corrupt JSON file is wrapped in JWTAuthError with bilingual hint."""
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text("not json at all")
+    monkeypatch.delenv(ENV_VAR_JWT, raising=False)
+    with pytest.raises(JWTAuthError) as exc_info:
+        load_jwt_bundle(auth_json_path=auth_json)
+    assert "valid JSON" in exc_info.value.hint
+    assert "请检查" in exc_info.value.hint
+
+
+def test_load_raises_when_file_top_level_not_object(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """A JSON array (not object) at top-level is rejected."""
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text("[1, 2, 3]")
+    monkeypatch.delenv(ENV_VAR_JWT, raising=False)
+    with pytest.raises(JWTAuthError) as exc_info:
+        load_jwt_bundle(auth_json_path=auth_json)
+    assert "top-level must be a JSON object" in str(exc_info.value)
+
+
+def test_write_refreshed_bundle_creates_parent_dir_when_missing(
+    tmp_path: Path,
+) -> None:
+    """The file-lock helper creates parent dirs and the auth file at 0o600."""
+    nested = tmp_path / "deep" / "nested" / "auth.json"
+    bundle = JWTBundle(
+        access_token="old",
+        refresh_token=None,
+        source="file",
+        path=nested,
+        exp_unix_s=None,
+    )
+    refreshed = write_refreshed_bundle(
+        bundle,
+        new_access_token=_fake_jwt(int(time.time()) + 7200),
+        new_refresh_token="r",
+        auth_json_path=nested,
+    )
+    assert refreshed.access_token != "old"
+    assert nested.exists()
+    persisted = json.loads(nested.read_text())
+    assert persisted["accessToken"] == refreshed.access_token
+    assert persisted["refreshToken"] == "r"
+
+
+def test_write_refreshed_bundle_handles_existing_corrupt_json(
+    tmp_path: Path,
+) -> None:
+    """When the existing auth.json is corrupt, refresh replaces it cleanly."""
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text("totally not json")
+    bundle = JWTBundle(
+        access_token="old",
+        refresh_token=None,
+        source="file",
+        path=auth_json,
+        exp_unix_s=None,
+    )
+    new_token = _fake_jwt(int(time.time()) + 7200)
+    refreshed = write_refreshed_bundle(
+        bundle,
+        new_access_token=new_token,
+        new_refresh_token=None,
+        auth_json_path=auth_json,
+    )
+    assert refreshed.access_token == new_token
+    persisted = json.loads(auth_json.read_text())
+    assert persisted["accessToken"] == new_token
+
+
+def test_write_refreshed_bundle_preserves_existing_refresh_when_new_is_none(
+    tmp_path: Path,
+) -> None:
+    """new_refresh_token=None keeps the current bundle's refresh_token."""
+    auth_json = tmp_path / "auth.json"
+    auth_json.write_text(
+        json.dumps({"accessToken": "old", "refreshToken": "keep-me"})
+    )
+    bundle = JWTBundle(
+        access_token="old",
+        refresh_token="keep-me",
+        source="file",
+        path=auth_json,
+        exp_unix_s=None,
+    )
+    refreshed = write_refreshed_bundle(
+        bundle,
+        new_access_token=_fake_jwt(int(time.time()) + 7200),
+        new_refresh_token=None,
+        auth_json_path=auth_json,
+    )
+    assert refreshed.refresh_token == "keep-me"

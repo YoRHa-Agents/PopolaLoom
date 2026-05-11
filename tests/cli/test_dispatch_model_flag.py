@@ -71,10 +71,18 @@ def test_apply_model_flag_empty_is_noop() -> None:
     assert extra_with_legacy == {"model": "claude-sonnet-4"}
 
 
-def test_dispatch_command_exposes_model_flag() -> None:
-    """AC5: ``popola dispatch --help`` lists ``--model`` (signature smoke)."""
+def test_dispatch_command_exposes_model_flag(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """AC5: ``popola dispatch --help`` lists ``--model`` (signature smoke).
+
+    Run with a wide terminal width so Typer's rich-format help table does
+    not truncate flag names (CI defaults to 80-col, which would render
+    ``--model`` as ``--mod…`` in the narrow help column).
+    """
     from typer.testing import CliRunner
 
+    monkeypatch.setenv("COLUMNS", "200")
     runner = CliRunner()
     result = runner.invoke(main_app, ["dispatch", "--help"])
     assert result.exit_code == 0, result.output
