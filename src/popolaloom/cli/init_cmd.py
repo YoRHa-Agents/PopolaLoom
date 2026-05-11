@@ -1945,11 +1945,13 @@ def _prompt_option_group(
         return options[default_idx][0]
     try:
         selected = int(raw)
-    except ValueError:
+    except ValueError as exc:
         values = [value for value, _label in options]
         if raw in values:
             return raw
-        raise ValueError(f"invalid option {raw!r}; choose 1-{len(options)} or one of {values}")
+        raise ValueError(
+            f"invalid option {raw!r}; choose 1-{len(options)} or one of {values}"
+        ) from exc
     if selected < 1 or selected > len(options):
         raise ValueError(f"invalid option {selected}; choose 1-{len(options)}")
     return options[selected - 1][0]
