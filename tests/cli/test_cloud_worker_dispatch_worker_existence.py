@@ -649,7 +649,7 @@ def test_default_cloud_target_self_hosted_no_worker_fails_validation(
 
     result = runner.invoke(
         main_app,
-        ["dispatch", "no worker pref"],
+            ["dispatch", "no worker pref", "--no-wizard"],
     )
 
     assert result.exit_code == cloud_worker_cmd._EXIT_INVALID_ARGS, (

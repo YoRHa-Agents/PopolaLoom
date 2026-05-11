@@ -72,6 +72,7 @@ app = typer.Typer(
     help="PopolaLoom meta-orchestrator CLI — dispatch tasks across local agent CLIs.",
     no_args_is_help=True,
     add_completion=False,
+    invoke_without_command=True,
 )
 
 
@@ -161,6 +162,20 @@ _VALID_CLOUD_TARGETS_DISPATCH: frozenset[str] = frozenset(
 must collapse it to ``self-hosted`` or ``cursor-managed`` BEFORE leaving the
 CLI process (DECISIONS Q-6, PLAN B3 AC 3).
 """
+
+
+@app.callback()
+def _root_callback(
+    version_flag: bool = typer.Option(
+        False,
+        "--version",
+        help="Print package version and exit.",
+    ),
+) -> None:
+    """Root options shared by all commands."""
+    if version_flag:
+        typer.echo(f"popolaloom {__version__}")
+        raise typer.Exit(code=0)
 
 
 # ── transport helpers ────────────────────────────────────────────────────
@@ -453,6 +468,17 @@ def dispatch(
         "--json",
         help="Emit machine-readable JSON instead of a plain task_id line.",
     ),
+    wizard: bool = typer.Option(
+        False,
+        "--wizard",
+        "-W",
+        help="Walk through dispatch option groups before submitting.",
+    ),
+    no_wizard: bool = typer.Option(
+        False,
+        "--no-wizard",
+        help="Disable implicit dispatch wizard even when preferences request prompting.",
+    ),
 ) -> None:
     """Dispatch a new task to popolad and (optionally) wait for completion.
 
@@ -462,6 +488,13 @@ def dispatch(
     dispatch payload — exact replay of a prior dispatch (or a relay'd /
     HITL'd one) without re-typing the prompt or its flags.
     """
+    if wizard and json_out:
+        typer.echo("error: --wizard cannot be combined with --json", err=True)
+        raise typer.Exit(code=2)
+    if wizard and no_wizard:
+        typer.echo("error: --wizard and --no-wizard are mutually exclusive", err=True)
+        raise typer.Exit(code=2)
+
     if replay:
         _resolved = _resolve_replay(replay, prompt, cli, cwd, cli_flag)
         prompt = _resolved.prompt
@@ -498,6 +531,9 @@ def dispatch(
                 cwd=cwd,
                 cloud_target_flag=cloud_target,
                 worker_name_flag=worker_name,
+                prompt=prompt,
+                wizard=wizard,
+                no_wizard=no_wizard,
             )
         elif cli == "cursor-cloud":
             prefs = _load_dispatch_preferences_or_exit()
@@ -1625,6 +1661,9 @@ def _select_cli_from_preferences(
     cwd: Path | None,
     cloud_target_flag: str = "",
     worker_name_flag: str = "",
+    prompt: str = "",
+    wizard: bool = False,
+    no_wizard: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Resolve an omitted ``--cli`` using the present preferences block.
 
@@ -1632,6 +1671,33 @@ def _select_cli_from_preferences(
     :func:`_apply_cloud_preferences` so the precedence resolver (B3 AC 4)
     sees them whenever the runtime resolves to ``cursor-cloud``.
     """
+    if wizard or (
+        not no_wizard
+        and getattr(getattr(prefs, "dispatch", None), "ambiguity_resolution", "")
+        == "prompt"
+    ):
+        from popolaloom.cli.dispatch_wizard import run_dispatch_wizard
+
+        return run_dispatch_wizard(
+            prefs,
+            prompt=prompt,
+            extra=extra,
+            cwd=cwd,
+        )
+
+    if (
+        not no_wizard
+        and getattr(getattr(prefs, "dispatch", None), "ambiguity_resolution", "")
+        == "fail"
+    ):
+        typer.echo(
+            "error: dispatch preferences require explicit dimensions; "
+            "pass --cli or use --wizard. "
+            "(dispatch 配置要求明确派发维度;请传 --cli 或使用 --wizard)",
+            err=True,
+        )
+        raise typer.Exit(code=2)
+
     runtime = str(prefs.default_runtime)
     if bool(prefs.prompt_each_dispatch) or runtime == "ask-each-time":
         cli = _prompt_cli_from_preferences(prefs)
@@ -1820,6 +1886,17 @@ _BUILTIN_PRESETS: dict[str, dict[str, Any]] = {
         "effort": "high",
         "max_mode": True,
     },
+    # v1.1.0 (Track 6) — user-facing "Grind mode" entry point per Cursor's
+    # UI feature naming. Bundles plan + high effort + 4h budget +
+    # long_running + auto-proceed-after-plan so the operator gets the
+    # closest single-flag equivalent of Cursor's "Grind" toggle.
+    "grind": {
+        "mode": "plan",
+        "effort": "high",
+        "long_running": True,
+        "time_budget": "14400s",
+        "auto_proceed_after_plan": True,
+    },
 }
 
 
@@ -1919,11 +1996,18 @@ def _apply_path_b_flags(
     ``--auth-mode=rest`` (default) rejects Path-B-exclusive flags because the
     stable REST gateway does not accept those fields.
 
-    ``--auth-mode=session-jwt`` is **not wired** through ``popolad`` yet —
-    callers always receive exit code :data:`_EXIT_INVALID_ARGS` with a bilingual
-    hint recommending ``rest`` so we never enqueue extras that downstream
-    :func:`~popolaloom.adapters.cursor_cloud._normalize_cloud_extra` would
-    silently discard (No Silent Failures).
+    ``--auth-mode=session-jwt`` (v1.1.0+ wired): when ``cli=cursor-cloud``
+    the JWT bundle is loaded eagerly via
+    :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle` so the
+    operator gets a friendly ``cursor login`` hint at dispatch time
+    rather than at the supervisor's first RPC. On success we inject
+    ``extra["__auth_mode__"] = "session-jwt"`` plus the resolved Path-B
+    knobs (``mode`` / ``max_mode`` / ``effort`` / ``time_budget`` /
+    ``long_running`` / ``auto_proceed_after_plan``) into ``extra`` so the
+    daemon supervisor (:meth:`popolaloom.daemon.supervisor.Supervisor._spawn_cloud`)
+    can branch on ``__auth_mode__`` and call
+    :class:`popolaloom.cloud.internal.cursor_cloud_internal.CursorCloudInternalClient`
+    instead of the REST :class:`CloudCursorClient`.
     """
     raw_auth = auth_mode.strip().replace("_", "-").lower()
     if raw_auth == "jwt":
@@ -2001,15 +2085,55 @@ def _apply_path_b_flags(
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
 
     if auth_mode_normalized == "session-jwt":
-        typer.echo(
-            "error: --auth-mode=session-jwt is not wired into popolad yet "
-            "(cursor-cloud supervisor still uses POST /v1/agents / REST). "
-            "Use --auth-mode=rest, or omit Path-B knobs. "
-            "(--auth-mode=session-jwt / Path-B RPC 暂未接入派发器,"
-            "请改用 --auth-mode=rest)",
-            err=True,
+        # v1.1.0 (Track 6) — Path-B is now wired end-to-end. Eagerly verify
+        # the JWT is loadable so the operator sees the friendly
+        # `cursor login` hint at dispatch time instead of inside the
+        # daemon's RPC failure path. No Silent Failures: any
+        # JWTAuthError propagates to a non-zero exit with hint surfaced.
+        from popolaloom.cloud.internal.jwt_auth import (
+            JWTAuthError,
+            load_jwt_bundle,
         )
-        raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+        try:
+            load_jwt_bundle()
+        except JWTAuthError as exc:
+            typer.echo(
+                f"error: --auth-mode=session-jwt could not load a JWT: {exc}",
+                err=True,
+            )
+            if exc.hint:
+                typer.echo(f"hint: {exc.hint}", err=True)
+            raise typer.Exit(code=1) from exc
+
+        # Inject the Path-B routing marker the supervisor branches on.
+        extra["__auth_mode__"] = "session-jwt"
+        # Forward every Path-B knob the user / preset resolved into
+        # `merged`. Only set keys that are present so downstream code
+        # can distinguish "unset" (use Cursor default) from "explicit
+        # value" (overrides default). The supervisor reads these back
+        # to build the StartBackgroundComposerFromSnapshot RPC body.
+        for key in (
+            "mode",
+            "max_mode",
+            "effort",
+            "time_budget",
+            "long_running",
+            "auto_proceed_after_plan",
+        ):
+            if key in merged:
+                extra[key] = merged[key]
+        logger.debug(
+            "path-B enabled: mode=%r effort=%r long_running=%r "
+            "max_mode=%r time_budget=%r auto_proceed_after_plan=%r model=%r",
+            extra.get("mode"),
+            extra.get("effort"),
+            extra.get("long_running"),
+            extra.get("max_mode"),
+            extra.get("time_budget"),
+            extra.get("auto_proceed_after_plan"),
+            extra.get("model"),
+        )
 
 
 def _apply_model_flag(extra: dict[str, Any], model: str, cli: str) -> None:
@@ -2100,6 +2224,23 @@ def _apply_cloud_preferences(
     ``cursor_cloud.py`` (with a ``DeprecationWarning``).
     """
     out = dict(extra)
+    if prefs is not None:
+        cursor_cloud_prefs = getattr(prefs, "cursor_cloud", None)
+        if cursor_cloud_prefs is not None:
+            pref_model = getattr(cursor_cloud_prefs, "model", "default")
+            if pref_model != "default":
+                out.setdefault("model", pref_model)
+            pref_starting_ref = getattr(cursor_cloud_prefs, "starting_ref", "main")
+            if pref_starting_ref != "main":
+                out.setdefault("starting_ref", pref_starting_ref)
+            for pref_key in (
+                "auto_create_pr",
+                "work_on_current_branch",
+                "skip_reviewer_request",
+            ):
+                pref_value = getattr(cursor_cloud_prefs, pref_key, False)
+                if pref_value:
+                    out.setdefault(pref_key, pref_value)
 
     resolved_target: str
     resolved_worker_name: str

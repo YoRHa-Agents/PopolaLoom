@@ -97,12 +97,13 @@ class _AuditSection:
 
 @dataclass(frozen=True)
 class DoctorAggregate:
-    """Top-level doctor output: 4 subsystems + their roll-up tally."""
+    """Top-level doctor output: subsystems + their roll-up tally."""
 
     skill: _AuditSection
     daemon: _AuditSection
     lark: _AuditSection
     arktower: _AuditSection
+    preferences: _AuditSection
     fail_count: int = 0
     warn_count: int = 0
     drift_count: int = 0
@@ -407,6 +408,74 @@ def _popolaloom_migrations_dir() -> Path:
     return Path(__file__).resolve().parents[3] / "migrations"
 
 
+# ── 5. user preferences audit ──────────────────────────────────────────
+
+
+def _audit_user_preferences() -> _AuditSection:
+    """Validate the optional ``[user_preferences]`` schema."""
+    home = os.environ.get("POPOLA_HOME")
+    config_path = (
+        Path(home).expanduser().resolve() if home else Path.home() / ".popola"
+    ) / "popolad.toml"
+    if not config_path.exists():
+        check = _AuditCheck(
+            name="schema",
+            target=str(config_path),
+            status="OFF",
+            detail="popolad.toml absent",
+        )
+        return _AuditSection(
+            name="User preferences schema",
+            checks=[check],
+            verdict="OK",
+            summary="no preferences file configured",
+        )
+
+    try:
+        import tomllib
+
+        from popolaloom.daemon.main import _load_user_preferences
+
+        with config_path.open("rb") as fp:
+            raw = tomllib.load(fp)
+        prefs = _load_user_preferences(raw, source=config_path)
+    except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
+        check = _AuditCheck(
+            name="schema",
+            target=str(config_path),
+            status="FAIL",
+            detail=f"invalid: {exc}",
+        )
+        return _AuditSection(
+            name="User preferences schema",
+            checks=[check],
+            verdict="FAIL",
+            summary="invalid user_preferences",
+        )
+
+    if prefs is None:
+        detail = "not configured"
+        status = "OFF"
+    elif getattr(prefs, "schema_version", 1) >= 2:
+        detail = "v2 nested"
+        status = "OK"
+    else:
+        detail = "v1 flat (will migrate on write)"
+        status = "WARN"
+    check = _AuditCheck(
+        name="schema",
+        target=str(config_path),
+        status=status,
+        detail=detail,
+    )
+    return _AuditSection(
+        name="User preferences schema",
+        checks=[check],
+        verdict=_roll_up([check]),
+        summary=detail,
+    )
+
+
 # ── aggregator ─────────────────────────────────────────────────────────
 
 
@@ -421,8 +490,15 @@ def collect_doctor_aggregate() -> DoctorAggregate:
     daemon_section = _audit_daemon()
     lark_section = _audit_lark()
     arktower_section = _audit_arktower()
+    preferences_section = _audit_user_preferences()
 
-    sections = (skill_section, daemon_section, lark_section, arktower_section)
+    sections = (
+        skill_section,
+        daemon_section,
+        lark_section,
+        arktower_section,
+        preferences_section,
+    )
     fail = sum(1 for s in sections for c in s.checks if c.status == "FAIL")
     warn = sum(1 for s in sections for c in s.checks if c.status == "WARN")
     drift = sum(1 for s in sections for c in s.checks if c.status == "DRIFT")
@@ -432,6 +508,7 @@ def collect_doctor_aggregate() -> DoctorAggregate:
         daemon=daemon_section,
         lark=lark_section,
         arktower=arktower_section,
+        preferences=preferences_section,
         fail_count=fail,
         warn_count=warn,
         drift_count=drift,
@@ -461,6 +538,7 @@ def _render_terminal(aggregate: DoctorAggregate) -> None:
         aggregate.daemon,
         aggregate.lark,
         aggregate.arktower,
+        aggregate.preferences,
     ):
         _console_out.print(Text(f"\n{section.name}", style="bold"))
         for check in section.checks:
@@ -479,7 +557,7 @@ def _render_terminal(aggregate: DoctorAggregate) -> None:
 
     _console_out.print(
         Text(
-            "\nSummary: 4/4 subsystems checked. "
+            "\nSummary: 5/5 subsystems checked. "
             f"{aggregate.warn_count} WARN, "
             f"{aggregate.drift_count} DRIFT, "
             f"{aggregate.fail_count} FAIL.",
@@ -503,6 +581,9 @@ def _render_json(aggregate: DoctorAggregate) -> str:
         else {},
         "lark": [_section_to_jsonable(c) for c in aggregate.lark.checks],
         "arktower": [_section_to_jsonable(c) for c in aggregate.arktower.checks],
+        "preferences": [
+            _section_to_jsonable(c) for c in aggregate.preferences.checks
+        ],
         "summary": {
             "fail": aggregate.fail_count,
             "warn": aggregate.warn_count,
@@ -512,6 +593,7 @@ def _render_json(aggregate: DoctorAggregate) -> str:
                 "daemon": aggregate.daemon.verdict,
                 "lark": aggregate.lark.verdict,
                 "arktower": aggregate.arktower.verdict,
+                "preferences": aggregate.preferences.verdict,
             },
         },
     }
