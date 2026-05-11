@@ -24,7 +24,6 @@ import logging
 import pytest
 
 from popolaloom.cli.main import _apply_model_flag
-from popolaloom.cli.main import app as main_app
 
 
 def test_apply_model_flag_populates_extra_for_cursor_cloud() -> None:
@@ -71,23 +70,20 @@ def test_apply_model_flag_empty_is_noop() -> None:
     assert extra_with_legacy == {"model": "claude-sonnet-4"}
 
 
-def test_dispatch_command_exposes_model_flag(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """AC5: ``popola dispatch --help`` lists ``--model`` (signature smoke).
+def test_dispatch_command_exposes_model_flag() -> None:
+    """AC5: ``popola dispatch`` has a ``model`` parameter (signature smoke).
 
-    Run with a wide terminal width so Typer's rich-format help table does
-    not truncate flag names (CI defaults to 80-col, which would render
-    ``--model`` as ``--mod…`` in the narrow help column).
+    Inspect the underlying Python function signature rather than the
+    rendered ``--help`` text — Typer's rich-format help truncates flag
+    names in narrow terminals (CI default 80-col) regardless of the
+    COLUMNS env var because CliRunner uses its own width detection.
     """
-    from typer.testing import CliRunner
+    import inspect
 
-    monkeypatch.setenv("COLUMNS", "200")
-    runner = CliRunner()
-    result = runner.invoke(main_app, ["dispatch", "--help"])
-    assert result.exit_code == 0, result.output
-    assert "--model" in result.output
-    assert "Cursor cloud agent" in result.output or "model id" in result.output
+    from popolaloom.cli.main import dispatch as _dispatch_fn
+
+    params = inspect.signature(_dispatch_fn).parameters
+    assert "model" in params, f"--model missing from dispatch params: {sorted(params)}"
 
 
 def test_apply_model_flag_no_op_when_legacy_extra_matches_flag() -> None:

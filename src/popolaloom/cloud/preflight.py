@@ -152,7 +152,10 @@ def check_self_hosted_worker_exists(
         )
 
     workers_iter = client.list_workers()
-    workers: list[dict[str, Any]] = list(workers_iter)
+    # WorkerInfo is a TypedDict (snake_case keys); treat it as dict[str, Any]
+    # for the membership / sort / repr operations below — TypedDict is dict-
+    # compatible at runtime, the cast satisfies strict mypy.
+    workers: list[dict[str, Any]] = [dict(w) for w in workers_iter]
 
     matches: list[dict[str, Any]] = [w for w in workers if w.get("name") == name]
     if not matches:

@@ -16,7 +16,6 @@ from __future__ import annotations
 import logging
 
 import pytest
-from typer.testing import CliRunner
 
 from popolaloom.cli.main import (
     _BUILTIN_PRESETS,
@@ -24,9 +23,6 @@ from popolaloom.cli.main import (
     _apply_path_b_flags,
     _apply_preset,
     _parse_time_budget,
-)
-from popolaloom.cli.main import (
-    app as main_app,
 )
 
 # ── _parse_time_budget (Q-18) ───────────────────────────────────────
@@ -230,38 +226,46 @@ def test_apply_path_b_flags_non_cursor_cloud_cli_warns_and_drops(
 # ── Typer command signature smoke ───────────────────────────────────
 
 
-def test_dispatch_command_exposes_all_path_b_flags(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """All 8 path-B flags + --auth-mode appear in `popola dispatch --help`.
+def test_dispatch_command_exposes_all_path_b_flags() -> None:
+    """All 8 path-B parameters + auth_mode appear in `popola dispatch` signature.
 
-    Forces COLUMNS=200 so Typer's rich-format help table does not truncate
-    flag names (CI default 80-col would render ``--auth-mode`` as
-    ``--auth…``).
+    Inspects the underlying Python function signature rather than the
+    rendered ``--help`` text — Typer's rich-format help truncates flag
+    names in narrow terminals (CI default 80-col) regardless of the
+    COLUMNS env var because CliRunner uses its own width detection.
     """
-    monkeypatch.setenv("COLUMNS", "200")
-    runner = CliRunner()
-    result = runner.invoke(main_app, ["dispatch", "--help"])
-    assert result.exit_code == 0, result.output
-    output = result.output
+    import inspect
+
+    from popolaloom.cli.main import dispatch as _dispatch_fn
+
+    params = inspect.signature(_dispatch_fn).parameters
     for needle in (
-        "--auth-mode",
-        "--mode",
-        "--max-mode",
-        "--effort",
-        "--time-budget",
-        "--long-running",
-        "--auto-proceed-after",  # Typer/help may ellipsis the full spelling
-        "--preset",
+        "auth_mode",
+        "mode",
+        "max_mode",
+        "effort",
+        "time_budget",
+        "long_running",
+        "auto_proceed_after_plan",
+        "preset",
     ):
-        assert needle in output, f"missing {needle} in dispatch --help"
+        assert needle in params, (
+            f"missing {needle} in dispatch signature: {sorted(params)}"
+        )
 
 
-def test_dispatch_help_marks_path_b_as_experimental(
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """The --auth-mode help text labels session-jwt as experimental."""
-    monkeypatch.setenv("COLUMNS", "200")
-    runner = CliRunner()
-    result = runner.invoke(main_app, ["dispatch", "--help"])
-    assert "EXPERIMENTAL" in result.output
+def test_dispatch_help_marks_path_b_as_experimental() -> None:
+    """The --auth-mode help text labels session-jwt as experimental.
+
+    Inspect the param's default Typer.Option help string rather than
+    the rendered output (see test_dispatch_command_exposes_all_path_b_flags
+    for the rationale).
+    """
+    import inspect
+
+    from popolaloom.cli.main import dispatch as _dispatch_fn
+
+    auth_mode_param = inspect.signature(_dispatch_fn).parameters["auth_mode"]
+    typer_option = auth_mode_param.default
+    help_text = getattr(typer_option, "help", "")
+    assert "EXPERIMENTAL" in help_text

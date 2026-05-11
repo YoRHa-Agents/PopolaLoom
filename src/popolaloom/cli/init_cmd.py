@@ -307,9 +307,9 @@ def apply_user_preference_sets(
         else:
             known = ", ".join(sorted(user_preferences_to_toml_dict(UserPreferencesConfig())))
             raise ValueError(f"unknown preference key {key!r}; known keys: {known}")
-    parsed = _load_user_preferences({"user_preferences": values}, source=prefs_config_path())
-    assert parsed is not None
-    return parsed
+    merged = _load_user_preferences({"user_preferences": values}, source=prefs_config_path())
+    assert merged is not None
+    return merged
 
 
 def _prefs_to_output_dict(prefs: UserPreferencesConfig | None) -> dict[str, object]:
@@ -379,11 +379,12 @@ def prefs_callback(
         raise typer.Exit(code=0)
 
     if ctx.invoked_subcommand is None:
+        loaded: UserPreferencesConfig | None
         try:
-            prefs = load_user_preferences_for_cli()
+            loaded = load_user_preferences_for_cli()
         except (OSError, ValueError, tomllib.TOMLDecodeError) as exc:
             _handle_prefs_cli_error(exc)
-        _print_user_preferences(prefs, json_out=False)
+        _print_user_preferences(loaded, json_out=False)
         raise typer.Exit(code=0)
 
 
