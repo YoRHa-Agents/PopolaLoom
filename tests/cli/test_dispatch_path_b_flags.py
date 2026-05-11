@@ -14,6 +14,7 @@ still uses REST ``POST /v1/agents`` (see ``_apply_path_b_flags`` docstring).
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 import pytest
 
@@ -101,6 +102,54 @@ def test_builtin_presets_catalog_has_required_entries() -> None:
     """The 4 Q-17 preset names are all present."""
     for name in ("quick-fix", "long-running-plan", "exploration", "review"):
         assert name in _BUILTIN_PRESETS
+
+
+def test_apply_preset_loads_user_overlay_file(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Custom preset from ~/.config/popola/presets.toml overlays the built-ins."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    overlay_dir = tmp_path / ".config" / "popola"
+    overlay_dir.mkdir(parents=True)
+    (overlay_dir / "presets.toml").write_text(
+        '[team-rapid]\nmode = "agent"\neffort = "low"\ntime_budget = "300s"\n'
+    )
+    out = _apply_preset({}, "team-rapid", explicit={})
+    assert out["mode"] == "agent"
+    assert out["effort"] == "low"
+    assert out["time_budget"] == "300s"
+
+
+def test_apply_preset_corrupt_overlay_falls_back_to_builtins(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+    caplog: pytest.LogCaptureFixture,
+) -> None:
+    """Corrupt TOML overlay → WARN + fall back to built-ins (No Silent Failures)."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    overlay_dir = tmp_path / ".config" / "popola"
+    overlay_dir.mkdir(parents=True)
+    (overlay_dir / "presets.toml").write_text("this is not valid TOML at all =")
+    with caplog.at_level(logging.WARNING, logger="popolaloom.cli.main"):
+        out = _apply_preset({}, "quick-fix", explicit={})
+    assert out["mode"] == "agent"  # built-in preserved
+    assert any("failed to load custom presets" in r.message for r in caplog.records)
+
+
+def test_apply_preset_overlay_ignores_non_dict_entries(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Top-level non-table entries in presets.toml are silently ignored."""
+    monkeypatch.setenv("HOME", str(tmp_path))
+    overlay_dir = tmp_path / ".config" / "popola"
+    overlay_dir.mkdir(parents=True)
+    (overlay_dir / "presets.toml").write_text(
+        'version = "1"\n[only-this-counts]\nmode = "plan"\n'
+    )
+    out = _apply_preset({}, "only-this-counts", explicit={})
+    assert out["mode"] == "plan"
 
 
 # ── _apply_path_b_flags (Q-13 + Q-19) ───────────────────────────────
