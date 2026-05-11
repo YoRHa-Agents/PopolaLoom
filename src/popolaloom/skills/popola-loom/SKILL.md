@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.1.0
+version: 1.1.1
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -13,7 +13,7 @@ token_estimate: 3300
 last_updated: "2026-05-11"
 ---
 
-<!-- updated: 2026-05-11; v1.1.0 preferences wizard + dispatch Q&A sync -->
+<!-- updated: 2026-05-11; v1.1.1 preferences wizard + dispatch Q&A sync -->
 
 
 # PopolaLoom Skill
@@ -54,7 +54,7 @@ AskQuestion templates (copy/paste shape): `{"question":"Dispatch target?","optio
 | Command | Purpose | Example |
 |---|---|---|
 | `popola dispatch <prompt> --cli=<name>` | 派发任务到指定 agent CLI | `popola dispatch "fix the bug in foo.py" --cli=cursor` |
-| `popola dispatch <prompt> --wizard` | v1.1.0 option-group Q&A: target/model/thinking_depth/special_modes | `popola dispatch "refactor X" --wizard` |
+| `popola dispatch <prompt> --wizard` | v1.1.1 option-group Q&A: target/model/thinking_depth/special_modes | `popola dispatch "refactor X" --wizard` |
 | `popola dispatch ... --cli=cursor-cloud` | 派发任务到 Cursor **Cloud Agents** REST（远端跑，不占本机 subprocess） | 见下文 Workflow 6 |
 | `popola cloud worker {debug,start,status,handoff,dispatch}` | 启动 / 查看本机 self-hosted Cursor worker；`dispatch` 直接走 `popolad` 路由到当前 workspace worker | 见下文 Workflow 10 |
 | Cloud Agent 调 `popolaloom_cloud_hitl_request` MCP 工具 | 云端任务遇高风险决策时 deferer 给真人审批走 Lark（v0.8.7+，Enterprise/γ 模式） | 见下文 Workflow 7 |
@@ -454,11 +454,11 @@ popola dispatch "summarize repo state" --use-preferences
 popola dispatch "review migration plan" --profile daily-driver --json
 ```
 
-Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.1.0 stable.
+Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.1.1 stable.
 
 ### Workflow 12 — Path-B advanced dispatch
 
-Experimental v1.1.0 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cloud-target=self-hosted --worker-name=<X> --model=gpt-5.5 --auth-mode=session-jwt --effort=high --long-running --preset=grind --cli-flag repo_url=https://github.com/org/repo`. Path-B uses Cursor session JWT + Connect-RPC and is not a v1.x stability surface; on 401/404 tell the user to retry stable REST (`--auth-mode=rest`) or run `cursor login`.
+Experimental v1.1.1 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cloud-target=self-hosted --worker-name=<X> --model=gpt-5.5 --auth-mode=session-jwt --effort=high --long-running --preset=grind --cli-flag repo_url=https://github.com/org/repo`. Path-B uses Cursor session JWT + Connect-RPC and is not a v1.x stability surface; on 401/404 tell the user to retry stable REST (`--auth-mode=rest`) or run `cursor login`.
 
 ### Workflow 13 — Guided dispatch with option-group Q&A
 
@@ -466,7 +466,7 @@ Use AskQuestion for target → model → thinking_depth → special_modes, then 
 
 ## Configuration
 
-v1.1.0 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
+v1.1.1 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
 
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
@@ -488,7 +488,7 @@ PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表
 
 ### User preferences (v0.9.10+, experimental)
 
-`[user_preferences]` is an **experimental until v1.1.0 stable** routing/profile schema. Typical keys: `default_cli`, `default_cwd`, `confirm_before_cloud`, `prefer_streaming`, `handoff_tags`, and `[user_preferences.dispatch] timeout_seconds` / `extra_cli_flags`. Never store secrets here.
+`[user_preferences]` is an **experimental until v1.1.1 stable** routing/profile schema. Typical keys: `default_cli`, `default_cwd`, `confirm_before_cloud`, `prefer_streaming`, `handoff_tags`, and `[user_preferences.dispatch] timeout_seconds` / `extra_cli_flags`. Never store secrets here.
 
 ```toml
 [user_preferences]
@@ -509,15 +509,15 @@ timeout_seconds = 120
 
 ## Version + upgrade
 
-- **Current**: v1.1.0 GA（2026-05-11，**stable since v0.9.0**, GA from v1.1.0）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
+- **Current**: v1.1.1 GA（2026-05-11，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
 - **Install / Upgrade**:
   ```bash
   ./install.sh install
-  ./install.sh install --ref=v1.1.0
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.1.0
+  ./install.sh install --ref=v1.1.1
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.1.1
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
-  > PyPI remains deferred for v0.9.x / v1.1.0; default installer uses GitHub.
+  > PyPI remains deferred for v0.9.x / v1.1.1; default installer uses GitHub.
 - **Check / drift**: `popola version`, `cat ~/.cursor/skills/popola-loom/.popola-loom-version`, then `popola doctor`.
 - **Idempotency**: `popola init <verb>` skips existing installs; force refresh via `popola skill upgrade`.
 - **v0.7.x → v0.9.0**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。

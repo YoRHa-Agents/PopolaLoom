@@ -91,7 +91,7 @@ def test_init_cursor_project_writes_skill(
     assert body.startswith("---\nname: popola-loom\n")
     marker = target.parent / ".popola-loom-version"
     assert marker.exists()
-    assert marker.read_text(encoding="utf-8").strip() == "1.1.0"
+    assert marker.read_text(encoding="utf-8").strip() == "1.1.1"
 
 
 def test_init_claude_global_writes_to_home(
@@ -326,7 +326,7 @@ def test_init_cursor_idempotent_second_run_skips(
     assert second.exit_code == 0
     out2 = _combined_output(second)
     assert "SKIP" in out2
-    assert "already installed" in out2
+    assert "already at v" in out2
     assert target.read_text(encoding="utf-8") == "MARKER FROM USER\n"
     assert target.stat().st_mtime == mtime_before
 

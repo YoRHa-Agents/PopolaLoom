@@ -16,6 +16,27 @@ Accumulating for the next v1.1.x patch:
 
 <!-- updated: 2026-05-11 -->
 
+## [1.1.1] - 2026-05-12
+
+### Changed (breaking)
+
+- **§1 / P1 — Cloud HITL migrations are now FAIL-loud at daemon startup.** Any `popolad` installed from a wheel older than `popolaloom>=1.1.1` cannot start under the v1.1.1 daemon without re-running install/upgrade so packaged migrations `005`/`006`/`007` are present. The daemon raises `MigrationsMissingError`, emits `popolad.migrations_missing`, and `popola doctor` now reports missing migrations as `FAIL ... missing (Cloud HITL unavailable)`.
+
+### Added
+
+- **§2 / P2 — Init preferences footer.** Non-interactive `popola init` now prints the optional `[user_preferences]` setup footer when `popolad.toml` lacks that block, and `--with-preferences-wizard` can opt into the Step 6 wizard on a TTY.
+- **§4 / P3 — Skill drift detection.** Installed skills with `.popola-loom-version` markers now report current-version skips or drift with an upgrade hint; `--upgrade-on-drift` overwrites the skill and bumps the marker.
+- **§7 / P4 — Workflow heading lint.** The canonical Skill now has unique contiguous Workflow headings 1..13, with a regression test guarding future edits.
+
+### Fixed
+
+- **§3 / P2 — Sourceable fallback credentials.** `cursor_api_key.env` is written as `export CURSOR_API_KEY=...`, while the daemon parser still accepts legacy `KEY=VAL` files.
+- **§5 / P3 — Auth status fallback precedence.** `popola auth cursor status` now reports a valid 0o600 fallback file when env/keyring are empty, keeps `env > keyring > fallback-file`, and surfaces an explicit refusal reason for unsafe modes such as 0o644.
+- **§6 / P4 — Rich markup escaping.** `popola init prefs show` renders `[user_preferences]` section names literally instead of treating them as Rich markup.
+- **§8 / P4 — Preferences metadata.** `popola init prefs --set` now auto-stamps `last_set_at` / `last_set_by`; the wizard uses the same identity format, `prefs show` renders metadata, and `popola doctor` includes `last_set_at` in the user-preferences detail row.
+
+<!-- updated: 2026-05-12 -->
+
 ## [1.1.0] — 2026-05-11
 
 ### Added
