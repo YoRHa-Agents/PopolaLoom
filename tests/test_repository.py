@@ -17,9 +17,9 @@ Plus bonus rehydrate test for AC #8 (``rehydrate_from_persistence``).
 
 from __future__ import annotations
 
-from importlib import resources
 import sys
 from collections.abc import Iterator
+from importlib import resources
 from pathlib import Path
 from typing import Any
 

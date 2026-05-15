@@ -407,7 +407,7 @@ def _popolaloom_migrations_dir() -> Path:
     so ``popola doctor`` reports the same package-resource directory the
     daemon consumes in editable and wheel installs.
     """
-    return Path(resources.files("popolaloom.migrations"))
+    return Path(str(resources.files("popolaloom.migrations")))
 
 
 # ── 5. user preferences audit ──────────────────────────────────────────

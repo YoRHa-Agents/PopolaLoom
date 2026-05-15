@@ -2,10 +2,10 @@
 
 from __future__ import annotations
 
+import json
 import subprocess
 import sys
 import zipfile
-import json
 from pathlib import Path
 
 import pytest
@@ -34,7 +34,7 @@ def test_package_resources_list_cloud_hitl_migrations() -> None:
     migration_root = repository_mod._popolaloom_migrations_dir()
     found = {path.name for path in migration_root.iterdir() if path.is_file()}
 
-    assert REQUIRED_MIGRATIONS <= found
+    assert found >= REQUIRED_MIGRATIONS
 
 
 def test_built_wheel_contains_cloud_hitl_migrations(repo_root: Path, tmp_path: Path) -> None:
@@ -45,8 +45,7 @@ def test_built_wheel_contains_cloud_hitl_migrations(repo_root: Path, tmp_path: P
         cwd=repo_root,
         check=False,
         text=True,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
+        capture_output=True,
     )
     assert result.returncode == 0, result.stdout + result.stderr
 

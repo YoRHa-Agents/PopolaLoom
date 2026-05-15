@@ -24,9 +24,8 @@ test surfaces here too.
 
 from __future__ import annotations
 
-from importlib import resources
-from importlib import resources
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -54,9 +53,9 @@ def db_path(tmp_path: Path) -> Path:
     db = tmp_path / "dedup.db"
     conn = sqlite3.connect(db, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    repo_root = Path(__file__).resolve().parents[2]
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
     for name in ("006_popola_hitl.sql", "007_popola_hitl_metadata.sql"):
-        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
+        sql = (migrations_pkg / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
     conn.close()

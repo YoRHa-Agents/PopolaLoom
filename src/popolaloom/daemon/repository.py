@@ -181,7 +181,7 @@ def _popolaloom_migrations_dir() -> Path:
     The SQL files live under ``popolaloom.migrations`` so editable and wheel
     installs resolve through the same package-resource path.
     """
-    return Path(resources.files("popolaloom.migrations"))
+    return Path(str(resources.files("popolaloom.migrations")))
 
 
 def _publish_migrations_missing_event(event_bus: EventBus, error: MigrationsMissingError) -> None:
@@ -201,7 +201,10 @@ def _publish_migrations_missing_event(event_bus: EventBus, error: MigrationsMiss
     # ``make_persistence`` is synchronous. If an embedding caller invokes it
     # from an active event loop, dispatch synchronous subscribers immediately
     # so the diagnostic event is still emitted before raising.
-    for handler in list(getattr(event_bus, "_subscribers", {}).get("popolad.migrations_missing", [])):
+    subscribers = getattr(event_bus, "_subscribers", {}).get(
+        "popolad.migrations_missing", []
+    )
+    for handler in list(subscribers):
         try:
             result = handler(payload)
             if asyncio.iscoroutine(result):
@@ -218,7 +221,9 @@ def _publish_migrations_missing_event(event_bus: EventBus, error: MigrationsMiss
 def _ensure_required_popolaloom_migrations(popola_dir: Path, event_bus: EventBus) -> None:
     """Refuse daemon startup when Cloud HITL migrations are absent."""
     missing = tuple(
-        filename for filename in _REQUIRED_POPOLALOOM_MIGRATIONS if not (popola_dir / filename).is_file()
+        filename
+        for filename in _REQUIRED_POPOLALOOM_MIGRATIONS
+        if not (popola_dir / filename).is_file()
     )
     if not missing:
         return

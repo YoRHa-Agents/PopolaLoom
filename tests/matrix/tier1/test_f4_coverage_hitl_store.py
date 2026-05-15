@@ -8,9 +8,9 @@ the daemon HITL store coverage stays ≥ 90 %.
 
 from __future__ import annotations
 
-from importlib import resources
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from pathlib import Path
 
 import pytest
@@ -40,7 +40,8 @@ def store(tmp_path: Path) -> HITLStore:
     db_path = tmp_path / "hitl.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    migration_sql = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
+    migration_sql = (migrations_pkg / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(migration_sql)
     conn.commit()
     return HITLStore(conn)

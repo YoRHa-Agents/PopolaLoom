@@ -11,8 +11,8 @@ Tests the new endpoints added in v0.3.0:
 
 from __future__ import annotations
 
-from importlib import resources
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import httpx

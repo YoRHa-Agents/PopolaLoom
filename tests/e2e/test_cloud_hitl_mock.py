@@ -53,14 +53,13 @@ Constraints (per the kickoff prompt):
 
 from __future__ import annotations
 
-from importlib import resources
-from importlib import resources
 import json
 import sqlite3
 import threading
 import time
 from collections.abc import Callable
 from datetime import UTC, datetime
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -106,9 +105,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     ``has_metadata_column`` check sees the ``metadata`` column and the
     dedup lookup + audit emission paths run their full v0.8.7 behavior.
     """
-    repo_root = Path(__file__).resolve().parents[2]
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
     for name in _MIGRATIONS:
-        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
+        sql = (migrations_pkg / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
 

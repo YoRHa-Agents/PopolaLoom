@@ -23,9 +23,9 @@ Two cases:
 
 from __future__ import annotations
 
-from importlib import resources
 import re
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]

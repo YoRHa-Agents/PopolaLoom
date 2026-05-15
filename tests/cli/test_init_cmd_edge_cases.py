@@ -272,7 +272,11 @@ def test_init_copilot_idempotent_user_overwrites_preserved(
     assert second.exit_code == 0
     out = _combined_output(second)
     assert "SKIP" in out
-    assert "already installed" in out
+    # v1.1.1 §4: ``.popola-loom-version`` marker written by the first
+    # OK run pins the SKIP branch to ``already at v<version>``. Legacy
+    # callers without the marker still see ``already installed``; both
+    # are valid SKIP outcomes for the idempotency contract.
+    assert "already at v" in out or "already installed" in out
     assert target.read_text(encoding="utf-8") == "HUMAN OVERRODE\n"
 
 

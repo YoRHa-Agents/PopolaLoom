@@ -84,8 +84,8 @@ from enum import StrEnum
 from pathlib import Path
 
 import typer
-from rich.markup import escape
 from rich.console import Console
+from rich.markup import escape
 from rich.table import Table
 from rich.tree import Tree
 

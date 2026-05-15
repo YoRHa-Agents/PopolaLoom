@@ -24,11 +24,10 @@ The full graph-interrupt path is exercised by Tier 4
 
 from __future__ import annotations
 
-from importlib import resources
-from importlib import resources
 import contextlib
 import sqlite3
 from collections.abc import Iterator
+from importlib import resources
 from pathlib import Path
 
 import freezegun

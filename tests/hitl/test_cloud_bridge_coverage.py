@@ -2,8 +2,8 @@
 
 from __future__ import annotations
 
-from importlib import resources
 import sqlite3
+from importlib import resources
 from pathlib import Path
 from unittest.mock import MagicMock
 
@@ -22,7 +22,8 @@ def hitl_store(tmp_path: Path) -> HITLStore:
     db_path = tmp_path / "hitl.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    mig = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
+    mig = (migrations_pkg / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(mig)
     conn.commit()
     return HITLStore(conn)
@@ -33,7 +34,8 @@ def sqlite_conn(tmp_path: Path) -> sqlite3.Connection:
     db_path = tmp_path / "hitl_cov.db"
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
-    mig = (Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql").read_text(encoding="utf-8")
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
+    mig = (migrations_pkg / "006_popola_hitl.sql").read_text(encoding="utf-8")
     conn.executescript(mig)
     conn.commit()
     return conn

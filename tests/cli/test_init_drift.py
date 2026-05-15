@@ -9,7 +9,8 @@ import pytest
 from typer.testing import CliRunner
 
 from popolaloom import __version__
-from popolaloom.cli.init_cmd import _install_target, app as init_app
+from popolaloom.cli.init_cmd import _install_target
+from popolaloom.cli.init_cmd import app as init_app
 
 
 @pytest.fixture

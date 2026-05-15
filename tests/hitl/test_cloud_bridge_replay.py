@@ -15,10 +15,9 @@ Covers AC (b) "1-hour window short-circuits", (e) replay-related cases:
 
 from __future__ import annotations
 
-from importlib import resources
-from importlib import resources
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from pathlib import Path
 from typing import Any
 from unittest.mock import MagicMock
@@ -40,9 +39,9 @@ _MIGRATIONS = ("006_popola_hitl.sql", "007_popola_hitl_metadata.sql")
 
 
 def _apply_migrations(conn: sqlite3.Connection) -> None:
-    repo_root = Path(__file__).resolve().parents[2]
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
     for name in _MIGRATIONS:
-        sql = (Path(resources.files("popolaloom.migrations")) / name).read_text(encoding="utf-8")
+        sql = (migrations_pkg / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
 
