@@ -25,7 +25,12 @@ Precedence (highest first):
    the secret lives in the OS keychain (macOS Keychain, Windows
    Credential Manager, libsecret on Linux/freedesktop, KWallet, etc.).
 
-4. **Missing** — return :data:`None`. Callers must produce an actionable
+4. **Fallback file status slot** — ``popola auth cursor status`` can report
+   a locked-down ``$POPOLA_HOME/cursor_api_key.env`` when env/keyring are
+   empty. Runtime resolution still uses the daemon auto-source hook so the
+   env slot remains the actual dispatch precedence winner.
+
+5. **Missing** — return :data:`None`. Callers must produce an actionable
    error message that points at all three of the above paths
    (``popola auth cursor set`` / ``CURSOR_API_KEY`` / cloud-only init
    wizard).
@@ -258,6 +263,8 @@ class CredentialStatus:
             importable AND a usable backend is registered. False forces
             the ``popola auth cursor set`` flow to fall back to the
             env-only path with a clear remediation hint.
+        reason: Optional non-secret explanation when a lower-precedence
+            fallback candidate exists but is refused.
     """
 
     configured: bool
@@ -265,6 +272,7 @@ class CredentialStatus:
     backend_name: str
     fingerprint: str | None
     keyring_available: bool
+    reason: str | None = None
 
     def to_json_dict(self) -> dict[str, object]:
         """Return a JSON-serialisable dict for ``popola auth cursor status --json``.
@@ -278,6 +286,7 @@ class CredentialStatus:
             "backend_name": self.backend_name,
             "fingerprint": self.fingerprint,
             "keyring_available": self.keyring_available,
+            "reason": self.reason,
         }
 
 
@@ -362,7 +371,7 @@ def _env_fallback_path() -> Path:
 def write_env_fallback(raw_key: str) -> Path:
     """Atomically write the v0.9.9 U2 0600 fallback file (Q-V099-11).
 
-    Writes ``CURSOR_API_KEY=<raw_key>\\n`` into
+    Writes ``export CURSOR_API_KEY=<raw_key>\\n`` into
     ``$POPOLA_HOME/cursor_api_key.env`` with mode ``0o600`` (owner-only)
     using ``os.open(..., O_WRONLY|O_CREAT|O_TRUNC, 0o600)`` so the file
     is *born* with the right permissions (avoids the race where a
@@ -403,7 +412,8 @@ def write_env_fallback(raw_key: str) -> Path:
     path = _env_fallback_path()
     parent = path.parent
     parent.mkdir(mode=0o700, parents=True, exist_ok=True)
-    payload = f"{CURSOR_API_KEY_ENV}={raw_key.strip()}\n".encode()
+    # Include ``export`` so operators can source the file directly in a shell.
+    payload = f"export {CURSOR_API_KEY_ENV}={raw_key.strip()}\n".encode()
     fd = os.open(
         str(path),
         os.O_WRONLY | os.O_CREAT | os.O_TRUNC,
@@ -422,6 +432,61 @@ def write_env_fallback(raw_key: str) -> Path:
             "secret on disk)"
         )
     return path
+
+
+def _display_fallback_path(path: Path) -> str:
+    """Render fallback path compactly for non-secret status output."""
+    try:
+        relative = path.relative_to(Path.home())
+    except ValueError:
+        return str(path)
+    return f"~/{relative.as_posix()}"
+
+
+def _parse_env_fallback_value(
+    contents: str,
+    *,
+    path: Path,
+    log: logging.Logger,
+) -> str | None:
+    """Parse a fallback env file, preserving existing malformed-line warnings."""
+    for lineno, raw_line in enumerate(contents.splitlines(), start=1):
+        line = raw_line.strip()
+        if line.startswith("export "):
+            line = line[len("export ") :].lstrip()
+        if not line or line.startswith("#"):
+            continue
+        if "=" not in line:
+            log.warning(
+                "malformed cursor_api_key.env at %s line %d: %r",
+                path,
+                lineno,
+                raw_line,
+            )
+            continue
+        key, _, value = line.partition("=")
+        key = key.strip()
+        value = value.strip()
+        if not key or not value:
+            log.warning(
+                "malformed cursor_api_key.env at %s line %d: %r",
+                path,
+                lineno,
+                raw_line,
+            )
+            continue
+        if key != CURSOR_API_KEY_ENV:
+            log.debug(
+                "cursor_api_key.env at %s line %d sets %r; only %s is "
+                "auto-loaded by the v0.9.9 daemon hook (skipping)",
+                path,
+                lineno,
+                key,
+                CURSOR_API_KEY_ENV,
+            )
+            continue
+        return value
+    return None
 
 
 def load_env_fallback_into_environ(*, logger: logging.Logger | None = None) -> bool:
@@ -486,43 +551,11 @@ def load_env_fallback_into_environ(*, logger: logging.Logger | None = None) -> b
             exc,
         )
         return False
-    loaded = False
-    for lineno, raw_line in enumerate(contents.splitlines(), start=1):
-        line = raw_line.strip()
-        if not line or line.startswith("#"):
-            continue
-        if "=" not in line:
-            log.warning(
-                "malformed cursor_api_key.env at %s line %d: %r",
-                path,
-                lineno,
-                raw_line,
-            )
-            continue
-        key, _, value = line.partition("=")
-        key = key.strip()
-        value = value.strip()
-        if not key or not value:
-            log.warning(
-                "malformed cursor_api_key.env at %s line %d: %r",
-                path,
-                lineno,
-                raw_line,
-            )
-            continue
-        if key != CURSOR_API_KEY_ENV:
-            log.debug(
-                "cursor_api_key.env at %s line %d sets %r; only %s is "
-                "auto-loaded by the v0.9.9 daemon hook (skipping)",
-                path,
-                lineno,
-                key,
-                CURSOR_API_KEY_ENV,
-            )
-            continue
-        os.environ[CURSOR_API_KEY_ENV] = value
-        loaded = True
-    return loaded
+    value = _parse_env_fallback_value(contents, path=path, log=log)
+    if value is None:
+        return False
+    os.environ[CURSOR_API_KEY_ENV] = value
+    return True
 
 
 def save_credential_metadata(values: Mapping[str, str]) -> None:
@@ -862,9 +895,11 @@ def credential_status(*, override: str | None = None) -> CredentialStatus:
     secret was read from. Never returns the raw value — only the
     fingerprint + backend name.
     """
+    keyring_available = is_keyring_available()
     resolver = CredentialResolver(override=override)
     secret, source = resolver.resolve()
     backend_name: str
+    reason: str | None = None
     if source == "env":
         backend_name = "environment variable"
     elif source == "keyring":
@@ -873,12 +908,44 @@ def credential_status(*, override: str | None = None) -> CredentialStatus:
         backend_name = "explicit override"
     else:
         backend_name = "unset"
+        fallback_path = _env_fallback_path()
+        if fallback_path.exists():
+            try:
+                mode = fallback_path.stat().st_mode & 0o777
+            except OSError as exc:
+                reason = f"fallback-file stat failed: {exc}"
+            else:
+                if mode != _ENV_FALLBACK_FILE_MODE:
+                    reason = (
+                        f"fallback-file mode {mode:#o} not "
+                        f"{_ENV_FALLBACK_FILE_MODE:#o} (refusing to read)"
+                    )
+                else:
+                    try:
+                        contents = fallback_path.read_text(encoding="utf-8")
+                    except OSError as exc:
+                        reason = f"fallback-file read failed: {exc}"
+                    else:
+                        fallback_secret = _parse_env_fallback_value(
+                            contents,
+                            path=fallback_path,
+                            log=logger,
+                        )
+                        if fallback_secret:
+                            return CredentialStatus(
+                                configured=True,
+                                source="fallback-file",
+                                backend_name=f"0o600 {_display_fallback_path(fallback_path)}",
+                                fingerprint=compute_fingerprint(fallback_secret),
+                                keyring_available=keyring_available,
+                            )
     return CredentialStatus(
         configured=secret is not None,
         source=source,
         backend_name=backend_name,
         fingerprint=compute_fingerprint(secret),
-        keyring_available=is_keyring_available(),
+        keyring_available=keyring_available,
+        reason=reason,
     )
 
 

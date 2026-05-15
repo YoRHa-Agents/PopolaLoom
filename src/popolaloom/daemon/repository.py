@@ -58,9 +58,11 @@ warning so the operator can fix it.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 from dataclasses import dataclass
+from importlib import resources
 from pathlib import Path
 from typing import TYPE_CHECKING
 
@@ -76,6 +78,34 @@ if TYPE_CHECKING:
     pass
 
 logger = logging.getLogger(__name__)
+
+_REQUIRED_POPOLALOOM_MIGRATIONS: tuple[str, ...] = (
+    "005_popolaloom_extensions.sql",
+    "006_popola_hitl.sql",
+    "007_popola_hitl_metadata.sql",
+)
+
+
+class MigrationsMissingError(RuntimeError):
+    """Raised when packaged PopolaLoom SQL migrations are missing."""
+
+    hint_zh: str = (
+        "Cloud HITL 表 popola_hitl 未初始化，wheel 安装下默认会出此错；"
+        "请重装 popolaloom>=1.1.1 或参考 popola doctor 输出"
+    )
+    hint_en: str = (
+        "Cloud HITL table popola_hitl is not initialised. Wheel installs missing "
+        "migrations 005/006/007 cannot start; reinstall popolaloom>=1.1.1 or run "
+        "popola doctor"
+    )
+
+    def __init__(self, missing: tuple[str, ...], migrations_dir: Path) -> None:
+        self.missing = missing
+        self.migrations_dir = migrations_dir
+        super().__init__(
+            "missing packaged PopolaLoom migrations "
+            f"{', '.join(missing)} under {migrations_dir}. {self.hint_en}"
+        )
 
 
 _ARKTOWER_MIGRATIONS_ENV: str = "POPOLA_ARKTOWER_MIGRATIONS_DIR"
@@ -148,12 +178,64 @@ def _arktower_migrations_dir() -> Path | None:
 def _popolaloom_migrations_dir() -> Path:
     """Return the on-disk path of PopolaLoom's own migrations directory.
 
-    Resolved relative to this file: ``<repo-root>/migrations``.  Editable
-    installs see the real directory; wheel installs (which currently don't
-    package the migrations dir) will hit the not-found path and log a
-    warning — that's a packaging fix for v0.2.1 (out of scope here).
+    The SQL files live under ``popolaloom.migrations`` so editable and wheel
+    installs resolve through the same package-resource path.
     """
-    return Path(__file__).resolve().parents[3] / "migrations"
+    return Path(str(resources.files("popolaloom.migrations")))
+
+
+def _publish_migrations_missing_event(event_bus: EventBus, error: MigrationsMissingError) -> None:
+    """Emit the FAIL-loud migration event before daemon startup aborts."""
+    payload = {
+        "missing": list(error.missing),
+        "migrations_dir": str(error.migrations_dir),
+        "hint_zh": error.hint_zh,
+        "hint_en": error.hint_en,
+    }
+    try:
+        asyncio.get_running_loop()
+    except RuntimeError:
+        asyncio.run(event_bus.publish("popolad.migrations_missing", payload))
+        return
+
+    # ``make_persistence`` is synchronous. If an embedding caller invokes it
+    # from an active event loop, dispatch synchronous subscribers immediately
+    # so the diagnostic event is still emitted before raising.
+    subscribers = getattr(event_bus, "_subscribers", {}).get(
+        "popolad.migrations_missing", []
+    )
+    for handler in list(subscribers):
+        try:
+            result = handler(payload)
+            if asyncio.iscoroutine(result):
+                result.close()
+                logger.error(
+                    "Cannot await async popolad.migrations_missing handler %r during "
+                    "synchronous migration startup failure",
+                    handler,
+                )
+        except Exception:
+            logger.exception("Handler %r raised on event 'popolad.migrations_missing'", handler)
+
+
+def _ensure_required_popolaloom_migrations(popola_dir: Path, event_bus: EventBus) -> None:
+    """Refuse daemon startup when Cloud HITL migrations are absent."""
+    missing = tuple(
+        filename
+        for filename in _REQUIRED_POPOLALOOM_MIGRATIONS
+        if not (popola_dir / filename).is_file()
+    )
+    if not missing:
+        return
+
+    error = MigrationsMissingError(missing, popola_dir)
+    logger.error(
+        "PopolaLoom packaged migrations missing: %s; refusing to start. %s",
+        ", ".join(missing),
+        error.hint_en,
+    )
+    _publish_migrations_missing_event(event_bus, error)
+    raise error
 
 
 @dataclass
@@ -256,6 +338,7 @@ def make_persistence(
                 )
             ark_dir = _arktower_migrations_dir()
         popola_dir = popolaloom_migrations_dir or _popolaloom_migrations_dir()
+        bus = event_bus if event_bus is not None else EventBus()
 
         if ark_dir is None:
             logger.warning(
@@ -273,23 +356,19 @@ def make_persistence(
                 ark_runner.get_current_version(),
             )
 
-        if not popola_dir.is_dir():
-            logger.warning(
-                "PopolaLoom migrations dir %s missing; popola_dispatch table not created",
-                popola_dir,
-            )
-        else:
-            popola_runner = MigrationRunner(connection, popola_dir)
-            applied = popola_runner.run_migrations()
-            logger.info(
-                "Applied %d PopolaLoom migration(s) from %s (current version=%d)",
-                applied,
-                popola_dir,
-                popola_runner.get_current_version(),
-            )
+        _ensure_required_popolaloom_migrations(popola_dir, bus)
+        popola_runner = MigrationRunner(connection, popola_dir)
+        applied = popola_runner.run_migrations()
+        logger.info(
+            "Applied %d PopolaLoom migration(s) from %s (current version=%d)",
+            applied,
+            popola_dir,
+            popola_runner.get_current_version(),
+        )
 
     repository = SqliteTaskRepository(connection)
-    bus = event_bus if event_bus is not None else EventBus()
+    if not run_migrations:
+        bus = event_bus if event_bus is not None else EventBus()
     task_service = TaskService(repository, bus)
 
     return TaskPersistence(

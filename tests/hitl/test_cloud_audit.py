@@ -49,6 +49,7 @@ from __future__ import annotations
 
 import sqlite3
 from datetime import UTC, datetime, timedelta
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -77,9 +78,9 @@ def _apply_migrations(conn: sqlite3.Connection) -> None:
     Mirrors :mod:`tests.hitl.test_cloud_bridge_replay` so the bridge can
     exercise the dedup lookup needed by AC (g).
     """
-    repo_root = Path(__file__).resolve().parents[2]
+    migrations_pkg = Path(resources.files("popolaloom.migrations"))
     for name in _MIGRATIONS:
-        sql = (repo_root / "migrations" / name).read_text(encoding="utf-8")
+        sql = (migrations_pkg / name).read_text(encoding="utf-8")
         conn.executescript(sql)
     conn.commit()
 

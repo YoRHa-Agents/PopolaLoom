@@ -153,7 +153,7 @@ def test_init_without_keyring_writes_fallback_file_with_correct_payload(
 
     Acceptance criterion (a) of v0.9.9 U2: the file at
     ``$POPOLA_HOME/cursor_api_key.env`` exists, has mode 0o600, and
-    contains exactly ``CURSOR_API_KEY=<raw_key>\\n``.
+    contains exactly ``export CURSOR_API_KEY=<raw_key>\\n``.
     """
     cwd, _ = isolated_home
     (cwd / ".cursor").mkdir()
@@ -164,7 +164,7 @@ def test_init_without_keyring_writes_fallback_file_with_correct_payload(
 
     fallback_path = cred_mod._env_fallback_path()
     assert fallback_path.is_file()
-    assert fallback_path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_test_VAL\n"
+    assert fallback_path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_test_VAL\n"
 
 
 # ── (b) stdout follow-up line includes ``source`` instruction ──────────
@@ -222,12 +222,12 @@ def test_fallback_file_rewrite_replaces_previous_value(
     result1 = runner.invoke(init_app, ["--cursor-api-key", "crsr_VAL1"])
     assert result1.exit_code == 0, _combined_output(result1)
     fallback_path = cred_mod._env_fallback_path()
-    assert fallback_path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_VAL1\n"
+    assert fallback_path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_VAL1\n"
 
     result2 = runner.invoke(init_app, ["--cursor-api-key", "crsr_VAL2"])
     assert result2.exit_code == 0, _combined_output(result2)
     # The file MUST be replaced, not appended.
-    assert fallback_path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_VAL2\n"
+    assert fallback_path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_VAL2\n"
     # The previous value MUST be gone.
     assert "crsr_VAL1" not in fallback_path.read_text(encoding="utf-8")
 
@@ -316,7 +316,7 @@ class TestWriteEnvFallback:
         monkeypatch.setenv("POPOLA_HOME", str(tmp_path / "popola"))
         path = cred_mod.write_env_fallback("crsr_alpha")
         assert path == cred_mod._env_fallback_path()
-        assert path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_alpha\n"
+        assert path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_alpha\n"
 
     def test_strips_whitespace_around_key_value(
         self,
@@ -326,7 +326,7 @@ class TestWriteEnvFallback:
         """The helper strips surrounding whitespace from ``raw_key`` before write."""
         monkeypatch.setenv("POPOLA_HOME", str(tmp_path / "popola"))
         path = cred_mod.write_env_fallback("  crsr_beta  ")
-        assert path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_beta\n"
+        assert path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_beta\n"
 
     def test_empty_or_whitespace_raises_value_error(
         self,
@@ -352,7 +352,7 @@ class TestWriteEnvFallback:
         monkeypatch.setenv("POPOLA_HOME", str(tmp_path / "popola"))
         cred_mod.write_env_fallback("crsr_first")
         path = cred_mod.write_env_fallback("crsr_second")
-        assert path.read_text(encoding="utf-8") == "CURSOR_API_KEY=crsr_second\n"
+        assert path.read_text(encoding="utf-8") == "export CURSOR_API_KEY=crsr_second\n"
 
     def test_creates_parent_directory_when_missing(
         self,

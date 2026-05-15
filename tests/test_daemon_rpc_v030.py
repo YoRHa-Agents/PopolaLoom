@@ -12,6 +12,7 @@ Tests the new endpoints added in v0.3.0:
 from __future__ import annotations
 
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 import httpx
@@ -37,7 +38,7 @@ def hitl_store(tmp_path: Path) -> HITLStore:
     conn = sqlite3.connect(db_path, check_same_thread=False)
     conn.row_factory = sqlite3.Row
     migration_sql = (
-        Path(__file__).resolve().parent.parent / "migrations" / "006_popola_hitl.sql"
+        Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql"
     ).read_text(encoding="utf-8")
     conn.executescript(migration_sql)
     conn.commit()

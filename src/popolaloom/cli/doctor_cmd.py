@@ -46,6 +46,7 @@ import os
 import shutil
 from collections.abc import Mapping
 from dataclasses import asdict, dataclass, field
+from importlib import resources
 from pathlib import Path
 from typing import Any
 
@@ -369,7 +370,11 @@ def _audit_arktower() -> _AuditSection:
     )
 
     popola_dir = _popolaloom_migrations_dir()
-    for filename in ("005_popolaloom_extensions.sql", "006_popola_hitl.sql"):
+    for filename in (
+        "005_popolaloom_extensions.sql",
+        "006_popola_hitl.sql",
+        "007_popola_hitl_metadata.sql",
+    ):
         path = popola_dir / filename
         if path.is_file():
             row = _AuditCheck(
@@ -382,8 +387,8 @@ def _audit_arktower() -> _AuditSection:
             row = _AuditCheck(
                 name=f"{filename[:3]} mig",
                 target=str(path),
-                status="WARN",
-                detail="missing (daemon falls back to no-op migration runner)",
+                status="FAIL",
+                detail="missing (Cloud HITL unavailable)",
             )
         checks.append(row)
 
@@ -399,13 +404,10 @@ def _popolaloom_migrations_dir() -> Path:
     """Locate the PopolaLoom migrations directory.
 
     Mirrors :func:`popolaloom.daemon.repository._popolaloom_migrations_dir`
-    so ``popola doctor`` reports drift identically to what the daemon's
-    runtime would observe.  When the package is installed via wheel
-    (which doesn't ship ``migrations/``), this points at a non-existent
-    path and the audit downgrades to WARN — not FAIL — to match the
-    daemon's "no-op when missing" behaviour.
+    so ``popola doctor`` reports the same package-resource directory the
+    daemon consumes in editable and wheel installs.
     """
-    return Path(__file__).resolve().parents[3] / "migrations"
+    return Path(str(resources.files("popolaloom.migrations")))
 
 
 # ── 5. user preferences audit ──────────────────────────────────────────
@@ -466,7 +468,7 @@ def _audit_user_preferences() -> _AuditSection:
         name="schema",
         target=str(config_path),
         status=status,
-        detail=detail,
+        detail=_user_preferences_detail_with_metadata(detail, raw),
     )
     return _AuditSection(
         name="User preferences schema",
@@ -474,6 +476,20 @@ def _audit_user_preferences() -> _AuditSection:
         verdict=_roll_up([check]),
         summary=detail,
     )
+
+
+def _user_preferences_detail_with_metadata(
+    detail: str,
+    raw: Mapping[str, Any],
+) -> str:
+    """Append non-secret preferences metadata to the doctor detail row."""
+    section = raw.get("user_preferences")
+    if not isinstance(section, dict):
+        return detail
+    last_set_at = section.get("last_set_at")
+    if not isinstance(last_set_at, str) or not last_set_at:
+        return detail
+    return f"{detail}; last_set_at={last_set_at}"
 
 
 # ── aggregator ─────────────────────────────────────────────────────────

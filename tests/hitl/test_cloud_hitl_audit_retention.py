@@ -25,10 +25,11 @@ from __future__ import annotations
 
 import re
 import sqlite3
+from importlib import resources
 from pathlib import Path
 
 _REPO_ROOT = Path(__file__).resolve().parents[2]
-_MIGRATIONS_DIR = _REPO_ROOT / "migrations"
+_MIGRATIONS_DIR = Path(resources.files("popolaloom.migrations"))
 _DELETE_PATTERN = re.compile(r"DELETE\s+FROM\s+popola_hitl", re.IGNORECASE)
 
 

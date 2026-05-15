@@ -585,15 +585,14 @@ def test_doctor_daemon_section_renders_probe_failure_detail(
     assert "synthetic probe failure" in payload["daemon"]["detail"]
 
 
-def test_doctor_arktower_audit_warns_when_migrations_missing(
+def test_doctor_arktower_audit_fails_when_migrations_missing(
     isolated_env: Path,
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """ArkTower migration row reports WARN when the SQL files are absent.
+    """ArkTower migration row reports FAIL when the SQL files are absent.
 
-    Covers ``cli/doctor_cmd.py`` line 381 (the ``else: WARN`` branch
-    when neither 005 nor 006 migration is on disk).
+    Covers the v1.1.1 FAIL-loud branch when 005/006/007 are absent.
     """
     monkeypatch.setattr(
         "popolaloom.cli.doctor_cmd.shutil.which",
@@ -610,9 +609,10 @@ def test_doctor_arktower_audit_warns_when_migrations_missing(
     arktower_rows = payload["arktower"]
     mig_rows = [row for row in arktower_rows if row["name"].endswith("mig")]
     assert mig_rows, "expected migration rows in arktower audit"
-    assert all(row["status"] == "WARN" for row in mig_rows), (
-        f"all migration rows should be WARN: {mig_rows}"
+    assert all(row["status"] == "FAIL" for row in mig_rows), (
+        f"all migration rows should be FAIL: {mig_rows}"
     )
+    assert all("Cloud HITL unavailable" in row["detail"] for row in mig_rows)
 
 
 def test_doctor_arktower_audit_reports_import_failure(

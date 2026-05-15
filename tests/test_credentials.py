@@ -85,7 +85,10 @@ class _FakeBackend:
 
 
 @pytest.fixture
-def fake_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeBackend]:
+def fake_backend(
+    monkeypatch: pytest.MonkeyPatch,
+    tmp_path: Path,
+) -> Iterator[_FakeBackend]:
     """Yield a fake keyring backend wired into the resolver indirection.
 
     Patches the lazy ``_import_keyring`` so the resolver thinks
@@ -115,6 +118,7 @@ def fake_backend(monkeypatch: pytest.MonkeyPatch) -> Iterator[_FakeBackend]:
     fake_module.delete_password = _delete_password  # type: ignore[attr-defined]
 
     monkeypatch.setattr(cred_mod, "_import_keyring", lambda: fake_module)
+    monkeypatch.setenv("POPOLA_HOME", str(tmp_path / "popola"))
     monkeypatch.delenv(CURSOR_API_KEY_ENV, raising=False)
 
     yield backend
@@ -502,6 +506,7 @@ def test_status_to_json_dict_has_stable_keys() -> None:
         "backend_name",
         "fingerprint",
         "keyring_available",
+        "reason",
     }
 
 

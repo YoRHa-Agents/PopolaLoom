@@ -36,7 +36,7 @@ required_paths:
     - "examples/**"
     - "evidence/**"
     - "templates/**"
-    - "migrations/*.sql"
+    - "src/popolaloom/migrations/*.sql"
     - ".workflow/automerge.yaml"
   blocked:
     - "pyproject.toml"

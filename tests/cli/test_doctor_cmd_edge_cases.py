@@ -357,6 +357,7 @@ def test_doctor_arktower_audit_ok_when_migrations_present(
     - module row OK
     - 005 mig row OK
     - 006 mig row OK
+    - 007 mig row OK
     """
     fake_mig_dir = isolated_env / "fake_migrations"
     fake_mig_dir.mkdir()
@@ -364,6 +365,9 @@ def test_doctor_arktower_audit_ok_when_migrations_present(
         "-- placeholder\n", encoding="utf-8"
     )
     (fake_mig_dir / "006_popola_hitl.sql").write_text(
+        "-- placeholder\n", encoding="utf-8"
+    )
+    (fake_mig_dir / "007_popola_hitl_metadata.sql").write_text(
         "-- placeholder\n", encoding="utf-8"
     )
 

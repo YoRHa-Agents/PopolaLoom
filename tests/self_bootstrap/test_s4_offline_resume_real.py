@@ -27,6 +27,7 @@ from __future__ import annotations
 import contextlib
 import sqlite3
 from collections.abc import Iterator
+from importlib import resources
 from pathlib import Path
 
 import freezegun
@@ -60,7 +61,7 @@ def _build_local_hitl_db(home: Path) -> sqlite3.Connection:
     conn = sqlite3.connect(str(db_path), check_same_thread=False)
     conn.row_factory = sqlite3.Row
     migration_sql = (
-        _REPO_ROOT / "migrations" / "006_popola_hitl.sql"
+        Path(resources.files("popolaloom.migrations")) / "006_popola_hitl.sql"
     ).read_text(encoding="utf-8")
     conn.executescript(migration_sql)
     conn.commit()

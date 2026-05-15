@@ -242,9 +242,61 @@ def test_status_json_keys_are_stable(
         "backend_name",
         "fingerprint",
         "keyring_available",
+        "reason",
     }
     assert payload["configured"] is True
     assert "cr_test" not in result.stdout
+
+
+def test_credential_status_reports_fallback_file_only(
+    fake_backend: _FakeBackend,
+) -> None:
+    """Fallback file is reported when env/keyring are empty."""
+    cred_mod.write_env_fallback("crsr_fallback_only")
+
+    status = cred_mod.credential_status()
+
+    assert status.configured is True
+    assert status.source == "fallback-file"
+    assert status.backend_name.startswith("0o600 ")
+    assert status.fingerprint == cred_mod.compute_fingerprint("crsr_fallback_only")
+
+
+def test_credential_status_env_precedes_fallback_file(
+    fake_backend: _FakeBackend,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """An explicit env var still wins over the fallback file status slot."""
+    cred_mod.write_env_fallback("crsr_fallback")
+    monkeypatch.setenv("CURSOR_API_KEY", "crsr_env")
+
+    status = cred_mod.credential_status()
+
+    assert status.configured is True
+    assert status.source == "env"
+    assert status.fingerprint == cred_mod.compute_fingerprint("crsr_env")
+
+
+def test_credential_status_refuses_world_readable_fallback_file(
+    fake_backend: _FakeBackend,
+    runner: CliRunner,
+) -> None:
+    """Mode mismatch is an explicit non-configured reason."""
+    path = cred_mod.write_env_fallback("crsr_bad_mode")
+    path.chmod(0o644)
+
+    status = cred_mod.credential_status()
+
+    assert status.configured is False
+    assert status.reason is not None
+    assert "0o644" in status.reason
+    assert "0o600" in status.reason
+
+    result = runner.invoke(auth_app, ["cursor", "status"])
+    out = _combined_output(result)
+    assert result.exit_code == 0, out
+    assert "0o644" in out
+    assert "0o600" in out
 
 
 # ── clear verb ──────────────────────────────────────────────────────────
