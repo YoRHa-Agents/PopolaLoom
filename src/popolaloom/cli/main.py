@@ -2606,7 +2606,71 @@ def _apply_cloud_preferences(
         )
     if resolved_worker_name:
         out["worker_name"] = resolved_worker_name
+
+    # v1.5.0 (PLAN Phase K hotfix; feedback_for_v1.4.0 G4) — auto-derive
+    # ``repo_url`` from the workspace's git origin when the operator
+    # dispatches to a self-hosted worker without providing one. Cursor's
+    # path-B body (and the REST adapter's _normalize_cloud_extra) both
+    # REQUIRE ``repos[0].url`` even when the worker checks out from
+    # its own local clone (i.e. with --work-on-current-branch). G4's
+    # acceptance is "argv doesn't contain --repo-url=..." — auto-deriving
+    # satisfies that without dropping the field from the wire.
+    if (
+        resolved_target == "self-hosted"
+        and "repo_url" not in out
+        and "pr_url" not in out
+    ):
+        derived_repo_url = _derive_workspace_repo_url(cwd)
+        if derived_repo_url:
+            out["repo_url"] = derived_repo_url
+            typer.echo(
+                f"[prefs] auto-derived repo_url={derived_repo_url!r} from "
+                f"workspace git remote (v1.5.0; pass --cli-flag repo_url=<X> "
+                f"to override). "
+                f"(已从 workspace git remote 自动派生 repo_url)",
+                err=True,
+            )
     return out
+
+
+def _derive_workspace_repo_url(cwd: Path | None) -> str | None:
+    """Return ``git remote get-url origin`` for ``cwd`` (or :data:`None`).
+
+    Used by :func:`_apply_cloud_preferences` to satisfy the v1.5.0
+    feedback G4 contract: the operator shouldn't have to pass
+    ``--cli-flag repo_url=<X>`` for a self-hosted-worker dispatch.
+    Best-effort; returns :data:`None` on any failure (not a git repo,
+    no origin remote, git binary missing, etc.) so the caller can fall
+    through to the existing error path with full diagnostic context.
+    """
+    import subprocess
+
+    repo_root = (cwd or Path.cwd()).expanduser()
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo_root),
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.decode("utf-8", errors="replace").strip()
+    if not raw:
+        return None
+    # Normalize the common ssh form ``git@github.com:owner/repo[.git]`` to
+    # ``https://github.com/owner/repo`` so the value lands in the same
+    # shape Cursor's BackgroundComposerService expects on path-B (and
+    # the REST adapter's snapshotNameOrId derivation strips ``.git``
+    # downstream regardless).
+    if raw.startswith("git@") and ":" in raw:
+        host, _, path = raw.partition(":")
+        host = host[len("git@"):]
+        raw = f"https://{host}/{path}"
+    return raw
 
 
 def _detect_self_hosted_worker_name(

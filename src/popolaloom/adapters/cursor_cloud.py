@@ -2809,6 +2809,16 @@ def _normalize_cloud_extra(extra: dict[str, Any]) -> dict[str, Any]:
             "auto_proceed_after_plan",
             "thinking_level",
             "starting_message_type",
+            # v1.5.0 — Path-B-only knobs introduced by PLAN Phase A/C:
+            "auto_branch",
+            "env_emit_mode",
+            "model_id_override",
+            # ``worker_name`` is also consumed by path-B's
+            # ``build_start_composer_request(target_machine_name=...)``;
+            # it travels separately from the REST ``env`` field above so
+            # the supervisor's path-B branch can read it without first
+            # parsing ``env``.
+            "worker_name",
         ):
             if path_b_key in extra:
                 out[path_b_key] = extra[path_b_key]
