@@ -59,6 +59,33 @@ DEFAULT_BASE_URL = "https://api2.cursor.sh"
 SERVICE_PATH = "/aiserver.v1.BackgroundComposerService"
 DEFAULT_TIMEOUT_S = 60.0
 
+# v1.5.0 — escape-hatch settings for the path-B body when the upstream
+# Connect-RPC server rejects the v1.5.0 default shape. See PLAN §A
+# (Phase A) + §"关键风险" §A. Three tiers:
+#
+# * ``"machine"`` (default) — body emits ``env={"type":"machine","name":<X>}``
+#   (mirrors the REST :class:`popolaloom.adapters.cursor_cloud.AgentEnv`
+#   shape). The server-side wire spec for this field on path-B has not
+#   been empirically verified; if it rejects this shape, the operator
+#   must re-dispatch with one of the two fallback modes below.
+# * ``"label"`` — body omits ``env`` entirely; instead the
+#   ``snapshot_name_or_id`` is normalized to ``<owner>/<repo>`` so the
+#   worker's auto-label matcher can claim it. Use when ``"machine"``
+#   triggers a 400 ``invalid_argument`` envelope on ``env``.
+# * ``"none"`` — body omits ``env`` AND skips ``snapshot_name_or_id``
+#   normalization; falls back to the v1.3.0 behaviour of relying purely
+#   on ``use_private_worker=True``.
+#
+# Per the No-Silent-Fallback invariant, popola does NOT auto-shift
+# between modes — the operator opts in via ``--cli-flag env_emit_mode=<X>``
+# on the next dispatch attempt.
+ENV_EMIT_MODE_MACHINE = "machine"
+ENV_EMIT_MODE_LABEL = "label"
+ENV_EMIT_MODE_NONE = "none"
+_VALID_ENV_EMIT_MODES = frozenset(
+    {ENV_EMIT_MODE_MACHINE, ENV_EMIT_MODE_LABEL, ENV_EMIT_MODE_NONE}
+)
+
 # Q-19: REST-rejection contract — these flag → field mappings are ONLY
 # valid on the path-B (RPC) transport. The CLI layer rejects them up
 # front when --auth-mode=rest, so this module never sees them on REST.
@@ -259,6 +286,13 @@ class StartComposerOutcome:
         dashboard_url: A best-effort ``https://cursor.com/agents/<id>``
             URL the CLI surfaces to the operator. ``None`` when the
             response did not carry enough info to compose it.
+        initial_run_id: v1.5.0 — the ``initialRunId`` / ``initial_run_id``
+            field Cursor returns alongside ``composer.bcId`` (v1.3.0+
+            response shape). Surfaced so the daemon supervisor can seed
+            ``TaskHandle.cursor_run_id`` at queue time, enabling SSE
+            correlation without an extra round-trip. ``None`` when the
+            response did not include the field (older server build, or
+            the dispatch did not start a run).
         raw_response: The full decoded JSON envelope, kept for tests +
             future field surfacing without a code change.
     """
@@ -266,6 +300,7 @@ class StartComposerOutcome:
     background_composer_id: str
     dashboard_url: str | None
     raw_response: dict[str, Any]
+    initial_run_id: str | None = None
 
 
 def build_start_composer_request(
@@ -274,6 +309,7 @@ def build_start_composer_request(
     repo_url: str,
     starting_ref: str = "main",
     model_name: str | None = None,
+    model_id_override: str | None = None,
     max_mode: bool | None = None,
     thinking_level: str | None = None,
     agent_mode: str | None = None,
@@ -287,8 +323,13 @@ def build_start_composer_request(
     devcontainer_ref: str | None = None,
     snapshot_workspace_root_path: str = "/workspace",
     auto_branch: bool = True,
+    auto_create_pr: bool = False,
+    work_on_current_branch: bool = False,
+    skip_reviewer_request: bool = False,
     return_immediately: bool = True,
     use_private_worker: bool = True,
+    target_machine_name: str | None = None,
+    env_emit_mode: str = ENV_EMIT_MODE_MACHINE,
     source: str = "BACKGROUND_COMPOSER_SOURCE_WEBSITE",
     bc_id: str | None = None,
     add_initial_message_to_responses: bool = True,
@@ -344,6 +385,45 @@ def build_start_composer_request(
             worker preference). Note: per feedback §2, Cursor server
             currently routes non-GitHub repos to the public pool
             regardless of this flag (server-side hard constraint).
+        target_machine_name: v1.5.0 (feedback_for_v1.4.0 §1 task #2) —
+            when non-empty AND ``env_emit_mode == "machine"``, emit
+            ``env = {"type": "machine", "name": <target_machine_name>}``
+            on the request body so Cursor's BackgroundComposerService
+            routes the run directly to the named self-hosted worker.
+            Mirrors the REST :class:`AgentEnv` shape used by
+            ``cursor_cloud.py`` for the v1 ``POST /v1/agents`` flow.
+        env_emit_mode: v1.5.0 escape hatch (PLAN §A / §"关键风险"
+            §A) — one of :data:`ENV_EMIT_MODE_MACHINE` (default),
+            :data:`ENV_EMIT_MODE_LABEL`, or :data:`ENV_EMIT_MODE_NONE`.
+            ``"machine"`` emits ``env``; ``"label"`` drops ``env`` and
+            normalizes ``snapshot_name_or_id`` to ``<owner>/<repo>``;
+            ``"none"`` drops both. Operator-facing toggle via
+            ``--cli-flag env_emit_mode=label`` when the default shape
+            is rejected by the upstream server. Invalid values raise
+            :class:`ValueError` (No Silent Failures).
+        auto_create_pr: v1.5.0 — Path-B body ``auto_create_pr`` field
+            (mirror of the REST adapter's same-named knob). Defaults
+            to ``False`` so a JWT-direct dispatch does NOT spawn a PR
+            unless the operator opts in via ``--auto-create-pr``.
+        work_on_current_branch: v1.5.0 — Path-B body
+            ``work_on_current_branch`` field; when ``True`` instructs
+            the worker to skip auto-branch creation and operate on the
+            cwd's current ref. Used by ``--work-on-current-branch`` to
+            satisfy feedback G4 ("跳过 git 分支 / PR 相关操作").
+        skip_reviewer_request: v1.5.0 — Path-B body
+            ``skip_reviewer_request`` field; suppresses the auto
+            reviewer request on the resulting PR. Pairs with
+            ``auto_create_pr`` for the "create PR but don't ping
+            reviewers" workflow.
+        model_id_override: v1.5.0 escape hatch (PLAN §"关键风险" §B) —
+            when non-empty, overrides ``model_details.model_name`` with
+            the supplied id. Required for the GPT-5.5 dual-naming case
+            where the REST gateway accepts ``"gpt-5.5"`` but the
+            cursor-agent CLI expects ``"gpt-5.5-high"`` (or vice-versa
+            on path-B). Operator-facing toggle via
+            ``--cli-flag model_id_override=<id>``. Per the
+            No-Silent-Fallback invariant, popola does NOT auto-switch
+            id forms — the operator opts in.
         source: v1.3.0 P5 — defaults to
             ``"BACKGROUND_COMPOSER_SOURCE_WEBSITE"`` (matches the
             successful reverse-engineered wire-spec).
@@ -375,15 +455,32 @@ def build_start_composer_request(
     if not repo_url:
         raise ValueError("repo_url is required")
 
-    if snapshot_name_or_id is None:
-        derived = repo_url
+    normalized_env_emit_mode = (env_emit_mode or "").strip().lower()
+    if normalized_env_emit_mode not in _VALID_ENV_EMIT_MODES:
+        valid = sorted(_VALID_ENV_EMIT_MODES)
+        raise ValueError(
+            f"env_emit_mode={env_emit_mode!r} not in {valid}; "
+            f"(env_emit_mode 必须是 {valid} 之一)"
+        )
+
+    # Helper: snake_case normalized snapshot_name_or_id (no scheme, no .git).
+    def _normalize_snapshot(value: str) -> str:
+        derived = value
         for prefix in ("https://", "http://"):
             if derived.startswith(prefix):
                 derived = derived[len(prefix):]
                 break
         if derived.endswith(".git"):
             derived = derived[: -len(".git")]
-        snapshot_name_or_id = derived
+        return derived
+
+    if snapshot_name_or_id is None:
+        snapshot_name_or_id = _normalize_snapshot(repo_url)
+    elif normalized_env_emit_mode == ENV_EMIT_MODE_LABEL:
+        # v1.5.0 — when env is dropped, the worker matches against the
+        # snapshot label; renormalize to <owner>/<repo> for parity with
+        # the v1.3.0 auto-label match logic.
+        snapshot_name_or_id = _normalize_snapshot(snapshot_name_or_id)
     if devcontainer_url is None:
         devcontainer_url = repo_url
     if devcontainer_ref is None:
@@ -415,9 +512,39 @@ def build_start_composer_request(
         "use_private_worker": bool(use_private_worker),
     }
 
+    # v1.5.0 — Path-B "skip branch / PR" knobs. Only emit fields when the
+    # caller opts in (True for the bool knobs, non-empty for the env).
+    if auto_create_pr:
+        body["auto_create_pr"] = True
+    if work_on_current_branch:
+        body["work_on_current_branch"] = True
+    if skip_reviewer_request:
+        body["skip_reviewer_request"] = True
+
+    # v1.5.0 — emit ``env`` for worker routing ONLY in the "machine" mode.
+    # Modes "label" and "none" deliberately omit ``env`` so the operator
+    # has an escape hatch when the upstream server rejects the
+    # ``AgentEnv``-shaped body on path-B. Per the No-Silent-Fallback
+    # invariant, popola does NOT auto-shift between modes.
+    if (
+        normalized_env_emit_mode == ENV_EMIT_MODE_MACHINE
+        and target_machine_name
+        and target_machine_name.strip()
+    ):
+        body["env"] = {
+            "type": "machine",
+            "name": target_machine_name.strip(),
+        }
+
     model_details: dict[str, Any] = {}
-    if model_name:
-        model_details["model_name"] = model_name
+    # v1.5.0 — model_id_override wins over model_name when both are set.
+    resolved_model_name: str | None = None
+    if model_id_override and model_id_override.strip():
+        resolved_model_name = model_id_override.strip()
+    elif model_name:
+        resolved_model_name = model_name
+    if resolved_model_name:
+        model_details["model_name"] = resolved_model_name
     if max_mode is not None:
         model_details["max_mode"] = bool(max_mode)
     if thinking_level is not None:
@@ -604,8 +731,11 @@ class CursorCloudInternalClient:
             raise CursorCloudInternalError(
                 f"path-B HTTP error calling {method}: {exc}",
                 hint=(
-                    "Retry, or fall back to --auth-mode=rest. "
-                    "(可重试,或改用 --auth-mode=rest 走 REST 路径)"
+                    "To retry on REST transport instead, re-dispatch "
+                    "with --auth-mode=rest. (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant.) "
+                    "(如需走 REST,请重新带 --auth-mode=rest 派发——"
+                    "popola 不会自动切换传输方式)"
                 ),
             ) from exc
 
@@ -617,10 +747,14 @@ class CursorCloudInternalClient:
             if sc == 401:
                 error_kind = "path_b_rpc_401_auth"
                 hint = (
-                    "Re-run `cursor login` to refresh the JWT, OR fall "
-                    "back to --auth-mode=rest with --cli-flag api_key=<X>. "
-                    "(请重新运行 `cursor login` 刷新 JWT,或改用 "
-                    "--auth-mode=rest 配合 CURSOR_API_KEY)"
+                    "Re-run `cursor login` to refresh the JWT. "
+                    "Alternatively, re-dispatch with --auth-mode=rest "
+                    "and --cli-flag api_key=<X> (popola does NOT "
+                    "auto-switch transports; v1.5.0 "
+                    "no-silent-fallback invariant). "
+                    "(请重新运行 `cursor login` 刷新 JWT;若需走 REST,"
+                    "请重新带 --auth-mode=rest 配合 CURSOR_API_KEY 派发——"
+                    "popola 不会自动切换传输方式)"
                 )
                 base_msg = f"path-B authentication failed for {method}: HTTP 401"
             elif sc == 404:
@@ -630,10 +764,13 @@ class CursorCloudInternalClient:
                     "Connect-RPC method path was renamed, OR (b) the "
                     "request body failed Connect-Protocol validation "
                     "(a 404 fallback). Check the detail line above. "
-                    "Fall back to --auth-mode=rest if both fail. "
+                    "If you want to try REST instead, re-dispatch with "
+                    "--auth-mode=rest (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant). "
                     "(Path-B 404 可能是上游方法路径被改,也可能是请求体未通过 "
-                    "Connect-Protocol 校验;详情见上面的 detail 行;两种都失败时改用 "
-                    "--auth-mode=rest)"
+                    "Connect-Protocol 校验;详情见上面的 detail 行;"
+                    "若需走 REST,请重新带 --auth-mode=rest 派发——"
+                    "popola 不会自动切换传输方式)"
                 )
                 base_msg = f"path-B method {method!r} returned 404 at {url}"
             elif sc == 400 and connect_code == "invalid_argument":
@@ -643,22 +780,34 @@ class CursorCloudInternalClient:
                     "Inspect the connect_message + details for the missing/invalid "
                     "field; v1.3.0 P5 added 11 required fields — older "
                     "build_start_composer_request callers may be missing them. "
+                    "If the rejected field is 'env', re-dispatch with "
+                    "--cli-flag env_emit_mode=label (or =none) to drop "
+                    "the env field. (popola does NOT auto-shift "
+                    "env_emit_mode; v1.5.0 no-silent-fallback invariant.) "
                     "(请求体未通过 Connect-Protocol 校验;参考 connect_message "
-                    "与 details 排查缺失字段)"
+                    "与 details 排查缺失字段;若被拒字段是 env,请重新带 "
+                    "--cli-flag env_emit_mode=label 或 =none 派发——"
+                    "popola 不会自动切换 env_emit_mode)"
                 )
                 base_msg = f"path-B {method} 400 invalid_argument"
             elif sc >= 500:
                 error_kind = "path_b_rpc_5xx"
                 hint = (
-                    "Upstream 5xx — retry, or fall back to --auth-mode=rest. "
-                    "(上游 5xx,可重试或改用 --auth-mode=rest)"
+                    "Upstream 5xx — retry, or re-dispatch with "
+                    "--auth-mode=rest (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant). "
+                    "(上游 5xx,可重试;若需走 REST,请重新带 "
+                    "--auth-mode=rest 派发——popola 不会自动切换传输方式)"
                 )
                 base_msg = f"path-B HTTP {sc} from {method}"
             else:
                 error_kind = "path_b_rpc_other"
                 hint = (
-                    "If this persists, fall back to --auth-mode=rest. "
-                    "(如持续失败,请改用 --auth-mode=rest)"
+                    "If this persists, re-dispatch with --auth-mode=rest "
+                    "(popola does NOT auto-switch transports; v1.5.0 "
+                    "no-silent-fallback invariant). "
+                    "(如持续失败,请重新带 --auth-mode=rest 派发——"
+                    "popola 不会自动切换传输方式)"
                 )
                 base_msg = f"path-B HTTP {sc} from {method}"
 
@@ -687,9 +836,12 @@ class CursorCloudInternalClient:
             raise CursorCloudInternalError(
                 f"path-B {method} returned non-JSON body: {resp.text[:500]!r}",
                 hint=(
-                    "The wire format may have changed; fall back to "
-                    "--auth-mode=rest. (上游 wire 格式可能已变更,"
-                    "请改用 --auth-mode=rest)"
+                    "The wire format may have changed. To retry on REST "
+                    "transport instead, re-dispatch with "
+                    "--auth-mode=rest. (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant.) "
+                    "(上游 wire 格式可能已变更;若需走 REST,请重新带 "
+                    "--auth-mode=rest 派发——popola 不会自动切换传输方式)"
                 ),
             ) from exc
 
@@ -697,7 +849,13 @@ class CursorCloudInternalClient:
             raise CursorCloudInternalError(
                 f"path-B {method} returned non-object JSON: "
                 f"{type(payload).__name__}",
-                hint="(请改用 --auth-mode=rest)",
+                hint=(
+                    "To retry on REST transport instead, re-dispatch "
+                    "with --auth-mode=rest. (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant.) "
+                    "(若需走 REST,请重新带 --auth-mode=rest 派发——"
+                    "popola 不会自动切换传输方式)"
+                ),
             )
         return payload
 
@@ -730,9 +888,22 @@ class CursorCloudInternalClient:
             body,
             timeout_s=timeout_s,
         )
+        # v1.5.0 — Cursor's server changed the response shape between
+        # v1.3.0 and v1.4.0: the ``background_composer_id`` / camelCase
+        # ``backgroundComposerId`` field moved into the nested
+        # ``composer.bcId`` envelope, with ``initialRunId`` /
+        # ``initial_run_id`` surfaced alongside. Accept all three shapes
+        # so this client stays compatible across builds; the response
+        # shape is empirically reverse-engineered and Q-22 makes no
+        # stability promises (see feedback_for_v1.4.0 §1 task #2).
+        composer_envelope = payload.get("composer")
+        if not isinstance(composer_envelope, dict):
+            composer_envelope = {}
         bc_id = (
             payload.get("background_composer_id")
             or payload.get("backgroundComposerId")
+            or composer_envelope.get("bc_id")
+            or composer_envelope.get("bcId")
             or ""
         )
         if not isinstance(bc_id, str) or not bc_id:
@@ -740,15 +911,31 @@ class CursorCloudInternalClient:
                 f"path-B StartBackgroundComposerFromSnapshot response missing "
                 f"background_composer_id; got keys: {sorted(payload.keys())}",
                 hint=(
-                    "The response shape may have changed; fall back to "
-                    "--auth-mode=rest. (响应字段缺失,请改用 --auth-mode=rest)"
+                    "The response shape may have changed. To retry on "
+                    "REST transport instead, re-dispatch with "
+                    "--auth-mode=rest. (popola does NOT auto-switch "
+                    "transports; v1.5.0 no-silent-fallback invariant.) "
+                    "(响应字段缺失;若需走 REST,请重新带 --auth-mode=rest "
+                    "派发——popola 不会自动切换传输方式)"
                 ),
             )
+        initial_run_id_raw: Any = (
+            payload.get("initial_run_id")
+            or payload.get("initialRunId")
+            or composer_envelope.get("initial_run_id")
+            or composer_envelope.get("initialRunId")
+        )
+        initial_run_id: str | None
+        if isinstance(initial_run_id_raw, str) and initial_run_id_raw:
+            initial_run_id = initial_run_id_raw
+        else:
+            initial_run_id = None
         dashboard_url = f"https://cursor.com/agents/{bc_id}" if bc_id else None
         return StartComposerOutcome(
             background_composer_id=bc_id,
             dashboard_url=dashboard_url,
             raw_response=payload,
+            initial_run_id=initial_run_id,
         )
 
 
@@ -758,12 +945,16 @@ __all__ = [
     "CursorCloudInternalError",
     "DEFAULT_BASE_URL",
     "DEFAULT_TIMEOUT_S",
+    "ENV_EMIT_MODE_LABEL",  # v1.5.0 escape-hatch enum.
+    "ENV_EMIT_MODE_MACHINE",  # v1.5.0 escape-hatch enum.
+    "ENV_EMIT_MODE_NONE",  # v1.5.0 escape-hatch enum.
     "EffortMode",
     "JWTAuthError",  # re-exported for callers that catch both
     "SERVICE_PATH",
     "StartComposerOutcome",
     "StartingMessageType",
     "ThinkingLevel",
+    "_VALID_ENV_EMIT_MODES",  # v1.5.0 — exposed for caller validation.
     "_camelize_keys",  # v1.3.0 P5 — exposed for camelize-roundtrip tests.
     "_extract_connect_error_envelope",  # v1.3.0 P4 — exposed for envelope tests.
     "_to_camel",  # v1.3.0 P5 — exposed for camelize-roundtrip tests.
