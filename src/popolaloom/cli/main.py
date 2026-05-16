@@ -103,6 +103,7 @@ def _register_subcommand_groups() -> None:
     from popolaloom.cli.popolad import app as popolad_app
     from popolaloom.cli.relay_cmd import relay_command
     from popolaloom.cli.skill_cmd import app as skill_app
+    from popolaloom.cli.update_cmd import app as update_app
 
     app.add_typer(popolad_app, name="popolad", help="Manage popolad daemon process")
     app.add_typer(
@@ -130,6 +131,17 @@ def _register_subcommand_groups() -> None:
         auth_app,
         name="auth",
         help="Manage credentials (Cursor API key keyring storage, v0.9.2+).",
+    )
+    # v1.4.0 — `popola update` Python equivalent of `install.sh update`
+    # (closes the v1.3.0-feedback gap where operators had no Python-side
+    # one-shot path for pip-upgrade + skill refresh + doctor).
+    app.add_typer(
+        update_app,
+        name="update",
+        help=(
+            "Upgrade popolaloom + refresh installed Skills (Python equivalent "
+            "of `install.sh update`)."
+        ),
     )
     app.command(name="relay")(relay_command)
     app.command(name="doctor")(doctor_command)

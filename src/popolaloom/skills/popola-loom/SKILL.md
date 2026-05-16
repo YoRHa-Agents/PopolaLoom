@@ -1,7 +1,7 @@
 ---
 name: popola-loom
-version: 1.3.0
-description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor) + popolaloom-mcp stdio + Lark 双向通道。"
+version: 1.4.0
+description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
   requires:
@@ -9,11 +9,11 @@ metadata:
     pythonVersion: ">=3.11"
   cliHelp: "popola --help"
 tier: 1
-token_estimate: 3300
-last_updated: "2026-05-11"
+token_estimate: 3400
+last_updated: "2026-05-17"
 ---
 
-<!-- updated: 2026-05-11; v1.1.1 preferences wizard + dispatch Q&A sync -->
+<!-- updated: 2026-05-17; v1.4.0 popola update verb (Python equivalent of install.sh update) -->
 
 
 # PopolaLoom Skill
@@ -84,6 +84,9 @@ AskQuestion templates (copy/paste shape): `{"question":"Dispatch target?","optio
 | `popola init --list` | 打印检测到的 IDE + 安装路径 | `popola init --list` |
 | `popola doctor` | 五项综合自检（v0.5.0+，Stage S4） | `popola doctor` |
 | `popola skill upgrade --target=cursor` | 用 wheel 内最新 SKILL.md 覆盖装机版（Stage S4） | `popola skill upgrade --target=cursor` |
+| `popola update` | v1.4.0+ 一条命令完成 pip 升级 + 双 scope skill 刷新 + doctor（`install.sh update` 的 Python 等价） | `popola update` |
+| `popola update --dry-run --json` | 预演计划：解析 pip spec、target × scope 矩阵、doctor 探针，不动 pip / 不写文件 | `popola update --dry-run --json` |
+| `popola update --from=pypi --version=1.4.0` | 锁版本到 PyPI（待 `BL-v0.9.x-PyPI` 落地） | `popola update --from=pypi --version=1.4.0` |
 | `popola version` | 打印 `popolaloom <version>` | `popola version` |
 
 ## Workflows
@@ -463,6 +466,48 @@ Experimental v1.1.1 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cl
 ### Workflow 13 — Guided dispatch with option-group Q&A
 
 Use AskQuestion for target → model → thinking_depth → special_modes, then submit: `popola dispatch "..." --wizard` locally, or MCP `popola_submit({"cli":"cursor-cloud","prompt":...,"cwd":...,"extra":{"model":"gpt-5.5","effort":"high","auto_create_pr":true}})`.
+
+### Workflow 14 — `popola update` end-to-end (v1.4.0+)
+
+<!-- updated: 2026-05-17 -->
+
+> **v1.4.0 GA**：`popola update` 是 [`install.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/install.sh) `verb_update`（lines 502–525）的 Python 等价，flag 矩阵一一对齐（同 `--from` / `--ref` / `--version` / `--target` / `--scope` / `--with-credentials` / `--dry-run` 等）。区别：`install.sh` 是 **bootstrap 路径**（curl | bash 在 Python 都没装的时候用）；`popola update` 是 **post-install 路径**（wheel 装好后操作员日常用）。两者契约由 `tests/test_update_parity.py` 锁定。
+
+5 步典型用法：
+
+1. **预演（强烈推荐先 `--dry-run`）**：检测 install kind（`regular` / `editable` / `pipx`）、解析 pip spec、列出 (target × scope) 矩阵 + doctor 探针，**不调 pip / 不写 skill**：
+   ```bash
+   popola update --dry-run --json | jq
+   # → {"config": {...}, "spec": "git+https://github.com/YoRHa-Agents/PopolaLoom.git",
+   #     "install_kind": "regular",
+   #     "pip": {"argv": ["python","-m","pip","install","--upgrade", "git+..."], "dry_run": true},
+   #     "skills": [...4×2=8 entries...], "doctor": [], "warnings": [...]}
+   ```
+2. **真发（默认 `--target=all --scope=both --from=git`，跟踪 `main`）**：
+   ```bash
+   popola update
+   # ┃ step 1 — pip install --upgrade ┃ exit=0      ┃
+   # ┃ step 2 — skill upgrade × 6     ┃ REPLACED v1.3.0 → v1.4.0  ┃
+   # ┃ step 3 — popola doctor         ┃ all OK v1.4.0             ┃
+   ```
+3. **锁版本（PyPI）**：
+   ```bash
+   popola update --from=pypi --version=1.4.0
+   # （注意：PyPI publish 仍由 BL-v0.9.x-PyPI 跟踪，未落地前 PyPI 路径会 404 — 用 `--from=git --ref=v1.4.0` 替代）
+   ```
+4. **跳过 pip（只刷 skill）**：
+   ```bash
+   popola update --no-skills    # 仅 pip + doctor
+   popola update --no-doctor    # 跳过最终探针（CI 场景）
+   ```
+5. **拒绝 unsafe install**：在 editable 安装（`pip install -e`）或 pipx-managed venv 上运行 `popola update` 会 **fail-loud 退 2** 并打印 remediation hint：
+   - editable → `git pull && popola skill upgrade --target=all --global --project`
+   - pipx → `pipx upgrade popolaloom`
+   - 真要强行覆盖：传 `--force`（会留下 stale .pth 或 break pipx pin tracking — 自负风险）。
+
+**daemon 重启注意**：升级完 wheel 后若 `popolad.sock` 还在，`popola update` **不会自动重启 daemon**（in-flight tasks 会被打断），但会在 stderr 打 `warn:` 提示让你手动 `popola popolad stop && popola popolad start`。
+
+退出码：`0` 干净；`1` pip 失败 / spec 校验失败；`2` editable / pipx 拒绝；`3` doctor 在升级后仍报 DRIFT/MISS（罕见，通常是文件系统权限问题）。
 
 ## Configuration
 
