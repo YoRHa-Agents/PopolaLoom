@@ -453,3 +453,121 @@ def test_start_composer_non_dict_response_rejected() -> None:
             build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
         )
     assert "non-object" in str(exc_info.value) or "auth-mode=rest" in exc_info.value.hint
+
+
+# ── v1.5.0 — composer.bcId envelope + initial_run_id surfacing ────────
+
+
+def test_start_composer_accepts_composer_bcid_envelope() -> None:
+    """v1.5.0 — response with nested ``composer.bcId`` is accepted.
+
+    Cursor's server changed the v1.4.0+ response shape: the
+    ``background_composer_id`` field moved into a nested ``composer``
+    envelope with ``bcId`` (camelCase) + ``initialRunId``. Per
+    feedback_for_v1.4.0 §1 task #2, this client now parses all three
+    shapes (snake_case top-level, camelCase top-level, composer.bcId)
+    so it stays compatible across Cursor builds.
+    """
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "composer": {"bcId": "bc-v1.5-nested"},
+                "initialRunId": "run-v1.5-nested",
+            },
+        )
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    outcome = client.start_background_composer_from_snapshot(
+        build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+    )
+    assert outcome.background_composer_id == "bc-v1.5-nested"
+    assert outcome.initial_run_id == "run-v1.5-nested"
+    assert outcome.dashboard_url == "https://cursor.com/agents/bc-v1.5-nested"
+
+
+def test_start_composer_composer_initial_run_id_snake_case() -> None:
+    """v1.5.0 — also accepts the snake_case ``initial_run_id`` form."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "background_composer_id": "bc-flat",
+                "initial_run_id": "run-flat",
+            },
+        )
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    outcome = client.start_background_composer_from_snapshot(
+        build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+    )
+    assert outcome.background_composer_id == "bc-flat"
+    assert outcome.initial_run_id == "run-flat"
+
+
+def test_start_composer_initial_run_id_absent_returns_none() -> None:
+    """v1.5.0 — missing run id leaves outcome.initial_run_id == None."""
+
+    def handler(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, json={"backgroundComposerId": "bc-no-run"})
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler)),
+    )
+    outcome = client.start_background_composer_from_snapshot(
+        build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+    )
+    assert outcome.background_composer_id == "bc-no-run"
+    assert outcome.initial_run_id is None
+
+
+# ── v1.5.0 — No-Silent-Fallback hint copy ────────────────────────────
+
+
+def test_hint_strings_state_facts_not_auto_fallback() -> None:
+    """v1.5.0 No-Silent-Fallback invariant — hint strings must not promise
+    auto-switching transports. The strings should state the recovery
+    command (e.g. ``--auth-mode=rest``) and explicitly note that popola
+    does NOT auto-switch.
+
+    This is the canonical test for PLAN §"硬约束" — popola must NEVER
+    suggest it will auto-fallback. The wording must be in the form
+    "to retry on X instead, re-dispatch with X" — never "we'll fall
+    back to X".
+    """
+
+    def handler_500(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(503, text="upstream error")
+
+    client = CursorCloudInternalClient(
+        _fake_bundle(),
+        http_client=httpx.Client(transport=_mock_transport(handler_500)),
+    )
+    with pytest.raises(CursorCloudInternalError) as exc_info:
+        client.start_background_composer_from_snapshot(
+            build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
+        )
+    hint = exc_info.value.hint
+    forbidden_phrases = (
+        "will fall back",
+        "we'll fall back",
+        "will auto-switch",
+        "automatically retries",
+    )
+    for phrase in forbidden_phrases:
+        assert phrase not in hint, (
+            f"hint must not promise auto-fallback (forbidden phrase {phrase!r} found): {hint!r}"
+        )
+    # Must include actionable wording — operator-explicit retry.
+    assert "re-dispatch" in hint or "auth-mode=rest" in hint
+    # Must include the invariant attribution so reviewers see the contract.
+    assert "no-silent-fallback" in hint.lower()
