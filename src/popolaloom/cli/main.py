@@ -459,6 +459,71 @@ def dispatch(
             "标志预设;需要 --auth-mode=session-jwt。"
         ),
     ),
+    # v1.5.0 — Path-B "skip branch / PR" knobs (feedback_for_v1.4.0 G4).
+    # These mirror the equivalent Cursor web-UI toggles. Defaults match
+    # the historical Path-B behaviour so existing dispatches see no
+    # change; opt-in via the negated flag (e.g. --no-auto-branch).
+    auto_branch: bool = typer.Option(
+        True,
+        "--auto-branch/--no-auto-branch",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — toggle Cursor's auto-branch creation "
+            "on the agent worker (path-B only). Default ON matches the "
+            "Cursor web-UI default. Use --no-auto-branch to dispatch onto "
+            "the worker's current ref without creating a feature branch. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) 是否在 Worker 上自动创建分支;默认开启,与 Cursor "
+            "网页端一致。--no-auto-branch 跳过分支创建,直接在当前 ref 上派发。"
+        ),
+    ),
+    auto_create_pr: bool = typer.Option(
+        False,
+        "--auto-create-pr/--no-auto-create-pr",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — toggle the auto-create-PR step after "
+            "the agent finishes (path-B only). Default OFF so a JWT-direct "
+            "dispatch does NOT spawn a PR unless the operator opts in. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) Agent 完成后是否自动创建 PR;默认关闭。"
+        ),
+    ),
+    work_on_current_branch: bool = typer.Option(
+        False,
+        "--work-on-current-branch",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — instruct the worker to operate on "
+            "the cwd's current ref rather than checking out a new branch "
+            "(path-B only). Satisfies G4 of feedback_for_v1.4.0 ('跳过 "
+            "git 分支 / PR 相关操作'). Requires --auth-mode=session-jwt + "
+            "--cli=cursor-cloud. "
+            "(实验性) Worker 在当前 ref 上工作,不切分支。"
+        ),
+    ),
+    skip_reviewer_request: bool = typer.Option(
+        False,
+        "--skip-reviewer-request",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — suppress the auto reviewer-request "
+            "on the resulting PR (path-B only). Pairs with --auto-create-pr "
+            "for the 'create PR but don't ping reviewers' workflow. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) PR 创建后不发起 Reviewer 请求。"
+        ),
+    ),
+    allow_fallback: bool = typer.Option(
+        False,
+        "--allow-fallback",
+        help=(
+            "v1.5.0 No-Silent-Fallback opt-in: when --cli=<X> is "
+            "unavailable, allow the resolver to walk "
+            "[user_preferences.routing].fallback_chain. Default OFF — "
+            "popola hard-fails when the requested CLI adapter is missing. "
+            "(v1.5.0 no-silent-fallback invariant: explicit opt-in needed "
+            "before popola switches the dispatched CLI adapter.) "
+            "v1.5.0 不静默回退默认约束:除非显式 --allow-fallback,"
+            "否则当请求的 --cli 不可用时直接退出。"
+        ),
+    ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,
         "--events-dir",
@@ -556,6 +621,7 @@ def dispatch(
                 prompt=prompt,
                 wizard=wizard,
                 no_wizard=no_wizard,
+                allow_fallback=allow_fallback,
             )
         elif cli == "cursor-cloud":
             prefs_for_dispatch = _load_dispatch_preferences_or_exit()
@@ -596,6 +662,10 @@ def dispatch(
             auto_proceed_after_plan=auto_proceed_after_plan,
             preset=preset,
             thinking_level=thinking_level,
+            auto_branch=auto_branch,
+            auto_create_pr=auto_create_pr,
+            work_on_current_branch=work_on_current_branch,
+            skip_reviewer_request=skip_reviewer_request,
             prefs=prefs_for_dispatch,
         )
 
@@ -1727,6 +1797,7 @@ def _select_cli_from_preferences(
     prompt: str = "",
     wizard: bool = False,
     no_wizard: bool = False,
+    allow_fallback: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Resolve an omitted ``--cli`` using the present preferences block.
 
@@ -1789,7 +1860,9 @@ def _select_cli_from_preferences(
             err=True,
         )
         raise typer.Exit(code=2)
-    return _select_available_local_cli(cli, prefs, extra=selected_extra)
+    return _select_available_local_cli(
+        cli, prefs, extra=selected_extra, allow_fallback=allow_fallback
+    )
 
 
 def _prompt_cli_from_preferences(prefs: Any) -> str:
@@ -1807,10 +1880,58 @@ def _select_available_local_cli(
     prefs: Any,
     *,
     extra: dict[str, Any],
+    allow_fallback: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """Return the first available local CLI from requested + fallback_chain."""
+    """Return the requested local CLI, or walk the fallback chain (opt-in only).
+
+    v1.5.0 No-Silent-Fallback contract (per
+    ``feedback_for_v1.4.0.md`` operator-added hard constraint, surfaced
+    in PLAN §"硬约束 — 禁止 silent fallback"):
+
+    * **Default behaviour (allow_fallback=False)** — when the
+      ``requested`` adapter is unavailable, this function hard-fails
+      with exit code 1 and renders an actionable error pointing at the
+      ``--allow-fallback`` opt-in flag. The persisted
+      ``[user_preferences.routing].fallback_chain`` is NOT consulted.
+      This matches the No-Silent-Failures workspace rule: popola will
+      never silently switch the dispatched CLI adapter without explicit
+      operator consent.
+    * **allow_fallback=True** — the caller has explicitly passed
+      ``--allow-fallback`` on the dispatch CLI; the resolver walks
+      ``prefs.fallback_chain`` as it did pre-v1.5.0 and emits a stderr
+      ``[prefs] (fallback consent acknowledged) ...`` line per
+      switch (No Silent Failures: the switch is visible).
+
+    Failure mode: when every candidate is unavailable, exit 1 with a
+    list of every checked adapter so the operator can diagnose. SSE
+    observability fallbacks (``cloud.sse.fallback_to_poll``) are
+    explicitly OUT OF SCOPE of this invariant per PLAN §硬约束 — they
+    sit at the observability layer, not the dispatch-routing layer.
+    """
+    if _local_cli_available(requested):
+        return requested, extra
+
+    fallback_chain = list(getattr(prefs, "fallback_chain", []) or [])
+
+    if not allow_fallback:
+        typer.echo(
+            f"error: --cli={requested!r} is not available; "
+            f"fallback_chain={fallback_chain!r} ignored. "
+            f"Pass --allow-fallback to opt into auto-switching, OR "
+            f"re-dispatch with an explicit --cli=<X> that is installed. "
+            f"(v1.5.0 no-silent-fallback invariant: popola will NOT "
+            f"switch the dispatched CLI adapter without explicit "
+            f"operator consent.) "
+            f"(--cli={requested!r} 不可用;默认不自动回退到 "
+            f"fallback_chain={fallback_chain!r}。需要显式传 "
+            f"--allow-fallback 才会启用回退,或重新指定 --cli=<X>。)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # allow_fallback=True — operator explicitly opted in.
     candidates: list[str] = []
-    for name in [requested, *list(prefs.fallback_chain)]:
+    for name in [requested, *fallback_chain]:
         if name not in candidates:
             candidates.append(name)
 
@@ -1819,7 +1940,9 @@ def _select_available_local_cli(
         if _local_cli_available(candidate):
             if candidate != requested:
                 typer.echo(
-                    f"[prefs] {requested} unavailable; falling back to {candidate}",
+                    f"[prefs] (fallback consent acknowledged) "
+                    f"--cli={requested} unavailable; switched to {candidate} "
+                    f"per fallback_chain",
                     err=True,
                 )
             return candidate, extra
@@ -1827,7 +1950,9 @@ def _select_available_local_cli(
 
     typer.echo(
         "error: no preferred local CLI adapter is available "
-        f"(checked: {', '.join(unavailable)})",
+        f"(checked: {', '.join(unavailable)}). "
+        "Even with --allow-fallback the fallback_chain is exhausted; "
+        "install one of the listed adapters or pick a different --cli.",
         err=True,
     )
     raise typer.Exit(code=1)
@@ -2054,6 +2179,10 @@ def _apply_path_b_flags(
     auto_proceed_after_plan: bool,
     preset: str,
     thinking_level: str = "",
+    auto_branch: bool = True,
+    auto_create_pr: bool = False,
+    work_on_current_branch: bool = False,
+    skip_reviewer_request: bool = False,
     prefs: Any = None,
 ) -> None:
     """Validate Path-B Typer knobs before POST /dispatch (Q-13 / Q-19 / Q-22).
@@ -2241,10 +2370,24 @@ def _apply_path_b_flags(
         ):
             if key in merged:
                 extra[key] = merged[key]
+        # v1.5.0 — write the new "skip branch / PR" bool knobs into
+        # extras for the supervisor + builder to pick up. Only write
+        # when the value diverges from the default so we don't add
+        # noise to dispatches that didn't opt in.
+        if not auto_branch:
+            extra["auto_branch"] = False
+        if auto_create_pr:
+            extra["auto_create_pr"] = True
+        if work_on_current_branch:
+            extra["work_on_current_branch"] = True
+        if skip_reviewer_request:
+            extra["skip_reviewer_request"] = True
         logger.debug(
             "path-B enabled: mode=%r effort=%r long_running=%r "
             "max_mode=%r time_budget=%r auto_proceed_after_plan=%r "
-            "thinking_level=%r model=%r",
+            "thinking_level=%r model=%r auto_branch=%r "
+            "auto_create_pr=%r work_on_current_branch=%r "
+            "skip_reviewer_request=%r",
             extra.get("mode"),
             extra.get("effort"),
             extra.get("long_running"),
@@ -2253,6 +2396,10 @@ def _apply_path_b_flags(
             extra.get("auto_proceed_after_plan"),
             extra.get("thinking_level"),
             extra.get("model"),
+            extra.get("auto_branch", True),
+            extra.get("auto_create_pr", False),
+            extra.get("work_on_current_branch", False),
+            extra.get("skip_reviewer_request", False),
         )
 
 
