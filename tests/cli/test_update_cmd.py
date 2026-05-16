@@ -130,6 +130,18 @@ def test_update_version_with_git_rejected(runner: CliRunner) -> None:
     assert "version" in combined.lower()
 
 
+def _flatten(text: str) -> str:
+    """Collapse Rich line wraps so substring assertions don't hinge on terminal width.
+
+    Rich wraps stderr at the runner's terminal width, which differs between
+    local dev (≥120 cols) and GitHub Actions (~80 cols). The hint strings
+    end up split across lines like ``pipx\\nupgrade`` on narrow runners,
+    failing literal substring asserts. Collapsing newlines + whitespace
+    runs makes the assertions width-agnostic.
+    """
+    return " ".join(text.split())
+
+
 def test_update_editable_refuses_with_exit_2(
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
@@ -148,8 +160,9 @@ def test_update_editable_refuses_with_exit_2(
     )
     result = runner.invoke(app, ["--dry-run"])
     assert result.exit_code == 2
-    assert "editable" in result.stderr.lower()
-    assert "git pull" in result.stderr or "popola skill upgrade" in result.stderr
+    flat = _flatten(result.stderr)
+    assert "editable" in flat.lower()
+    assert "git pull" in flat or "popola skill upgrade" in flat
 
 
 def test_update_pipx_refuses_with_exit_2(
@@ -169,8 +182,9 @@ def test_update_pipx_refuses_with_exit_2(
     )
     result = runner.invoke(app, ["--dry-run"])
     assert result.exit_code == 2
-    assert "pipx" in result.stderr.lower()
-    assert "pipx upgrade" in result.stderr
+    flat = _flatten(result.stderr)
+    assert "pipx" in flat.lower()
+    assert "pipx upgrade" in flat
 
 
 def test_update_pip_failure_exits_1_with_stderr_tail(
@@ -192,8 +206,9 @@ def test_update_pip_failure_exits_1_with_stderr_tail(
         ["--from", "pypi", "--version", "99.99.99", "--no-skills", "--no-doctor"],
     )
     assert result.exit_code == 1
-    assert "pip install --upgrade failed" in result.stderr
-    assert "No matching distribution" in result.stderr
+    flat = _flatten(result.stderr)
+    assert "pip install --upgrade failed" in flat
+    assert "No matching distribution" in flat
 
 
 def test_update_no_skills_skips_skill_phase_in_json(

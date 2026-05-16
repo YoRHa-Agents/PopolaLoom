@@ -142,6 +142,17 @@ def test_resolve_install_spec_parity_with_install_sh(
     )
 
 
+def _flatten_help(text: str) -> str:
+    """Collapse Rich line wraps + whitespace runs so flag-substring assertions
+    don't hinge on the runner's terminal width.
+
+    Typer/Click render `--help` via Rich on modern Click; on narrow CI
+    runners (~80 cols) Rich wraps long flag descriptions and even option
+    names get split across lines. Flattening makes the assertions stable.
+    """
+    return " ".join(text.split())
+
+
 def test_install_sh_update_help_advertises_same_flags() -> None:
     """``install.sh --help`` lists the same flags that ``popola update`` accepts."""
     result = subprocess.run(
@@ -152,22 +163,32 @@ def test_install_sh_update_help_advertises_same_flags() -> None:
         timeout=10,
     )
     assert result.returncode == 0
-    help_text = result.stdout
+    help_text = _flatten_help(result.stdout)
     expected = ["--scope", "--target", "--from", "--ref", "--version", "--with-credentials"]
     missing = [f for f in expected if f not in help_text]
     assert not missing, f"install.sh --help missing flags: {missing}"
 
 
 def test_popola_update_help_advertises_same_flags() -> None:
-    """``popola update --help`` lists the cross-checked flag set."""
+    """``popola update --help`` lists the cross-checked flag set.
+
+    Forces a wide terminal width so Rich does not wrap long option
+    names — but also flattens the result so we are doubly defended
+    against any future Rich layout change that might still wrap on
+    narrow terminals.
+    """
+    import os
+
     from typer.testing import CliRunner
 
     from popolaloom.cli.update_cmd import app
 
     runner = CliRunner()
-    result = runner.invoke(app, ["--help"])
+    # Force a very wide terminal so Rich does not wrap option names.
+    env = {**os.environ, "COLUMNS": "240", "LINES": "60"}
+    result = runner.invoke(app, ["--help"], env=env)
     assert result.exit_code == 0
-    help_text = result.stdout
+    help_text = _flatten_help(result.stdout)
     expected = ["--scope", "--target", "--from", "--ref", "--version", "--with-credentials"]
     missing = [f for f in expected if f not in help_text]
     assert not missing, f"popola update --help missing flags: {missing}"
