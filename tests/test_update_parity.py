@@ -170,25 +170,26 @@ def test_install_sh_update_help_advertises_same_flags() -> None:
 
 
 def test_popola_update_help_advertises_same_flags() -> None:
-    """``popola update --help`` lists the cross-checked flag set.
+    """``popola update`` defines the cross-checked flag set.
 
-    Forces a wide terminal width so Rich does not wrap long option
-    names — but also flattens the result so we are doubly defended
-    against any future Rich layout change that might still wrap on
-    narrow terminals.
+    Width-independent: introspects the Typer app's Click params directly
+    instead of substring-matching ``--help`` output. Earlier revisions
+    matched the rendered help, but Click's help renderer derives its
+    width from :func:`shutil.get_terminal_size`, not from the ``env``
+    kwarg passed to :class:`typer.testing.CliRunner.invoke`, so on
+    narrow CI runners the option names get split across lines and
+    literal substring assertions break. Inspecting
+    ``click.Command.params`` is robust against any Rich layout change.
     """
-    import os
-
-    from typer.testing import CliRunner
+    import typer
 
     from popolaloom.cli.update_cmd import app
 
-    runner = CliRunner()
-    # Force a very wide terminal so Rich does not wrap option names.
-    env = {**os.environ, "COLUMNS": "240", "LINES": "60"}
-    result = runner.invoke(app, ["--help"], env=env)
-    assert result.exit_code == 0
-    help_text = _flatten_help(result.stdout)
-    expected = ["--scope", "--target", "--from", "--ref", "--version", "--with-credentials"]
-    missing = [f for f in expected if f not in help_text]
-    assert not missing, f"popola update --help missing flags: {missing}"
+    click_command = typer.main.get_command(app)
+    declared_opts = {opt for p in click_command.params for opt in p.opts}
+    expected = {"--scope", "--target", "--from", "--ref", "--version", "--with-credentials"}
+    missing = expected - declared_opts
+    assert not missing, (
+        f"popola update missing flag definitions: {sorted(missing)}; "
+        f"declared opts: {sorted(declared_opts)}"
+    )
