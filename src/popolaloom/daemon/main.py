@@ -340,6 +340,7 @@ _USER_PREF_CURSOR_CLOUD_KEYS: Final[frozenset[str]] = frozenset(
         "default_time_budget",
         "default_thinking_level",
         "default_preset",
+        "default_auth_mode",
     }
 )
 _USER_PREF_CLAUDE_KEYS: Final[frozenset[str]] = frozenset({"max_turns"})
@@ -406,6 +407,15 @@ USER_PREF_VALID_PRESETS: Final[tuple[str, ...]] = (
 Mirrors :data:`popolaloom.cli.main._BUILTIN_PRESETS` keys (``quick-fix``,
 ``long-running-plan``, ``exploration``, ``review``, ``grind``) plus the
 empty-string sentinel for "unset".
+"""
+
+USER_PREF_VALID_AUTH_MODES: Final[tuple[str, ...]] = ("", "rest", "session-jwt")
+"""v1.5.0 — accepted values for ``[user_preferences.cursor-cloud].default_auth_mode``.
+
+Empty string = unset (the dispatch CLI's ``--auth-mode`` default ``"rest"``
+applies). Non-empty values mirror the CLI's accepted auth_mode set
+(rest / session-jwt); ``--auth-mode`` on the per-dispatch command line
+ALWAYS wins.
 """
 
 
@@ -595,6 +605,16 @@ class UserPrefsCursorCloud:
     """v1.3.0 P2/P6 — Path-B thinking-level default; empty = unset."""
     default_preset: str = ""
     """v1.3.0 P6 — Path-B preset default; empty = unset."""
+    default_auth_mode: str = ""
+    """v1.5.0 — default ``--auth-mode`` for cursor-cloud dispatches; empty = unset.
+
+    When non-empty, ``popola dispatch --cli=cursor-cloud`` uses this value
+    in lieu of the Typer default ``"rest"`` unless the operator explicitly
+    passes ``--auth-mode=<X>``. Typical population path: ``popola init``
+    detects a cached Cursor JWT at ``~/.config/cursor/auth.json`` and
+    prompts the operator to set this to ``"session-jwt"`` (Phase H of the
+    v1.5.0 PLAN; feedback_for_v1.4.0 G9).
+    """
 
 
 @dataclass(frozen=True)
@@ -1531,6 +1551,18 @@ def _parse_user_preferences_v2(
                 key="default_preset",
                 source=source,
             ),
+            default_auth_mode=_validate_choice_tuple(
+                _require_str(
+                    cursor_cloud_section.get("default_auth_mode", ""),
+                    section="user_preferences.cursor-cloud",
+                    key="default_auth_mode",
+                    source=source,
+                ),
+                USER_PREF_VALID_AUTH_MODES,
+                section="user_preferences.cursor-cloud",
+                key="default_auth_mode",
+                source=source,
+            ),
         ),
         claude=UserPrefsClaude(
             max_turns=_require_int(
@@ -1662,6 +1694,7 @@ def user_preferences_to_toml_dict(
             "default_time_budget": config.cursor_cloud.default_time_budget,
             "default_thinking_level": config.cursor_cloud.default_thinking_level,
             "default_preset": config.cursor_cloud.default_preset,
+            "default_auth_mode": config.cursor_cloud.default_auth_mode,
         },
         "claude": {"max_turns": config.claude.max_turns},
         "codex": {"sandbox": config.codex.sandbox},

@@ -95,6 +95,7 @@ from popolaloom.daemon.main import (
     USER_PREF_VALID_AGENT_MODES,
     USER_PREF_VALID_AMBIGUITY_RESOLUTION,
     USER_PREF_VALID_ASK_DIMENSIONS,
+    USER_PREF_VALID_AUTH_MODES,
     USER_PREF_VALID_CLOUD_TARGETS,
     USER_PREF_VALID_CODEX_SANDBOXES,
     USER_PREF_VALID_CURSOR_OUTPUT_FORMATS,
@@ -435,6 +436,13 @@ def apply_user_preference_sets(
                     f"{list(USER_PREF_VALID_PRESETS)}; got {value!r}"
                 )
             _set_nested_pref_value(values, key, value)
+        elif key == "cursor-cloud.default_auth_mode":
+            if value not in USER_PREF_VALID_AUTH_MODES:
+                raise ValueError(
+                    "cursor-cloud.default_auth_mode must be one of "
+                    f"{list(USER_PREF_VALID_AUTH_MODES)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
         elif key == "dispatch.ambiguity_resolution":
             if value not in USER_PREF_VALID_AMBIGUITY_RESOLUTION:
                 raise ValueError(
@@ -532,6 +540,7 @@ def _known_preference_assignment_keys() -> list[str]:
             "cursor-cloud.default_time_budget",
             "cursor-cloud.default_thinking_level",
             "cursor-cloud.default_preset",
+            "cursor-cloud.default_auth_mode",
             "claude.max_turns",
             "codex.sandbox",
             "lark.notify_on_completed",
@@ -2363,6 +2372,30 @@ def _run_preferences_wizard_step() -> None:
             "Cursor Cloud work on current branch?",
             default=defaults.cursor_cloud.work_on_current_branch,
         )
+
+        # v1.5.0 Phase H (feedback_for_v1.4.0 G9) — detect a cached
+        # Cursor JWT at ``~/.config/cursor/auth.json`` and offer to set
+        # the persisted default auth mode to ``"session-jwt"`` so the
+        # operator doesn't have to pass ``--auth-mode=session-jwt`` on
+        # every dispatch. When the JWT is absent, default to the
+        # existing value (typically ``""`` = unset → "rest" applies).
+        cursor_cloud_default_auth_mode = defaults.cursor_cloud.default_auth_mode
+        jwt_auth_path = Path.home() / ".config" / "cursor" / "auth.json"
+        if jwt_auth_path.is_file():
+            if cursor_cloud_default_auth_mode != "session-jwt":
+                set_jwt_default = _prompt_pref_bool(
+                    f"Detected cached Cursor JWT at {jwt_auth_path}. "
+                    "Set [user_preferences.cursor-cloud].default_auth_mode "
+                    "= 'session-jwt' so cursor-cloud dispatches use the "
+                    "JWT path by default? (per-dispatch --auth-mode still "
+                    "overrides)",
+                    default=True,
+                )
+                if set_jwt_default:
+                    cursor_cloud_default_auth_mode = "session-jwt"
+        # If no JWT and previous value was session-jwt, keep it — the
+        # operator may be about to run `cursor login`.
+
         claude_max_turns = _prompt_pref_int(
             "Claude max turns (0 = no limit)",
             default=defaults.claude.max_turns,
@@ -2456,6 +2489,7 @@ def _run_preferences_wizard_step() -> None:
                 auto_create_pr=cursor_auto_create_pr,
                 work_on_current_branch=cursor_work_current_branch,
                 default_cloud_target=default_cloud_target_value,
+                default_auth_mode=cursor_cloud_default_auth_mode,
             ),
             claude=UserPrefsClaude(max_turns=claude_max_turns),
             codex=UserPrefsCodex(sandbox=codex_sandbox),

@@ -2245,6 +2245,31 @@ def _apply_path_b_flags(
     raw_auth = auth_mode.strip().replace("_", "-").lower()
     if raw_auth == "jwt":
         raw_auth = "session-jwt"
+    # v1.5.0 Phase H — consult `[user_preferences.cursor-cloud].default_auth_mode`
+    # when the operator left the CLI flag at its default ``"rest"``.
+    # Pref==session-jwt + CLI==rest (default) → upgrade to session-jwt
+    # (no Silent Failure: a stderr `[prefs] ...` line announces the
+    # override so the operator sees what's happening). The dispatch CLI
+    # ALWAYS wins when the operator explicitly passed `--auth-mode=...`,
+    # but Typer doesn't surface "was default vs explicit"; we use the
+    # heuristic "raw==rest + non-empty pref override" because the pref
+    # store doesn't carry the empty sentinel.
+    if raw_auth == "rest" and prefs is not None:
+        cursor_cloud_prefs_node = getattr(prefs, "cursor_cloud", None)
+        pref_auth = (
+            str(getattr(cursor_cloud_prefs_node, "default_auth_mode", "") or "")
+            if cursor_cloud_prefs_node is not None
+            else ""
+        )
+        if pref_auth in {"rest", "session-jwt"} and pref_auth != "rest":
+            typer.echo(
+                f"[prefs] applying [user_preferences.cursor-cloud]."
+                f"default_auth_mode={pref_auth!r} "
+                f"(pass --auth-mode=rest explicitly to override). "
+                f"(已应用 default_auth_mode={pref_auth!r})",
+                err=True,
+            )
+            raw_auth = pref_auth
     normalized_auth_modes = frozenset({"rest", "session-jwt"})
     if raw_auth not in normalized_auth_modes:
         typer.echo(
