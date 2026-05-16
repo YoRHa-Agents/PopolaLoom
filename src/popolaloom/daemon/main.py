@@ -319,7 +319,9 @@ _USER_PREF_ROUTING_KEYS: Final[frozenset[str]] = frozenset(
 _USER_PREF_DEFAULTS_KEYS: Final[frozenset[str]] = frozenset(
     {"wait_timeout_s", "hitl_enabled", "follow_devola_flow", "prompt_each_dispatch"}
 )
-_USER_PREF_CURSOR_KEYS: Final[frozenset[str]] = frozenset({"output_format", "cli_args"})
+_USER_PREF_CURSOR_KEYS: Final[frozenset[str]] = frozenset(
+    {"output_format", "cli_args", "default_model"}
+)
 _USER_PREF_CURSOR_CLOUD_KEYS: Final[frozenset[str]] = frozenset(
     {
         "model",
@@ -330,6 +332,14 @@ _USER_PREF_CURSOR_CLOUD_KEYS: Final[frozenset[str]] = frozenset(
         "default_cloud_target",
         "worker_name",
         "pool_name",
+        "default_mode",
+        "default_effort",
+        "default_max_mode",
+        "default_long_running",
+        "default_auto_proceed_after_plan",
+        "default_time_budget",
+        "default_thinking_level",
+        "default_preset",
     }
 )
 _USER_PREF_CLAUDE_KEYS: Final[frozenset[str]] = frozenset({"max_turns"})
@@ -357,6 +367,46 @@ USER_PREF_VALID_AMBIGUITY_RESOLUTION: Final[frozenset[str]] = frozenset(
 USER_PREF_VALID_ASK_DIMENSIONS: Final[frozenset[str]] = frozenset(
     {"target", "model", "thinking_depth", "special_modes"}
 )
+
+USER_PREF_VALID_AGENT_MODES: Final[tuple[str, ...]] = (
+    "",
+    "agent",
+    "ask",
+    "plan",
+    "debug",
+    "triage",
+    "project",
+    "multitask",
+)
+"""v1.3.0 P6 — accepted values for ``[user_preferences.cursor-cloud].default_mode``.
+
+Empty string = unset (default); non-empty values mirror
+:data:`popolaloom.cloud.internal.cursor_cloud_internal._USER_FACING_TO_AGENT_MODE`
+keys so the user-facing CLI vocabulary stays in lock-step with the
+Connect-RPC translator.
+"""
+
+USER_PREF_VALID_EFFORT_MODES: Final[tuple[str, ...]] = ("", "low", "medium", "high")
+"""v1.3.0 P6 — accepted values for ``[user_preferences.cursor-cloud].default_effort``."""
+
+USER_PREF_VALID_THINKING_LEVELS: Final[tuple[str, ...]] = ("", "low", "medium", "high")
+"""v1.3.0 P2/P6 — accepted values for
+``[user_preferences.cursor-cloud].default_thinking_level``."""
+
+USER_PREF_VALID_PRESETS: Final[tuple[str, ...]] = (
+    "",
+    "quick-fix",
+    "long-running-plan",
+    "exploration",
+    "review",
+    "grind",
+)
+"""v1.3.0 P6 — accepted values for ``[user_preferences.cursor-cloud].default_preset``.
+
+Mirrors :data:`popolaloom.cli.main._BUILTIN_PRESETS` keys (``quick-fix``,
+``long-running-plan``, ``exploration``, ``review``, ``grind``) plus the
+empty-string sentinel for "unset".
+"""
 
 
 _CLOUD_TARGET_PRIORITY_DEPRECATION_WARNED: bool = False
@@ -513,6 +563,8 @@ class UserPrefsCursor:
 
     output_format: str = "text"
     cli_args: tuple[str, ...] = ()
+    default_model: str = ""
+    """v1.3.0 P6 — forwarded as ``--model`` for local cursor dispatches when set."""
 
 
 @dataclass(frozen=True)
@@ -527,6 +579,22 @@ class UserPrefsCursorCloud:
     default_cloud_target: str = "ask-each-time"
     worker_name: str = ""
     pool_name: str = ""
+    default_mode: str = ""
+    """v1.3.0 P6 (feedback §6) — Path-B agent mode default; empty = unset."""
+    default_effort: str = ""
+    """v1.3.0 P6 — Path-B effort default; empty = unset."""
+    default_max_mode: bool = False
+    """v1.3.0 P6 — Path-B max-context mode default."""
+    default_long_running: bool = False
+    """v1.3.0 P6 — Path-B long-running default."""
+    default_auto_proceed_after_plan: bool = False
+    """v1.3.0 P6 — Path-B auto_proceed_after_planning default."""
+    default_time_budget: str = ""
+    """v1.3.0 P6 — Path-B time-budget default (string; validated at dispatch time)."""
+    default_thinking_level: str = ""
+    """v1.3.0 P2/P6 — Path-B thinking-level default; empty = unset."""
+    default_preset: str = ""
+    """v1.3.0 P6 — Path-B preset default; empty = unset."""
 
 
 @dataclass(frozen=True)
@@ -1091,6 +1159,29 @@ def _validate_enum(
     return value
 
 
+def _validate_choice_tuple(
+    value: str,
+    valid: tuple[str, ...],
+    *,
+    section: str,
+    key: str,
+    source: Path,
+) -> str:
+    """v1.3.0 P6 — sister helper to :func:`_validate_enum` for tuple allow-lists.
+
+    The new ``USER_PREF_VALID_AGENT_MODES`` / ``USER_PREF_VALID_EFFORT_MODES``
+    / ``USER_PREF_VALID_THINKING_LEVELS`` / ``USER_PREF_VALID_PRESETS``
+    constants use ``tuple`` (so they expose deterministic ordering for help
+    text and CLI choice rendering); this helper accepts a tuple instead of
+    a frozenset while preserving the same "No Silent Failures" error shape.
+    """
+    if value not in valid:
+        raise ValueError(
+            f"[{section}].{key} in {source} must be one of {list(valid)}; got {value!r}"
+        )
+    return value
+
+
 def _validate_str_list_members(
     values: list[str],
     valid: frozenset[str],
@@ -1317,6 +1408,12 @@ def _parse_user_preferences_v2(
                     source=source,
                 )
             ),
+            default_model=_require_str(
+                cursor_section.get("default_model", ""),
+                section="user_preferences.cursor",
+                key="default_model",
+                source=source,
+            ),
         ),
         cursor_cloud=UserPrefsCursorCloud(
             model=_require_str(
@@ -1360,6 +1457,78 @@ def _parse_user_preferences_v2(
                 cursor_cloud_section.get("pool_name", ""),
                 section="user_preferences.cursor-cloud",
                 key="pool_name",
+                source=source,
+            ),
+            default_mode=_validate_choice_tuple(
+                _require_str(
+                    cursor_cloud_section.get("default_mode", ""),
+                    section="user_preferences.cursor-cloud",
+                    key="default_mode",
+                    source=source,
+                ),
+                USER_PREF_VALID_AGENT_MODES,
+                section="user_preferences.cursor-cloud",
+                key="default_mode",
+                source=source,
+            ),
+            default_effort=_validate_choice_tuple(
+                _require_str(
+                    cursor_cloud_section.get("default_effort", ""),
+                    section="user_preferences.cursor-cloud",
+                    key="default_effort",
+                    source=source,
+                ),
+                USER_PREF_VALID_EFFORT_MODES,
+                section="user_preferences.cursor-cloud",
+                key="default_effort",
+                source=source,
+            ),
+            default_max_mode=_require_bool(
+                cursor_cloud_section.get("default_max_mode", False),
+                section="user_preferences.cursor-cloud",
+                key="default_max_mode",
+                source=source,
+            ),
+            default_long_running=_require_bool(
+                cursor_cloud_section.get("default_long_running", False),
+                section="user_preferences.cursor-cloud",
+                key="default_long_running",
+                source=source,
+            ),
+            default_auto_proceed_after_plan=_require_bool(
+                cursor_cloud_section.get("default_auto_proceed_after_plan", False),
+                section="user_preferences.cursor-cloud",
+                key="default_auto_proceed_after_plan",
+                source=source,
+            ),
+            default_time_budget=_require_str(
+                cursor_cloud_section.get("default_time_budget", ""),
+                section="user_preferences.cursor-cloud",
+                key="default_time_budget",
+                source=source,
+            ),
+            default_thinking_level=_validate_choice_tuple(
+                _require_str(
+                    cursor_cloud_section.get("default_thinking_level", ""),
+                    section="user_preferences.cursor-cloud",
+                    key="default_thinking_level",
+                    source=source,
+                ),
+                USER_PREF_VALID_THINKING_LEVELS,
+                section="user_preferences.cursor-cloud",
+                key="default_thinking_level",
+                source=source,
+            ),
+            default_preset=_validate_choice_tuple(
+                _require_str(
+                    cursor_cloud_section.get("default_preset", ""),
+                    section="user_preferences.cursor-cloud",
+                    key="default_preset",
+                    source=source,
+                ),
+                USER_PREF_VALID_PRESETS,
+                section="user_preferences.cursor-cloud",
+                key="default_preset",
                 source=source,
             ),
         ),
@@ -1472,6 +1641,7 @@ def user_preferences_to_toml_dict(
         "cursor": {
             "output_format": config.cursor.output_format,
             "cli_args": list(config.cursor.cli_args),
+            "default_model": config.cursor.default_model,
         },
         "cursor-cloud": {
             "model": config.cursor_cloud.model,
@@ -1482,6 +1652,16 @@ def user_preferences_to_toml_dict(
             "default_cloud_target": config.cursor_cloud.default_cloud_target,
             "worker_name": config.cursor_cloud.worker_name,
             "pool_name": config.cursor_cloud.pool_name,
+            "default_mode": config.cursor_cloud.default_mode,
+            "default_effort": config.cursor_cloud.default_effort,
+            "default_max_mode": config.cursor_cloud.default_max_mode,
+            "default_long_running": config.cursor_cloud.default_long_running,
+            "default_auto_proceed_after_plan": (
+                config.cursor_cloud.default_auto_proceed_after_plan
+            ),
+            "default_time_budget": config.cursor_cloud.default_time_budget,
+            "default_thinking_level": config.cursor_cloud.default_thinking_level,
+            "default_preset": config.cursor_cloud.default_preset,
         },
         "claude": {"max_turns": config.claude.max_turns},
         "codex": {"sandbox": config.codex.sandbox},

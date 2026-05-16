@@ -72,6 +72,7 @@ touching real network or real subprocesses.
 
 from __future__ import annotations
 
+import contextlib
 import json
 import logging
 import os
@@ -304,13 +305,55 @@ def _parse_worker_start_cmdline(
     pid: int,
     argv: list[str],
 ) -> LocalWorkerProcess | None:
-    """Parse a procfs cmdline into worker metadata when it is a worker start."""
+    """Parse a procfs cmdline into worker metadata when it is a worker start.
+
+    v1.3.0 P3 (``feedback_for_v1.2.0.md`` §7 "popola cloud worker stop
+    当前定位 bug"): the matcher now handles Node-wrapped invocations
+    like ``["node", "/usr/lib/cursor-agent/agent.js", "worker", "start",
+    "--worker-dir", "/x"]`` in addition to the direct
+    ``["agent", "worker", "start", "--worker-dir", "/x"]`` form.
+
+    The modern cursor-agent install ships ``agent`` as a small shell shim
+    that ``exec``s ``node /path/to/agent.js worker start ...``; the
+    running process therefore has ``argv[0] == "node"`` and the
+    pre-v1.3.0 basename-only check failed to identify it as a worker.
+    The rule is now:
+
+    1. argv must contain the contiguous subsequence ``["worker",
+       "start"]`` at some position ``>= 1`` (a flag named ``--worker``
+       followed by something else stays a non-match), AND
+    2. argv must include a "worker binary indicator" token anywhere —
+       basename in :data:`_WORKER_CMD_BASENAMES` (``agent`` /
+       ``cursor-agent``) OR a token ending in ``/agent.js`` /
+       ``/cursor-agent.js`` (case-insensitive — POSIX paths are case-
+       sensitive but defending here is cheap).
+
+    The change is strictly more permissive than the v1.1.1 matcher: every
+    argv the old matcher accepted (``argv[0]`` basename in the allow-list,
+    ``argv[1:3] == ["worker","start"]``) still satisfies the new rule.
+    """
     if len(argv) < 3:
         return None
-    executable = Path(argv[0]).name
-    if executable not in _WORKER_CMD_BASENAMES:
+    worker_idx = -1
+    for i in range(1, len(argv) - 1):
+        if argv[i] == "worker" and argv[i + 1] == "start":
+            worker_idx = i
+            break
+    if worker_idx < 0:
         return None
-    if argv[1:3] != ["worker", "start"]:
+    has_indicator = False
+    for token in argv:
+        if not token:
+            continue
+        base = Path(token).name.lower()
+        if base in _WORKER_CMD_BASENAMES:
+            has_indicator = True
+            break
+        lower = token.lower()
+        if lower.endswith("/agent.js") or lower.endswith("/cursor-agent.js"):
+            has_indicator = True
+            break
+    if not has_indicator:
         return None
     worker_dir_raw = _extract_flag_value(argv, "--worker-dir")
     if worker_dir_raw is None:
@@ -544,6 +587,141 @@ def _spawn_worker_subprocess(argv: list[str], *, pool: bool) -> int:
                 else:
                     os.environ["CURSOR_API_KEY"] = original_value
     return _run_subprocess(argv)
+
+
+def _spawn_detached_worker(
+    argv: list[str],
+    *,
+    name: str,
+    log_dir: Path,
+    pid_dir: Path,
+) -> dict[str, Any]:
+    """Double-fork ``argv`` so the grandchild has PPID=1 and is session-leader.
+
+    v1.3.0 P1 (``feedback_for_v1.2.0.md`` §7) — closes the
+    IDE-window-vs-worker SIGHUP cascade. The pre-v1.3.0 foreground
+    default left the worker re-parented to the IDE's node process, so
+    closing the IDE window cascaded SIGHUP to the worker and the
+    Cursor cloud connection died with it. The fix is the standard
+    POSIX detach idiom:
+
+    1. ``os.fork()`` → first child;
+    2. first child calls ``os.setsid()`` so it leaves the parent's
+       controlling-terminal session and becomes a process-group leader;
+    3. first child ``os.fork()`` → grandchild, then ``os._exit(0)`` so
+       the grandchild gets re-parented to PID 1 (init / systemd) and
+       cannot accidentally re-acquire a controlling tty;
+    4. grandchild redirects stdin to ``/dev/null``, stdout+stderr to
+       ``log_dir/worker-<name>.log`` (mode 0o644, append), then
+       ``os.execvp(argv[0], argv)``.
+
+    The parent reads the grandchild pid back from the first child via
+    a pipe (``os.pipe()``) — the pid file written under ``pid_dir``
+    captures it for ``popola cloud worker stop`` to consume.
+
+    Args:
+        argv: The ``agent worker start ...`` argv list (built by
+            :func:`_build_start_argv`); ``argv[0]`` is the resolved
+            agent-binary path.
+        name: Sanitised worker name; used as the suffix for the
+            per-worker log + pid files. The caller has already
+            resolved the default via :func:`_default_worker_name`
+            when ``--name`` was omitted.
+        log_dir: Directory where the per-worker log lives; created if
+            missing (mode 0o755 via :meth:`pathlib.Path.mkdir`).
+        pid_dir: Directory where the per-worker pid file lives;
+            created if missing.
+
+    Returns:
+        A dict with keys ``pid`` (int), ``name`` (str), ``worker_dir``
+        (str, possibly ``""`` when no ``--worker-dir`` was passed),
+        ``log_file`` (str), ``pid_file`` (str), ``management_addr``
+        (str | None), ``detached`` (always ``True``). Suitable for
+        printing as one JSON line so callers can grep the grandchild
+        pid out of the stdout of ``popola cloud worker start --detach``.
+
+    Raises:
+        OSError: when ``fork``, ``pipe``, or the pid-read fails;
+            surfaced to the caller (typer translates to a non-zero
+            exit per the No-Silent-Failures workspace rule).
+    """
+    log_dir.mkdir(parents=True, exist_ok=True)
+    pid_dir.mkdir(parents=True, exist_ok=True)
+    log_path = log_dir / f"worker-{name}.log"
+    pid_path = pid_dir / f"worker-{name}.pid"
+
+    worker_dir = _extract_flag_value(argv, "--worker-dir") or ""
+    management_addr = _extract_flag_value(argv, "--management-addr")
+
+    read_fd, write_fd = os.pipe()
+    first_pid = os.fork()
+    if first_pid == 0:
+        os.close(read_fd)
+        with contextlib.suppress(OSError):
+            os.setsid()
+        try:
+            second_pid = os.fork()
+        except OSError as exc:
+            os.write(write_fd, f"ERR:{exc}".encode())
+            os.close(write_fd)
+            os._exit(1)
+        if second_pid == 0:
+            os.close(write_fd)
+            try:
+                with open("/dev/null", "rb", buffering=0) as dn:
+                    os.dup2(dn.fileno(), 0)
+                with open(log_path, "ab", buffering=0) as logf:
+                    os.dup2(logf.fileno(), 1)
+                    os.dup2(logf.fileno(), 2)
+            except OSError:
+                os._exit(2)
+            try:
+                os.execvp(argv[0], argv)
+            except OSError:
+                os._exit(3)
+        else:
+            os.write(write_fd, str(second_pid).encode())
+            os.close(write_fd)
+            os._exit(0)
+    os.close(write_fd)
+    os.waitpid(first_pid, 0)
+    pid_bytes = b""
+    while True:
+        chunk = os.read(read_fd, 4096)
+        if not chunk:
+            break
+        pid_bytes += chunk
+    os.close(read_fd)
+    pid_text = pid_bytes.decode("utf-8", errors="replace").strip()
+    if pid_text.startswith("ERR:"):
+        raise OSError(
+            f"_spawn_detached_worker fork failed: {pid_text[4:]}"
+        )
+    try:
+        grand_pid = int(pid_text)
+    except ValueError as exc:
+        raise OSError(
+            f"_spawn_detached_worker received invalid pid {pid_text!r}"
+        ) from exc
+    pid_path.write_text(f"{grand_pid}\n", encoding="utf-8")
+    try:
+        os.chmod(pid_path, 0o644)
+    except OSError as exc:
+        logger.warning(
+            "_spawn_detached_worker: chmod 0o644 on %s failed: %s "
+            "(pid file written but permissions left at umask default)",
+            pid_path,
+            exc,
+        )
+    return {
+        "pid": grand_pid,
+        "name": name,
+        "worker_dir": worker_dir,
+        "log_file": str(log_path),
+        "pid_file": str(pid_path),
+        "management_addr": management_addr,
+        "detached": True,
+    }
 
 
 def _fetch_management_endpoint(
@@ -876,17 +1054,36 @@ def worker_start_cmd(
             "--worker-dir. Default: reuse the existing workspace worker."
         ),
     ),
+    detach: bool = typer.Option(  # noqa: B008
+        False,
+        "--detach",
+        help=(
+            "v1.3.0+ (feedback §7): start the worker as a detached "
+            "background process (double-fork + setsid). The grandchild's "
+            "PPID becomes 1 and stdout/stderr go to "
+            "~/.popola/log/worker-<name>.log. Returns one-line JSON "
+            "with the grandchild pid + paths and exits 0 immediately. "
+            "Default: False (foreground)."
+        ),
+    ),
 ) -> None:
-    """Start a Cursor self-hosted worker process (foreground).
+    """Start a Cursor self-hosted worker process.
 
     Defaults to **My Machines** mode (shared assignment; works with the
     user's browser ``agent login``).  Pass ``--pool`` to register as a
     Self-Hosted Pool worker — that mode is Enterprise-only and requires
     a service-account ``CURSOR_API_KEY``.
 
-    The worker process runs in the **foreground** (mirrors the upstream
-    CLI semantics); leave the terminal open or wrap it with
-    ``systemd-run`` / ``tmux`` for production.
+    Default execution mode is **foreground** (mirrors the upstream CLI
+    semantics); leave the terminal open or wrap it with ``systemd-run``
+    / ``tmux`` for production. Pass ``--detach`` (v1.3.0+; closes
+    ``feedback_for_v1.2.0.md`` §7) to spawn the worker as a detached
+    background process via the standard double-fork + setsid idiom —
+    the grandchild reparents to PID 1, stdin is ``/dev/null``,
+    stdout+stderr go to ``~/.popola/log/worker-<name>.log``, and this
+    command returns a one-line JSON envelope with the grandchild pid
+    + log path and exits 0 immediately. Closing the launching shell
+    (or the IDE terminal that spawned it) no longer kills the worker.
 
     Once running, point ``popola cloud worker status`` at the same
     ``--management-addr`` to confirm the outbound connection to Cursor's
@@ -922,6 +1119,42 @@ def worker_start_cmd(
         labels=labels_kv,
         management_addr=management_addr,
     )
+
+    if detach:
+        if dry_run:
+            typer.echo("# popola cloud worker start --detach (dry run)")
+            typer.echo(_format_quoted_argv(argv))
+            raise typer.Exit(code=_EXIT_OK)
+        log_dir = Path.home() / ".popola" / "log"
+        pid_dir = Path.home() / ".popola"
+        if pool:
+            merged_env = _resolve_pool_env(dict(os.environ))
+            injected = merged_env.get("CURSOR_API_KEY")
+            original = os.environ.get("CURSOR_API_KEY")
+            try:
+                if injected and not (original and original.strip()):
+                    os.environ["CURSOR_API_KEY"] = injected
+                result = _spawn_detached_worker(
+                    argv,
+                    name=effective_name,
+                    log_dir=log_dir,
+                    pid_dir=pid_dir,
+                )
+            finally:
+                if injected and not (original and original.strip()):
+                    if original is None:
+                        os.environ.pop("CURSOR_API_KEY", None)
+                    else:
+                        os.environ["CURSOR_API_KEY"] = original
+        else:
+            result = _spawn_detached_worker(
+                argv,
+                name=effective_name,
+                log_dir=log_dir,
+                pid_dir=pid_dir,
+            )
+        typer.echo(json.dumps(result, ensure_ascii=False))
+        raise typer.Exit(code=_EXIT_OK)
 
     if dry_run:
         typer.echo("# popola cloud worker start (dry run)")

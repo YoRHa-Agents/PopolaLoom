@@ -151,6 +151,36 @@ def run_dispatch_wizard(
         "starting_ref", getattr(prefs.cursor_cloud, "starting_ref", "main")
     )
 
+    preset_default = getattr(prefs.cursor_cloud, "default_preset", "")
+    selected_extra["preset"] = _choose(
+        "Preset (Path-B grind/long-running/quick-fix/...)",
+        [
+            ("", "(none)"),
+            ("quick-fix", "Quick fix"),
+            ("long-running-plan", "Long-running plan"),
+            ("exploration", "Exploration"),
+            ("review", "Review"),
+            ("grind", "Grind"),
+        ],
+        default=preset_default,
+    )
+    effort_default = getattr(prefs.cursor_cloud, "default_effort", "")
+    selected_extra["effort"] = _choose(
+        "Effort (Path-B)",
+        [("", "(none)"), ("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        default=effort_default,
+    )
+    thinking_default = getattr(prefs.cursor_cloud, "default_thinking_level", "")
+    selected_extra["thinking_level"] = _choose(
+        "Thinking level (Path-B)",
+        [("", "(none)"), ("low", "Low"), ("medium", "Medium"), ("high", "High")],
+        default=thinking_default,
+    )
+    max_mode_default = getattr(prefs.cursor_cloud, "default_max_mode", False)
+    selected_extra["max_mode"] = typer.confirm(
+        "Enable max-mode (Path-B)?", default=bool(max_mode_default)
+    )
+
     special = _multi(
         "Special modes",
         [

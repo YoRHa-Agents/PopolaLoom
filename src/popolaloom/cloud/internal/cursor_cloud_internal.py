@@ -41,6 +41,7 @@ from __future__ import annotations
 
 import json
 import logging
+import uuid
 from dataclasses import dataclass
 from typing import Any, Literal
 
@@ -96,6 +97,37 @@ ThinkingLevel = Literal[
     "THINKING_LEVEL_HIGH",
 ]
 """Thinking level enum (model_details.thinking_level)."""
+
+
+def _to_camel(key: str) -> str:
+    """Translate snake_case identifier to camelCase (``a_b_c`` → ``aBC``).
+
+    Single-word keys pass through unchanged. Empty string passes through.
+    Preserves leading underscores (idiomatic ``__dunder``-style keys are
+    NOT used in the body, but defending against them keeps the helper
+    safe to reuse in tests).
+    """
+    if not key:
+        return key
+    parts = key.split("_")
+    return parts[0] + "".join(part.capitalize() for part in parts[1:] if part)
+
+
+def _camelize_keys(obj: Any) -> Any:
+    """Recursively rename ``dict`` keys snake_case → camelCase.
+
+    Lists are recursed. Non-dict non-list values pass through unchanged.
+    Used by :func:`build_start_composer_request` to flip the body to
+    the Connect-Protocol JSON wire format Cursor's server expects (per
+    feedback_for_v1.2.0.md §2 "实测 wire 规格" — the snake_case body
+    was rejected with 400 invalid_argument; camelCase + full field set
+    returns 200).
+    """
+    if isinstance(obj, dict):
+        return {_to_camel(str(k)): _camelize_keys(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_camelize_keys(item) for item in obj]
+    return obj
 
 
 _USER_FACING_TO_AGENT_MODE: dict[str, AgentMode] = {
@@ -166,6 +198,15 @@ class CursorCloudInternalError(RuntimeError):
     Carries a structured ``hint`` field with a bilingual operator-facing
     message that points at ``--auth-mode=rest`` as the supported fallback
     when path-B is unhealthy (per Q-22 stability commitment of NONE).
+
+    v1.3.0 P4: Extended with structured Connect-Protocol envelope fields
+    (``connect_code``, ``connect_message``, ``details_summary``) and an
+    ``error_kind`` discriminator so operators can distinguish
+    ``path_b_rpc_400_invalid_argument`` from ``path_b_rpc_404`` (which
+    were both surfaced identically pre-1.3.0 — see
+    feedback_for_v1.2.0.md §2). The ``__str__`` override appends these
+    fields when present so any caller that simply logs ``str(exc)`` gets
+    actionable diagnostics out of the box.
     """
 
     def __init__(
@@ -174,10 +215,34 @@ class CursorCloudInternalError(RuntimeError):
         *,
         hint: str | None = None,
         status_code: int | None = None,
+        connect_code: str | None = None,
+        connect_message: str | None = None,
+        details_summary: str | None = None,
+        error_kind: str = "path_b_rpc_other",
     ) -> None:
         super().__init__(message)
         self.hint = hint or ""
         self.status_code = status_code
+        self.connect_code = connect_code
+        self.connect_message = connect_message
+        self.details_summary = details_summary
+        self.error_kind = error_kind
+
+    def __str__(self) -> str:
+        base = super().__str__()
+        suffix_parts: list[str] = []
+        if self.error_kind and self.error_kind != "path_b_rpc_other":
+            suffix_parts.append(f"kind={self.error_kind}")
+        if self.connect_code:
+            suffix_parts.append(f"connect_code={self.connect_code}")
+        if self.connect_message:
+            suffix_parts.append(f"connect_message={self.connect_message!r}")
+        if self.details_summary:
+            trimmed = self.details_summary[:200]
+            suffix_parts.append(f"details={trimmed!r}")
+        if not suffix_parts:
+            return base
+        return f"{base} [{', '.join(suffix_parts)}]"
 
 
 @dataclass(frozen=True, slots=True)
@@ -217,6 +282,17 @@ def build_start_composer_request(
     long_running: bool | None = None,
     starting_message_type: str | None = None,
     auto_proceed_after_planning: bool | None = None,
+    snapshot_name_or_id: str | None = None,
+    devcontainer_url: str | None = None,
+    devcontainer_ref: str | None = None,
+    snapshot_workspace_root_path: str = "/workspace",
+    auto_branch: bool = True,
+    return_immediately: bool = True,
+    use_private_worker: bool = True,
+    source: str = "BACKGROUND_COMPOSER_SOURCE_WEBSITE",
+    bc_id: str | None = None,
+    add_initial_message_to_responses: bool = True,
+    conversation_history: list[dict[str, Any]] | None = None,
     extras: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build the JSON body for ``StartBackgroundComposerFromSnapshot``.
@@ -252,13 +328,43 @@ def build_start_composer_request(
             proto field. Typically paired with ``starting_message_type=
             "plan-start"`` so the agent moves from PLAN to EXECUTE
             without an interactive confirm.
+        snapshot_name_or_id: v1.3.0 P5 (feedback §2) — Cursor BC
+            ``snapshotNameOrId`` field. Wire format expects
+            ``<host>/<owner>/<repo>`` (NO ``https://`` prefix, NO
+            ``.git`` suffix). Defaults to deriving from ``repo_url``.
+        devcontainer_url: v1.3.0 P5 — devcontainer starting point URL
+            (full ``https://...``); defaults to ``repo_url``.
+        devcontainer_ref: v1.3.0 P5 — devcontainer git ref; defaults to
+            ``starting_ref``.
+        snapshot_workspace_root_path: v1.3.0 P5 — defaults to
+            ``"/workspace"`` (matches Cursor BC default).
+        auto_branch: v1.3.0 P5 — defaults to ``True``.
+        return_immediately: v1.3.0 P5 — defaults to ``True``.
+        use_private_worker: v1.3.0 P5 — defaults to ``True`` (self-hosted
+            worker preference). Note: per feedback §2, Cursor server
+            currently routes non-GitHub repos to the public pool
+            regardless of this flag (server-side hard constraint).
+        source: v1.3.0 P5 — defaults to
+            ``"BACKGROUND_COMPOSER_SOURCE_WEBSITE"`` (matches the
+            successful reverse-engineered wire-spec).
+        bc_id: v1.3.0 P5 — client-provided BC id; defaults to a fresh
+            ``f"bc-{uuid.uuid4()}"`` so each dispatch carries a stable
+            client correlator.
+        add_initial_message_to_responses: v1.3.0 P5 — defaults to
+            ``True``.
+        conversation_history: v1.3.0 P5 — initial message list; defaults
+            to ``[{"text": prompt, "type": "MESSAGE_TYPE_HUMAN", "richText": "{}"}]``.
         extras: Optional verbatim extras merged into the body shallow.
             Used by tests + future flag additions; should NOT be used
             for new operator-facing controls (those should add an
             explicit kwarg here).
 
     Returns:
-        A JSON-serialisable dict ready to be sent as the RPC body.
+        A JSON-serialisable dict ready to be sent as the RPC body. Per
+        v1.3.0 P5 the dict keys are camelCase (Connect-Protocol JSON wire
+        format Cursor's server requires); the Python-side construction
+        remains snake_case for readability, and ``_camelize_keys`` is
+        applied once at the end.
 
     Raises:
         ValueError: when an enum-valued kwarg has an unknown user value.
@@ -269,9 +375,44 @@ def build_start_composer_request(
     if not repo_url:
         raise ValueError("repo_url is required")
 
+    if snapshot_name_or_id is None:
+        derived = repo_url
+        for prefix in ("https://", "http://"):
+            if derived.startswith(prefix):
+                derived = derived[len(prefix):]
+                break
+        if derived.endswith(".git"):
+            derived = derived[: -len(".git")]
+        snapshot_name_or_id = derived
+    if devcontainer_url is None:
+        devcontainer_url = repo_url
+    if devcontainer_ref is None:
+        devcontainer_ref = starting_ref
+    if bc_id is None:
+        bc_id = f"bc-{uuid.uuid4()}"
+    if conversation_history is None:
+        conversation_history = [
+            {"text": prompt, "type": "MESSAGE_TYPE_HUMAN", "richText": "{}"},
+        ]
+
     body: dict[str, Any] = {
         "prompt": prompt,
         "repos": [{"url": repo_url, "starting_ref": starting_ref}],
+        "snapshot_name_or_id": snapshot_name_or_id,
+        "devcontainer_starting_point": {
+            "url": devcontainer_url,
+            "ref": devcontainer_ref,
+        },
+        "repository_info": {},
+        "snapshot_workspace_root_path": snapshot_workspace_root_path,
+        "auto_branch": bool(auto_branch),
+        "return_immediately": bool(return_immediately),
+        "repo_url": repo_url,
+        "conversation_history": conversation_history,
+        "source": source,
+        "bc_id": bc_id,
+        "add_initial_message_to_responses": bool(add_initial_message_to_responses),
+        "use_private_worker": bool(use_private_worker),
     }
 
     model_details: dict[str, Any] = {}
@@ -321,7 +462,58 @@ def build_start_composer_request(
         for k, v in extras.items():
             if k not in body:
                 body[k] = v
-    return body
+    camelized: dict[str, Any] = _camelize_keys(body)
+    return camelized
+
+
+def _extract_connect_error_envelope(
+    resp: httpx.Response,
+) -> tuple[str | None, str | None, str | None]:
+    """Best-effort Connect-Protocol error envelope extraction.
+
+    Connect-Protocol JSON error responses carry a top-level
+    ``{"code": "<short_token>", "message": "<text>", "details": [...]}``
+    envelope. We extract ``(code, message, details_summary)`` so the
+    raised :class:`CursorCloudInternalError` can surface the real
+    upstream failure reason (per feedback_for_v1.2.0.md §2; the
+    pre-1.3.0 ``_post_rpc`` was mis-labeling a 400 ``invalid_argument``
+    "At least one model details is required" envelope as a 404
+    "method not found").
+
+    Returns ``(connect_code, connect_message, details_summary)``; any
+    failure to parse JSON / unexpected structure returns
+    ``(None, None, None)`` so callers fall through to the legacy hint
+    without crashing.
+    """
+    try:
+        body = resp.json()
+    except (json.JSONDecodeError, ValueError):
+        return (None, None, None)
+    if not isinstance(body, dict):
+        return (None, None, None)
+    raw_code = body.get("code")
+    code = raw_code if isinstance(raw_code, str) else None
+    raw_message = body.get("message")
+    message = raw_message if isinstance(raw_message, str) else None
+    details = body.get("details")
+    summary_chunks: list[str] = []
+    if isinstance(details, list):
+        for item in details:
+            if not isinstance(item, dict):
+                continue
+            debug = item.get("debug")
+            if isinstance(debug, dict):
+                nested = debug.get("details")
+                if isinstance(nested, dict):
+                    detail_str = nested.get("detail")
+                    if isinstance(detail_str, str) and detail_str:
+                        summary_chunks.append(detail_str)
+                        continue
+            t = item.get("type")
+            if isinstance(t, str):
+                summary_chunks.append(t)
+    summary = " | ".join(summary_chunks) if summary_chunks else None
+    return (code, message, summary)
 
 
 class CursorCloudInternalClient:
@@ -417,38 +609,76 @@ class CursorCloudInternalClient:
                 ),
             ) from exc
 
-        if resp.status_code == 401:
-            raise CursorCloudInternalError(
-                f"path-B authentication failed for {method}: "
-                f"HTTP 401 — JWT may be expired",
-                hint=(
+        if resp.status_code >= 400:
+            connect_code, connect_message, details_summary = (
+                _extract_connect_error_envelope(resp)
+            )
+            sc = resp.status_code
+            if sc == 401:
+                error_kind = "path_b_rpc_401_auth"
+                hint = (
                     "Re-run `cursor login` to refresh the JWT, OR fall "
                     "back to --auth-mode=rest with --cli-flag api_key=<X>. "
                     "(请重新运行 `cursor login` 刷新 JWT,或改用 "
                     "--auth-mode=rest 配合 CURSOR_API_KEY)"
-                ),
-                status_code=401,
-            )
-        if resp.status_code == 404:
-            raise CursorCloudInternalError(
-                f"path-B method {method!r} not found at {url} — Cursor "
-                f"may have changed the service path or method name",
-                hint=(
-                    "Path-B is experimental (Q-22) — fall back to "
-                    "--auth-mode=rest. (path-B 是实验性接口,请改用 "
+                )
+                base_msg = f"path-B authentication failed for {method}: HTTP 401"
+            elif sc == 404:
+                error_kind = "path_b_rpc_404"
+                hint = (
+                    "Path-B 404 may indicate EITHER (a) the upstream "
+                    "Connect-RPC method path was renamed, OR (b) the "
+                    "request body failed Connect-Protocol validation "
+                    "(a 404 fallback). Check the detail line above. "
+                    "Fall back to --auth-mode=rest if both fail. "
+                    "(Path-B 404 可能是上游方法路径被改,也可能是请求体未通过 "
+                    "Connect-Protocol 校验;详情见上面的 detail 行;两种都失败时改用 "
                     "--auth-mode=rest)"
-                ),
-                status_code=404,
-            )
-        if resp.status_code >= 400:
-            raise CursorCloudInternalError(
-                f"path-B HTTP {resp.status_code} from {method}: "
-                f"{resp.text[:500]!r}",
-                hint=(
+                )
+                base_msg = f"path-B method {method!r} returned 404 at {url}"
+            elif sc == 400 and connect_code == "invalid_argument":
+                error_kind = "path_b_rpc_400_invalid_argument"
+                hint = (
+                    "Path-B request body failed Connect-Protocol validation. "
+                    "Inspect the connect_message + details for the missing/invalid "
+                    "field; v1.3.0 P5 added 11 required fields — older "
+                    "build_start_composer_request callers may be missing them. "
+                    "(请求体未通过 Connect-Protocol 校验;参考 connect_message "
+                    "与 details 排查缺失字段)"
+                )
+                base_msg = f"path-B {method} 400 invalid_argument"
+            elif sc >= 500:
+                error_kind = "path_b_rpc_5xx"
+                hint = (
+                    "Upstream 5xx — retry, or fall back to --auth-mode=rest. "
+                    "(上游 5xx,可重试或改用 --auth-mode=rest)"
+                )
+                base_msg = f"path-B HTTP {sc} from {method}"
+            else:
+                error_kind = "path_b_rpc_other"
+                hint = (
                     "If this persists, fall back to --auth-mode=rest. "
                     "(如持续失败,请改用 --auth-mode=rest)"
-                ),
-                status_code=resp.status_code,
+                )
+                base_msg = f"path-B HTTP {sc} from {method}"
+
+            logger.warning(
+                "path-B %s %s: kind=%s connect_code=%s message=%s details=%s",
+                method,
+                sc,
+                error_kind,
+                connect_code,
+                connect_message,
+                (details_summary or "")[:200],
+            )
+            raise CursorCloudInternalError(
+                base_msg,
+                hint=hint,
+                status_code=sc,
+                connect_code=connect_code,
+                connect_message=connect_message,
+                details_summary=details_summary,
+                error_kind=error_kind,
             )
 
         try:
@@ -534,6 +764,9 @@ __all__ = [
     "StartComposerOutcome",
     "StartingMessageType",
     "ThinkingLevel",
+    "_camelize_keys",  # v1.3.0 P5 — exposed for camelize-roundtrip tests.
+    "_extract_connect_error_envelope",  # v1.3.0 P4 — exposed for envelope tests.
+    "_to_camel",  # v1.3.0 P5 — exposed for camelize-roundtrip tests.
     "build_start_composer_request",
     "user_effort_to_effort_mode",
     "user_mode_to_agent_mode",

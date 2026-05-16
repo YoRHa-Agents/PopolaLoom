@@ -398,6 +398,15 @@ def dispatch(
             "Agent 投入深度;需要 --auth-mode=session-jwt。"
         ),
     ),
+    thinking_level: str = typer.Option(
+        "",
+        "--thinking-level",
+        help=(
+            "EXPERIMENTAL (v1.3.0 P2) — model_details.thinking_level "
+            "(path-B only): low|medium|high. Requires --auth-mode=session-jwt. "
+            "(实验性) 思考深度;需要 --auth-mode=session-jwt。"
+        ),
+    ),
     time_budget: str = typer.Option(
         "",
         "--time-budget",
@@ -520,13 +529,14 @@ def dispatch(
         if model:
             _apply_model_flag(extra, model, cli)
 
+        prefs_for_dispatch: Any = None
         if not cli:
-            prefs = _load_dispatch_preferences_or_exit()
-            if prefs is None:
+            prefs_for_dispatch = _load_dispatch_preferences_or_exit()
+            if prefs_for_dispatch is None:
                 typer.echo("error: --cli is required (or use --replay HANDOFF_ID)", err=True)
                 raise typer.Exit(code=2)
             cli, extra = _select_cli_from_preferences(
-                prefs,
+                prefs_for_dispatch,
                 extra=extra,
                 cwd=cwd,
                 cloud_target_flag=cloud_target,
@@ -536,14 +546,31 @@ def dispatch(
                 no_wizard=no_wizard,
             )
         elif cli == "cursor-cloud":
-            prefs = _load_dispatch_preferences_or_exit()
+            prefs_for_dispatch = _load_dispatch_preferences_or_exit()
             extra = _apply_cloud_preferences(
-                prefs,
+                prefs_for_dispatch,
                 extra,
                 cwd=cwd,
                 cloud_target_flag=cloud_target,
                 worker_name_flag=worker_name,
             )
+
+        if not model and cli == "cursor":
+            prefs_for_local_default = (
+                prefs_for_dispatch
+                if prefs_for_dispatch is not None
+                else _try_load_dispatch_preferences()
+            )
+            local_default_model = (
+                getattr(getattr(prefs_for_local_default, "cursor", None), "default_model", "")
+                if prefs_for_local_default is not None
+                else ""
+            )
+            if local_default_model:
+                _apply_model_flag(extra, local_default_model, cli)
+
+        if prefs_for_dispatch is None:
+            prefs_for_dispatch = _try_load_dispatch_preferences()
 
         _apply_path_b_flags(
             extra,
@@ -556,6 +583,8 @@ def dispatch(
             long_running=long_running,
             auto_proceed_after_plan=auto_proceed_after_plan,
             preset=preset,
+            thinking_level=thinking_level,
+            prefs=prefs_for_dispatch,
         )
 
     if events_dir is not None:
@@ -1654,6 +1683,28 @@ def _load_dispatch_preferences_or_exit() -> Any | None:
         raise typer.Exit(code=1) from exc
 
 
+def _try_load_dispatch_preferences() -> Any | None:
+    """v1.3.0 P6 — best-effort variant of ``_load_dispatch_preferences_or_exit``.
+
+    Used by Path-B / cursor.default_model fall-back code paths that want
+    to consult ``[user_preferences]`` if it exists but must NOT exit when
+    the TOML file is absent or malformed (the caller already validates
+    elsewhere; here we only enrich missing knobs).
+
+    Returns ``None`` for both "missing file" and "malformed TOML";
+    malformed TOML is still surfaced via the regular load path
+    (the dispatch flow always also calls
+    :func:`_load_dispatch_preferences_or_exit` in the cursor-cloud branch
+    BEFORE this helper runs, so the loud failure is preserved upstream).
+    """
+    try:
+        from popolaloom.cli.init_cmd import load_user_preferences_for_cli
+
+        return load_user_preferences_for_cli()
+    except (OSError, ValueError, tomllib.TOMLDecodeError):
+        return None
+
+
 def _select_cli_from_preferences(
     prefs: Any,
     *,
@@ -1990,6 +2041,8 @@ def _apply_path_b_flags(
     long_running: bool,
     auto_proceed_after_plan: bool,
     preset: str,
+    thinking_level: str = "",
+    prefs: Any = None,
 ) -> None:
     """Validate Path-B Typer knobs before POST /dispatch (Q-13 / Q-19 / Q-22).
 
@@ -2003,11 +2056,25 @@ def _apply_path_b_flags(
     rather than at the supervisor's first RPC. On success we inject
     ``extra["__auth_mode__"] = "session-jwt"`` plus the resolved Path-B
     knobs (``mode`` / ``max_mode`` / ``effort`` / ``time_budget`` /
-    ``long_running`` / ``auto_proceed_after_plan``) into ``extra`` so the
+    ``long_running`` / ``auto_proceed_after_plan`` / ``thinking_level``)
+    into ``extra`` so the
     daemon supervisor (:meth:`popolaloom.daemon.supervisor.Supervisor._spawn_cloud`)
     can branch on ``__auth_mode__`` and call
     :class:`popolaloom.cloud.internal.cursor_cloud_internal.CursorCloudInternalClient`
     instead of the REST :class:`CloudCursorClient`.
+
+    v1.3.0 P2 surfaces ``thinking_level`` as a top-level Typer flag (it
+    was already accepted by ``build_start_composer_request`` via
+    ``--cli-flag thinking_level=`` but undiscoverable).
+
+    v1.3.0 P6 (feedback §6) — when ``prefs`` is supplied, this function
+    falls back to ``prefs.cursor_cloud.default_*`` for any Path-B knob
+    NOT explicitly set by the per-task flags. Per-task flag wins;
+    ``--preset`` wins over individual knob defaults; pref ``default_preset``
+    wins over pref ``default_{mode,effort,...}``. The supervisor then sees
+    a ``merged`` dict that already includes the persisted defaults, so a
+    user who sets ``cursor-cloud.default_preset=grind`` once does not have
+    to re-pass ``--preset=grind`` per dispatch.
     """
     raw_auth = auth_mode.strip().replace("_", "-").lower()
     if raw_auth == "jwt":
@@ -2039,6 +2106,40 @@ def _apply_path_b_flags(
         explicit["long_running"] = True
     if auto_proceed_after_plan:
         explicit["auto_proceed_after_plan"] = True
+    if thinking_level:
+        explicit["thinking_level"] = thinking_level
+
+    if prefs is not None and getattr(prefs, "cursor_cloud", None) is not None:
+        cc: Any = prefs.cursor_cloud
+        default_mode_val: Any = getattr(cc, "default_mode", "")
+        if "mode" not in explicit and default_mode_val:
+            explicit["mode"] = default_mode_val
+        default_effort_val: Any = getattr(cc, "default_effort", "")
+        if "effort" not in explicit and default_effort_val:
+            explicit["effort"] = default_effort_val
+        default_max_mode_val: Any = getattr(cc, "default_max_mode", False)
+        if "max_mode" not in explicit and default_max_mode_val:
+            explicit["max_mode"] = True
+        default_long_running_val: Any = getattr(cc, "default_long_running", False)
+        if "long_running" not in explicit and default_long_running_val:
+            explicit["long_running"] = True
+        default_auto_proceed_val: Any = getattr(
+            cc, "default_auto_proceed_after_plan", False
+        )
+        if (
+            "auto_proceed_after_plan" not in explicit
+            and default_auto_proceed_val
+        ):
+            explicit["auto_proceed_after_plan"] = True
+        default_time_budget_val: Any = getattr(cc, "default_time_budget", "")
+        if "time_budget" not in explicit and default_time_budget_val:
+            explicit["time_budget"] = default_time_budget_val
+        default_thinking_level_val: Any = getattr(cc, "default_thinking_level", "")
+        if "thinking_level" not in explicit and default_thinking_level_val:
+            explicit["thinking_level"] = default_thinking_level_val
+        default_preset_val: Any = getattr(cc, "default_preset", "")
+        if not preset and default_preset_val:
+            preset = default_preset_val
 
     merged = _apply_preset(extra, preset, explicit=explicit)
     if not merged and auth_mode_normalized == "rest":
@@ -2065,7 +2166,11 @@ def _apply_path_b_flags(
                                 "--long-running" if k == "long_running" else (
                                     "--auto-proceed-after-plan"
                                     if k == "auto_proceed_after_plan"
-                                    else f"--{k.replace('_', '-')}"
+                                    else (
+                                        "--thinking-level"
+                                        if k == "thinking_level"
+                                        else f"--{k.replace('_', '-')}"
+                                    )
                                 )
                             )
                         )
@@ -2120,18 +2225,21 @@ def _apply_path_b_flags(
             "time_budget",
             "long_running",
             "auto_proceed_after_plan",
+            "thinking_level",
         ):
             if key in merged:
                 extra[key] = merged[key]
         logger.debug(
             "path-B enabled: mode=%r effort=%r long_running=%r "
-            "max_mode=%r time_budget=%r auto_proceed_after_plan=%r model=%r",
+            "max_mode=%r time_budget=%r auto_proceed_after_plan=%r "
+            "thinking_level=%r model=%r",
             extra.get("mode"),
             extra.get("effort"),
             extra.get("long_running"),
             extra.get("max_mode"),
             extra.get("time_budget"),
             extra.get("auto_proceed_after_plan"),
+            extra.get("thinking_level"),
             extra.get("model"),
         )
 

@@ -81,10 +81,12 @@ def test_dispatch_wizard_cursor_cloud_self_hosted_shape(
     mock_client = _mock_dispatch_client(monkeypatch)
     runner = CliRunner()
 
+    # v1.3.0 P6: wizard now also prompts for preset/effort/thinking_level/max_mode
+    # AFTER the worker_name prompt — accept defaults via blank lines + "n" for max_mode.
     result = runner.invoke(
         main_app,
         ["dispatch", "feature X", "--wizard"],
-        input="5\n5\n\n1,2\ny\n",
+        input="5\n5\n\n\n\n\nn\n1,2\ny\n",
     )
 
     assert result.exit_code == 0, result.output

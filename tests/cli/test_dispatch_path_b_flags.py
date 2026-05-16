@@ -310,6 +310,65 @@ def test_apply_path_b_flags_invalid_auth_mode_exits_2() -> None:
     assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
 
 
+# ── v1.3.0 P2: --thinking-level Path-B knob ─────────────────────────
+
+
+def test_thinking_level_under_session_jwt_forwards_to_extra() -> None:
+    """v1.3.0 P2 — ``--thinking-level=high`` propagates through to extras."""
+    import time
+    from unittest.mock import patch
+
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="fake-jwt-test",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=int(time.time()) + 3600,
+    )
+    extra: dict[str, object] = {}
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=fake_bundle,
+    ):
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+            thinking_level="high",
+        )
+    assert extra.get("__auth_mode__") == "session-jwt"
+    assert extra.get("thinking_level") == "high"
+
+
+def test_thinking_level_under_rest_rejected() -> None:
+    """v1.3.0 P2 — ``--thinking-level`` under ``--auth-mode=rest`` exits 2."""
+    extra: dict[str, object] = {}
+    with pytest.raises(Exception) as exc_info:
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="rest",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+            thinking_level="high",
+        )
+    assert getattr(exc_info.value, "exit_code", None) == _EXIT_INVALID_ARGS
+
+
 def test_apply_path_b_flags_non_cursor_cloud_cli_warns_and_drops(
     caplog: pytest.LogCaptureFixture,
 ) -> None:
@@ -339,12 +398,15 @@ def test_apply_path_b_flags_non_cursor_cloud_cli_warns_and_drops(
 
 
 def test_dispatch_command_exposes_all_path_b_flags() -> None:
-    """All 8 path-B parameters + auth_mode appear in `popola dispatch` signature.
+    """All 9 path-B parameters + auth_mode appear in `popola dispatch` signature.
 
     Inspects the underlying Python function signature rather than the
     rendered ``--help`` text — Typer's rich-format help truncates flag
     names in narrow terminals (CI default 80-col) regardless of the
     COLUMNS env var because CliRunner uses its own width detection.
+
+    v1.3.0 P2 adds ``thinking_level`` to the surface; the assertion list
+    grows by one entry.
     """
     import inspect
 
@@ -360,6 +422,7 @@ def test_dispatch_command_exposes_all_path_b_flags() -> None:
         "long_running",
         "auto_proceed_after_plan",
         "preset",
+        "thinking_level",
     ):
         assert needle in params, (
             f"missing {needle} in dispatch signature: {sorted(params)}"
