@@ -872,12 +872,96 @@ class Supervisor:
                     ),
                 )
 
+        # v1.5.0 (feedback_for_v1.4.0 §1 task #2 + PLAN Phase B) —
+        # path-B body now plumbs the self-hosted worker route + the
+        # skip-branch / skip-PR / skip-reviewer knobs that the v1.3.0
+        # path-A REST flow already supported. The CLI's
+        # `_apply_cloud_preferences` writes `extra["worker_name"]`
+        # whenever `--cloud-target=self-hosted` is in play (see
+        # cli/main.py); `_apply_path_b_flags` writes the bool knobs.
+        # Here we read them back, type-strict each, and forward to the
+        # builder kwargs. Per the No-Silent-Fallback invariant, ANY
+        # failure on this path is a hard-fail via `fail_fn` — NEVER
+        # auto-retry on REST.
+        worker_name_raw = extra.get("worker_name")
+        if worker_name_raw is not None and not isinstance(worker_name_raw, str):
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=(
+                    "extra.worker_name must be str when present, "
+                    f"got {type(worker_name_raw).__name__}"
+                ),
+            )
+        target_machine_name: str | None
+        if isinstance(worker_name_raw, str) and worker_name_raw.strip():
+            target_machine_name = worker_name_raw.strip()
+        else:
+            target_machine_name = None
+
+        env_emit_mode_raw = extra.get("env_emit_mode", "machine")
+        if not isinstance(env_emit_mode_raw, str):
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=(
+                    "extra.env_emit_mode must be str when present, "
+                    f"got {type(env_emit_mode_raw).__name__}"
+                ),
+            )
+        env_emit_mode_normalized = env_emit_mode_raw.strip().lower() or "machine"
+
+        # auto_branch defaults to True (matches Cursor web-UI behaviour);
+        # the three skip-branch knobs default to False.
+        bool_knobs: dict[str, bool] = {}
+        for knob_key, default in (
+            ("auto_branch", True),
+            ("auto_create_pr", False),
+            ("work_on_current_branch", False),
+            ("skip_reviewer_request", False),
+        ):
+            raw = extra.get(knob_key, default)
+            if not isinstance(raw, bool):
+                return fail_fn(
+                    error_kind="marker_decode_error",
+                    error_detail=(
+                        f"extra.{knob_key} must be bool when present, "
+                        f"got {type(raw).__name__}"
+                    ),
+                )
+            bool_knobs[knob_key] = raw
+
+        # v1.5.0 escape hatch §B — operator-supplied override for the
+        # model id sent on `model_details.model_name`. Used when GPT-5.5's
+        # dual-naming (REST=`gpt-5.5` + reasoning_effort vs cursor-agent=
+        # `gpt-5.5-high`) causes the upstream server to reject the
+        # default form. No auto-fallback per the invariant.
+        model_id_override_raw = extra.get("model_id_override")
+        if (
+            model_id_override_raw is not None
+            and not isinstance(model_id_override_raw, str)
+        ):
+            return fail_fn(
+                error_kind="marker_decode_error",
+                error_detail=(
+                    "extra.model_id_override must be str when present, "
+                    f"got {type(model_id_override_raw).__name__}"
+                ),
+            )
+        model_id_override: str | None
+        if (
+            isinstance(model_id_override_raw, str)
+            and model_id_override_raw.strip()
+        ):
+            model_id_override = model_id_override_raw.strip()
+        else:
+            model_id_override = None
+
         try:
             body = build_start_composer_request(
                 prompt=prompt,
                 repo_url=repo_url,
                 starting_ref=starting_ref_raw,
                 model_name=model_name,
+                model_id_override=model_id_override,
                 max_mode=max_mode_raw,
                 thinking_level=thinking_level,
                 agent_mode=agent_mode,
@@ -886,6 +970,12 @@ class Supervisor:
                 long_running=long_running_raw,
                 auto_proceed_after_planning=auto_proceed_raw,
                 starting_message_type=starting_message_type,
+                target_machine_name=target_machine_name,
+                env_emit_mode=env_emit_mode_normalized,
+                auto_branch=bool_knobs["auto_branch"],
+                auto_create_pr=bool_knobs["auto_create_pr"],
+                work_on_current_branch=bool_knobs["work_on_current_branch"],
+                skip_reviewer_request=bool_knobs["skip_reviewer_request"],
             )
         except ValueError as exc:
             return fail_fn(
@@ -903,6 +993,11 @@ class Supervisor:
             )
 
         bc_id = outcome.background_composer_id
+        # v1.5.0 — Cursor returns `initial_run_id` alongside `bc_id`
+        # in the v1.4.0+ envelope (feedback_for_v1.4.0 §1 task #2). Seed
+        # it onto the TaskHandle so SSE / `attach` can correlate without
+        # waiting for the first poller tick.
+        initial_run_id = outcome.initial_run_id
         existing_handle = self._state_store.get(task_id) if self._state_store else None
         if existing_handle is None:
             return fail_fn(
@@ -917,29 +1012,42 @@ class Supervisor:
             state=TaskState.STARTING,
             runtime="cloud",
             cursor_agent_id=bc_id,
+            cursor_run_id=initial_run_id if initial_run_id else existing_handle.cursor_run_id,
             cloud_phase="CREATING",
         )
         if self._state_store is not None:
             self._state_store.rehydrate([seeded_handle])
 
-        event_log.append(
-            "cloud.queued",
-            {
-                "task_id": task_id,
-                "agent_id": bc_id,
-                "cursor_agent_id": bc_id,
-                "run_id": None,
-                "runtime": "cloud",
-                "initial_phase": "CREATING",
-                "auth_mode": "session-jwt",
-                "dashboard_url": outcome.dashboard_url,
-            },
-        )
+        # v1.5.0 — surface worker-routing + skip-branch + env_emit_mode
+        # in the cloud.queued event so PLAN Phase K Step 5 (G4 + G6
+        # acceptance) can grep them out of the event log without an
+        # extra round-trip.
+        queued_payload: dict[str, Any] = {
+            "task_id": task_id,
+            "agent_id": bc_id,
+            "cursor_agent_id": bc_id,
+            "run_id": initial_run_id,
+            "runtime": "cloud",
+            "initial_phase": "CREATING",
+            "auth_mode": "session-jwt",
+            "dashboard_url": outcome.dashboard_url,
+            "worker_name": target_machine_name,
+            "env_emit_mode": env_emit_mode_normalized,
+            "auto_branch": bool_knobs["auto_branch"],
+            "auto_create_pr": bool_knobs["auto_create_pr"],
+            "work_on_current_branch": bool_knobs["work_on_current_branch"],
+            "skip_reviewer_request": bool_knobs["skip_reviewer_request"],
+        }
+        event_log.append("cloud.queued", queued_payload)
         logger.info(
             "cloud (path-B / session-jwt) task queued task=%s "
-            "background_composer_id=%s dashboard=%s",
+            "background_composer_id=%s initial_run_id=%s worker_name=%s "
+            "env_emit_mode=%s dashboard=%s",
             task_id,
             bc_id,
+            initial_run_id,
+            target_machine_name,
+            env_emit_mode_normalized,
             outcome.dashboard_url,
         )
         return 0
