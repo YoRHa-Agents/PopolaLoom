@@ -10,14 +10,41 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-Accumulating for the next v1.3.x patch:
+Accumulating for the next v1.4.x patch:
 
 - `BL-v1.3.x-path-b-non-github-routing` — Cursor server-side hard constraint; cannot fix client-side. Feedback `feedback_for_v1.2.0.md` §3/§4 documents the failure mode for non-GitHub repos via cursor-cloud REST self-hosted routing; no PopolaLoom patch can resolve it.
 - `BL-v1.3.x-bc-model-whitelist-sync` — Cursor BackgroundComposer model list ≠ REST `/v1/models` list (feedback §2 model whitelist table). Should add a one-shot probe + per-process cache.
-- `BL-v1.3.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh. Move to v1.4.0.
+- `BL-v1.4.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
-<!-- updated: 2026-05-16 -->
+<!-- updated: 2026-05-17 -->
+
+## [1.4.0] - 2026-05-17
+
+**Theme**: Python-side `popola update` verb (closes the long-standing gap where operators had no in-process equivalent of `install.sh update`). 1 new top-level verb + 1 new evolution module + 53 new default-lane test cases (29 self_update + 12 update_cmd + 12 parity); all green; PR1 of the v1.3.0 skill bump (PR #34) lands the tracked-project-skill regression safeguard, PR2 of this release (this entry) consumes that test through the rebase.
+
+### Added
+
+- **P1 — `popola update` top-level verb** ([src/popolaloom/cli/update_cmd.py](src/popolaloom/cli/update_cmd.py)): wraps `pip install --upgrade <spec>` + `popola skill upgrade --target=all` (BOTH `global` and `project` scopes in one invocation) + `popola doctor` into a single command. Flag matrix mirrors `install.sh:verb_update` (lines 502-525) byte-identical: `--target` / `--scope=global|project|both` / `--from=git|pypi|<PATH>` / `--ref` / `--version` / `--python` / `--no-skills` / `--no-doctor` / `--with-credentials` / `--force` / `--dry-run` / `--quiet` / `--json`. New `--scope=both` (default) walks every `(target, scope)` pair the IDE supports — single command, no two-pass dance.
+- **P2 — `popolaloom.evolution.self_update`** ([src/popolaloom/evolution/self_update.py](src/popolaloom/evolution/self_update.py)): pure-Python orchestration core. Four building blocks: `resolve_install_spec` (port of install.sh:395-436), `detect_install_kind` (classifies via PEP 610 `direct_url.json` + `sys.executable.parts`), `run_pip_upgrade` (subprocess wrapper raising `PipUpgradeError`), `update_all` (orchestrator returning a structured `UpdateOutcome`). Refuses to run on editable / pipx-managed installs unless `--force` is set, with bilingual remediation hints (No Silent Failures).
+- **P3 — daemon-running advisory** ([src/popolaloom/evolution/self_update.py:_detect_daemon_running](src/popolaloom/evolution/self_update.py)): when `popolad.sock` is present after the wheel upgrade, `popola update` appends a stderr `warn:` line suggesting `popola popolad stop && start`. Auto-restart was rejected because in-flight tasks would die mid-flight.
+- **P4 — Cross-implementation parity test** ([tests/test_update_parity.py](tests/test_update_parity.py)): invokes `install.sh update --dry-run --no-skills` for a 10-row matrix (git × ref / pypi × version / local-path × `[credentials]` extras on/off) and parses the `[install.sh] step 1/3: pip install --upgrade <spec>` line out of stdout, then compares to `resolve_install_spec()` byte-for-byte. Drift in either implementation fails default-lane CI.
+- **P5 — Tracked project skill drift safeguard** ([tests/cli/test_skill_md_canonical.py](tests/cli/test_skill_md_canonical.py)): new parametrised `test_tracked_project_skill_version_matches_package[claude-project|copilot-project]` asserts both tracked files (`.claude/skills/popola-loom/SKILL.md` + `.github/copilot-instructions.md`) carry the same frontmatter version as `popolaloom.__version__`. Originally landed in PR #34 (chore: v1.3.0 skill bump); v1.4.0 inherits + extends.
+- **P6 — Workflow 14 in wheel-shipped SKILL.md** ([src/popolaloom/skills/popola-loom/SKILL.md](src/popolaloom/skills/popola-loom/SKILL.md)): 5-step end-to-end walkthrough of the new verb (dry-run → real → `--from=pypi --version=` → `--no-skills` / `--no-doctor` → unsafe-install refusal). Quick reference table gains 3 new rows. Skill body grew 43_638 → 46_960 chars (within the existing `[8_000, 40_000]` token-budget window after a +6_000 char allowance documented inline in the test).
+
+### Changed
+
+- `popolaloom.__version__` 1.3.0 → 1.4.0; `pyproject.toml [project] version` 1.3.0 → 1.4.0; wheel-shipped `.popola-loom-version` 1.3.0 → 1.4.0; tracked `.claude/skills/popola-loom/SKILL.md` + `.github/copilot-instructions.md` 1.3.0 → 1.4.0 (after PR #34 lands and is rebased) OR 1.1.0 → 1.4.0 (if PR2 lands first); skill `last_updated` 2026-05-11 → 2026-05-17.
+- `popola --help` advertises the new `update` verb in the verb list (registered via `app.add_typer(update_app, name="update", ...)` in `_register_subcommand_groups()`).
+
+### Migration notes
+
+- Anyone calling `popola skill upgrade --target=all --global` AND `--target=all --project` from a wrapper script can replace both with `popola update` (full pipeline) or `popola update --no-skills=false --no-doctor` (skip pip).
+- Editable / pipx users who want the old "just trust me" behaviour: pass `--force`. The orchestrator still appends warnings to stderr explaining the trade-off.
+- `install.sh update` continues to work unchanged — the two paths are now contract-equivalent (parity-tested) but each is appropriate to its context (bash bootstraps before Python; Python serves day-to-day operators).
+- New CLI exit codes for `popola update`: `0` clean / `1` pip or spec failure / `2` unsafe install refusal / `3` post-upgrade doctor still reports DRIFT/MISS.
+
+<!-- updated: 2026-05-17 -->
 
 ## [1.3.0] - 2026-05-16
 

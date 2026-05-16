@@ -23,6 +23,7 @@ from pathlib import Path
 import pytest
 from typer.testing import CliRunner
 
+from popolaloom import __version__
 from popolaloom.cli.init_cmd import app as init_app
 
 
@@ -91,7 +92,7 @@ def test_init_cursor_project_writes_skill(
     assert body.startswith("---\nname: popola-loom\n")
     marker = target.parent / ".popola-loom-version"
     assert marker.exists()
-    assert marker.read_text(encoding="utf-8").strip() == "1.3.0"
+    assert marker.read_text(encoding="utf-8").strip() == __version__
 
 
 def test_init_claude_global_writes_to_home(

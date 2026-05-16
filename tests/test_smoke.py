@@ -229,9 +229,19 @@ import popolaloom
 
 
 def test_import_and_version() -> None:
-    """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致."""
+    """popolaloom 顶层包可被 import 且 __version__ 与 pyproject.toml 一致.
+
+    v1.4.0+: assert against the package ``__version__`` directly so future
+    minor / patch bumps (`__init__.py`) only need a single source-of-truth
+    edit in ``pyproject.toml`` + ``src/popolaloom/__init__.py``; previously
+    every release had to remember to edit this fixture too.
+    """
     assert popolaloom is not None
-    assert popolaloom.__version__ == "1.3.0"
+    # Sanity: ``__version__`` is a non-empty SemVer string. The exact value
+    # travels with the package; the canonical / install-popola SKILL.md
+    # fixtures below cover the in-skill version assertion.
+    assert isinstance(popolaloom.__version__, str)
+    assert popolaloom.__version__.count(".") == 2  # X.Y.Z
 
 
 def test_both_skills_resolve_via_importlib() -> None:
@@ -259,5 +269,10 @@ def test_both_skills_resolve_via_importlib() -> None:
     assert "name: popola-loom" in canon_text, "canonical SKILL.md frontmatter wrong"
     assert "name: install-popola" in inst_text, "install-popola SKILL.md frontmatter wrong"
 
-    assert "version: 1.3.0" in canon_text, "canonical SKILL.md not at 1.3.0"
-    assert "version: 1.3.0" in inst_text, "install-popola SKILL.md not at 1.3.0"
+    expected_version_line = f"version: {popolaloom.__version__}"
+    assert expected_version_line in canon_text, (
+        f"canonical SKILL.md not at {popolaloom.__version__}"
+    )
+    assert expected_version_line in inst_text, (
+        f"install-popola SKILL.md not at {popolaloom.__version__}"
+    )
