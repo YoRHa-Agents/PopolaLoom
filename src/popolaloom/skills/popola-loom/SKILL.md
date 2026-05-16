@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.4.0
+version: 1.5.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -512,6 +512,56 @@ Use AskQuestion for target → model → thinking_depth → special_modes, then 
 ## Configuration
 
 v1.1.1 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
+
+### No-Silent-Fallback invariant (v1.5.0+)
+
+popola does NOT switch the dispatched CLI adapter, auth-mode, or path-B knob without explicit operator consent. Six dispatch-defining dimensions hard-fail on rejection rather than silently retry on another value:
+
+| Dimension | Failure semantics (v1.5.0) |
+|---|---|
+| `--auth-mode` (rest / session-jwt) | path-B JWT load failure → exit 1; popola does NOT auto-switch to REST |
+| `--cli` (cursor / cursor-cloud / claude / ...) | requested adapter missing → exit 1; `[user_preferences.routing].fallback_chain` is consulted ONLY when `--allow-fallback` is passed explicitly |
+| `--cloud-target` (self-hosted / cursor-managed) | Q-7 no-fallback contract preserved + reinforced (self-hosted worker absent → exit 78, no swap to cursor-managed) |
+| `--worker-name` | path-B body `env={type:machine,name}` rejected upstream → exit 1; no auto-downgrade to label match (operator opts in via `--cli-flag env_emit_mode=label`) |
+| `--model` | model id rejected upstream → exit 1; no auto-rename to `default` (operator opts in via `--cli-flag model_id_override=<id>`) |
+| `--preset` (grind / quick-fix / ...) | preset parse failure → exit 1; preset is NEVER silently stripped |
+
+**Out of scope** (allowed to fall back without consent): the SSE → poll observability fallback emitted by `cloud_poller.py` (event `cloud.sse.fallback_to_poll`). This sits at the *observability* layer — the task has already been dispatched; only the event-stream read mode degrades. Dispatch-routing decisions are governed by this invariant; observability-stream choices are not.
+
+Operator-facing escape hatches when the upstream server rejects the default v1.5.0 shape (each requires an explicit opt-in):
+
+| Symptom | Opt-in command |
+|---|---|
+| `path_b_rpc_400_invalid_argument` on `env` field | `popola dispatch ... --cli-flag env_emit_mode=label` (or `=none`) |
+| Server returns "model 'gpt-5.5' not available" | `popola dispatch ... --cli-flag model_id_override=gpt-5.5-high` (or `=gpt-5.5` per attempt) |
+| `--cli=cursor` unavailable, want fallback_chain | `popola dispatch ... --allow-fallback` (per-dispatch opt-in; not persisted) |
+
+### popolad env injection (v1.5.0+)
+
+`popola popolad start` walks a 4-tier injection chain to build the daemon child env (so the daemon's cloud dispatches pick up `CURSOR_API_KEY` even when the operator's current shell didn't export it):
+
+1. existing `os.environ` (operator's shell — highest precedence; never overwritten)
+2. `--env-file <path>` (Typer flag; mode 0o600 required)
+3. `~/.popola/cursor_api_key.env` (existing v0.9.9 boot-time fallback; mode 0o600)
+4. `<cwd>/.local/.secrets/cursor_user_api_key.secret` (single-line bare key; CLI-side env injection ONLY, does NOT enter `resolve_cursor_api_key` precedence chain — JWT remains the dispatch primary path)
+5. `<cwd>/.env` (mode 0o600; legacy dotenv fallback)
+
+`popola popolad start --reload-env` is a convenience equivalent for `stop && start <same flags>`; use it after editing one of the file sources to push the new env into a running daemon.
+
+### Path-B self-hosted worker dispatch (v1.5.0+)
+
+JWT-direct dispatch onto a registered self-hosted worker, skipping git host (GitHub / GitLab) authentication:
+
+```bash
+popola dispatch \
+  --cli=cursor-cloud --auth-mode=session-jwt \
+  --cloud-target=self-hosted --worker-name=<your-worker> \
+  --model=gpt-5.5 --thinking-level=high --preset=grind \
+  --no-auto-branch --no-auto-create-pr --work-on-current-branch \
+  "<prompt>"
+```
+
+Cursor's BackgroundComposerService routes the dispatch to the named worker via `env={"type":"machine","name":<X>}` on the request body. The four new Typer flags (`--no-auto-branch`, `--no-auto-create-pr`, `--work-on-current-branch`, `--skip-reviewer-request`) match the equivalent Cursor web-UI toggles for the "dispatch on the worker's current ref, no PR" workflow.
 
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：

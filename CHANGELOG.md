@@ -10,14 +10,52 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-Accumulating for the next v1.4.x patch:
+Accumulating for the next v1.5.x patch:
 
-- `BL-v1.3.x-path-b-non-github-routing` — Cursor server-side hard constraint; cannot fix client-side. Feedback `feedback_for_v1.2.0.md` §3/§4 documents the failure mode for non-GitHub repos via cursor-cloud REST self-hosted routing; no PopolaLoom patch can resolve it.
-- `BL-v1.3.x-bc-model-whitelist-sync` — Cursor BackgroundComposer model list ≠ REST `/v1/models` list (feedback §2 model whitelist table). Should add a one-shot probe + per-process cache.
+- `BL-v1.3.x-path-b-non-github-routing` — Cursor server-side hard constraint; cannot fix client-side. v1.5.0's `env={type:machine,name:X}` route bypasses this for **self-hosted-worker dispatches**, but cursor-managed cloud + non-GitHub repos still need a Cursor-side fix.
+- `BL-v1.3.x-bc-model-whitelist-sync` — Cursor BackgroundComposer model list ≠ REST `/v1/models` list (feedback §2 model whitelist table). v1.5.0 adds the `--cli-flag model_id_override=<id>` escape hatch but no probe-and-cache.
 - `BL-v1.4.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
 <!-- updated: 2026-05-17 -->
+
+## [1.5.0] - 2026-05-17
+
+**Theme**: JWT-direct dispatch onto a locally-registered self-hosted Cursor worker, skipping git host (GitHub / GitLab) authentication. Fixes the 9 acceptance gates (G1–G9) from `.local/feedbacks/feedback_for_v1.4.0.md` and adds the **No-Silent-Fallback** invariant — popola no longer switches the dispatched CLI adapter, auth-mode, or path-B knob without explicit operator consent.
+
+### Added
+
+- **Phase A — Path-B body knobs for self-hosted worker routing** ([src/popolaloom/cloud/internal/cursor_cloud_internal.py](src/popolaloom/cloud/internal/cursor_cloud_internal.py)): `build_start_composer_request` gains 6 new kwargs — `target_machine_name` (emits `env={type:machine,name:<X>}` on the wire), `env_emit_mode` (escape hatch `machine|label|none`), `auto_create_pr`, `work_on_current_branch`, `skip_reviewer_request`, `model_id_override`. The path-B body can now route directly to a named self-hosted worker (G1, G3, G4).
+- **Phase A — `StartComposerOutcome.initial_run_id`**: Cursor's v1.4.0+ response shape moved `background_composer_id` into a nested `composer.bcId` envelope with `initialRunId` alongside. The client now parses all three shapes (snake_case top-level / camelCase top-level / `composer.bcId`) and surfaces `initial_run_id` so the daemon seeds `TaskHandle.cursor_run_id` for SSE / attach correlation.
+- **Phase B — Supervisor extras passthrough** ([src/popolaloom/daemon/supervisor.py](src/popolaloom/daemon/supervisor.py)): `_spawn_cloud_path_b` reads `worker_name` / `env_emit_mode` / `auto_branch` / `auto_create_pr` / `work_on_current_branch` / `skip_reviewer_request` / `model_id_override` from the extras dict and forwards them to `build_start_composer_request`. The `cloud.queued` event payload now surfaces all six fields so the operator can grep them from the event log.
+- **Phase C — Typer flag surface** ([src/popolaloom/cli/main.py](src/popolaloom/cli/main.py)): 4 new bool toggles (`--auto-branch / --no-auto-branch`, `--auto-create-pr / --no-auto-create-pr`, `--work-on-current-branch`, `--skip-reviewer-request`) plus `--allow-fallback` opt-in for the No-Silent-Fallback rule. Defaults match historical Path-B behaviour so existing dispatches see no change unless the operator opts in.
+- **Phase G — `popola popolad start --env-file <path>`** ([src/popolaloom/cli/popolad.py](src/popolaloom/cli/popolad.py)): 4-tier auto env injection chain (operator `os.environ` > `--env-file` > `~/.popola/cursor_api_key.env` > `<cwd>/.local/.secrets/cursor_user_api_key.secret` > `<cwd>/.env`). Mode 0o600 enforced; non-secure modes log a WARN and are skipped (No Silent Failures). The `<cwd>/.local/.secrets/cursor_user_api_key.secret` is **CLI-side env injection only** — it does NOT enter `resolve_cursor_api_key` precedence (G8).
+- **Phase G — `popola popolad start --reload-env`**: convenience flag equivalent to `popola popolad stop && popola popolad start <same flags>` so the operator can re-inject env after editing one of the chain sources without typing two commands (G9).
+- **Phase H — `popola init` JWT auto-detect**: the interactive wizard detects `~/.config/cursor/auth.json` and prompts to set `[user_preferences.cursor-cloud].default_auth_mode = "session-jwt"` so subsequent `popola dispatch --cli=cursor-cloud` calls use the JWT path by default. Per-dispatch `--auth-mode` still overrides.
+- **Phase D — No-Silent-Fallback invariant**: `_select_available_local_cli` now hard-fails (exit 1) when `--cli=<X>` is unavailable, instead of silently walking `[user_preferences.routing].fallback_chain`. The persisted chain is consulted only when the operator passes `--allow-fallback`; the switch then emits a stderr `[prefs] (fallback consent acknowledged) ...` line. The 8 hint strings in `cursor_cloud_internal.py` reworded from "fall back to --auth-mode=rest" → "re-dispatch with --auth-mode=rest (popola does NOT auto-switch transports; v1.5.0 no-silent-fallback invariant)".
+- **Phase J — `[user_preferences.cursor-cloud].default_auth_mode` pref field**: validated against `("", "rest", "session-jwt")`; consumed by `_apply_path_b_flags` when the dispatch CLI flag is the default `"rest"` — pref upgrades to `session-jwt` with a stderr `[prefs] applying ...` line. Per-dispatch `--auth-mode=...` always wins.
+
+### Changed
+
+- **Phase E — `[user_preferences.cursor].cli_args` propagation** ([src/popolaloom/cli/main.py](src/popolaloom/cli/main.py)): the dispatch path now reads BOTH `default_model` and `cli_args` from the prefs for `--cli=cursor` (v1.3.0 silently dropped the latter). An explicit `--cli-flag cli_args=...` still wins.
+- **Phase F — `missing_api_key` hint copy** ([src/popolaloom/credentials.py:712](src/popolaloom/credentials.py), [src/popolaloom/cli/auth_cmd.py:125](src/popolaloom/cli/auth_cmd.py)): the misleading "0o600 `.env`" wording (operators were writing `~/.popola/.env` and the daemon never picked it up) reworded to "0o600 `~/.popola/cursor_api_key.env`" with a v1.5.0 parenthetical clarifying the real auto-source path.
+- `popolaloom.__version__` 1.4.0 → 1.5.0; `pyproject.toml [project] version` 1.4.0 → 1.5.0; all 5 `.popola-loom-version` files (wheel-shipped + tracked project skills) bumped; SKILL.md frontmatter version field bumped across the 4 tracked locations (wheel SKILL.md + .claude / .cursor / .github tracked copies; the `test_tracked_project_skill_version_matches_package` parametrised test enforces lockstep).
+- Wheel SKILL.md gains a new "No-Silent-Fallback invariant" section + a "popolad env injection (v1.5.0+)" subsection + a "Path-B self-hosted worker dispatch" example.
+
+### Fixed
+
+- `BL-v1.4.x-path-b-self-hosted-worker-routing` — Self-hosted workers were unreachable via path-B because the body never carried the worker name (`use_private_worker=True` alone is insufficient when the worker registers with a custom name). Resolved by Phase A + B.
+- `BL-v1.4.x-path-b-response-shape-drift` — v1.3.0 client expected `background_composer_id` at the top level; Cursor's v1.4.0+ response moved it under `composer.bcId`. Resolved by Phase A's 3-tier fallback parse.
+- `BL-v1.3.x-cli-args-regression` — feedback §7 issue #2: `[user_preferences.cursor].cli_args` was dropped silently. Resolved by Phase E.
+- `BL-v1.4.x-misleading-missing-api-key-hint` — feedback §5 issue #4. Resolved by Phase F.
+- `BL-v1.4.x-popolad-start-env-injection` — feedback §6 + G8 + G9. Resolved by Phase G.
+
+### Migration notes
+
+- **Default-`auth-mode` behaviour shift via pref**: operators who run `popola init` against an environment with a cached Cursor JWT will be prompted to set `default_auth_mode = "session-jwt"`. Accept = subsequent `popola dispatch --cli=cursor-cloud` calls use the JWT path by default. If you decline (or skip the wizard), behaviour is unchanged.
+- **`fallback_chain` no longer silent**: pre-v1.5.0 a `--cli=cursor` dispatch on a system without Cursor installed would silently switch to `claude` (or whatever was first in `fallback_chain`). v1.5.0 hard-fails with exit 1. To restore the old behaviour for a single dispatch: pass `--allow-fallback`. To persist: there's deliberately no persisted opt-in; the per-dispatch flag is the only way (the goal is to make the switch visible every time).
+- **Path-B body now emits `env`**: dispatches with `--cli=cursor-cloud --auth-mode=session-jwt --cloud-target=self-hosted --worker-name=<X>` previously dropped `worker_name` after CLI validation; the path-B body had no field for it. v1.5.0 emits `env={"type":"machine","name":<X>}` on the wire. If Cursor's server rejects this shape with `path_b_rpc_400_invalid_argument`, the operator can opt into the escape hatch via `--cli-flag env_emit_mode=label` (drops `env`, normalizes `snapshot_name_or_id`) or `env_emit_mode=none` (v1.3.0 behaviour). popola does NOT auto-shift between modes.
+- **Acceptance G1–G9 lockstep**: a release is gated on all 9 acceptance gates in PLAN.md Phase K running live (not mock-only). See `.cursor/plans/v1.5.0_jwt_local_worker_dispatch_79698bd4.plan.md` §"验收" for the 6-step verification script.
 
 ## [1.4.0] - 2026-05-17
 
