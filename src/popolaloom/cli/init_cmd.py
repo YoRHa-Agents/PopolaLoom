@@ -92,14 +92,18 @@ from rich.tree import Tree
 from popolaloom import __version__
 from popolaloom.cli._skill_source import resolve_skill_source
 from popolaloom.daemon.main import (
+    USER_PREF_VALID_AGENT_MODES,
     USER_PREF_VALID_AMBIGUITY_RESOLUTION,
     USER_PREF_VALID_ASK_DIMENSIONS,
     USER_PREF_VALID_CLOUD_TARGETS,
     USER_PREF_VALID_CODEX_SANDBOXES,
     USER_PREF_VALID_CURSOR_OUTPUT_FORMATS,
     USER_PREF_VALID_DEFAULT_CLOUD_TARGET,
+    USER_PREF_VALID_EFFORT_MODES,
     USER_PREF_VALID_LOCAL_CLIS,
+    USER_PREF_VALID_PRESETS,
     USER_PREF_VALID_RUNTIMES,
+    USER_PREF_VALID_THINKING_LEVELS,
     UserPreferencesConfig,
     UserPrefsClaude,
     UserPrefsCodex,
@@ -377,6 +381,9 @@ def apply_user_preference_sets(
             "cursor-cloud.auto_create_pr",
             "cursor-cloud.work_on_current_branch",
             "cursor-cloud.skip_reviewer_request",
+            "cursor-cloud.default_max_mode",
+            "cursor-cloud.default_long_running",
+            "cursor-cloud.default_auto_proceed_after_plan",
             "lark.notify_on_completed",
             "lark.notify_on_failed",
             "lark.notify_on_canceled",
@@ -398,6 +405,34 @@ def apply_user_preference_sets(
                 raise ValueError(
                     "codex.sandbox must be one of "
                     f"{sorted(USER_PREF_VALID_CODEX_SANDBOXES)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "cursor-cloud.default_mode":
+            if value not in USER_PREF_VALID_AGENT_MODES:
+                raise ValueError(
+                    "cursor-cloud.default_mode must be one of "
+                    f"{list(USER_PREF_VALID_AGENT_MODES)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "cursor-cloud.default_effort":
+            if value not in USER_PREF_VALID_EFFORT_MODES:
+                raise ValueError(
+                    "cursor-cloud.default_effort must be one of "
+                    f"{list(USER_PREF_VALID_EFFORT_MODES)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "cursor-cloud.default_thinking_level":
+            if value not in USER_PREF_VALID_THINKING_LEVELS:
+                raise ValueError(
+                    "cursor-cloud.default_thinking_level must be one of "
+                    f"{list(USER_PREF_VALID_THINKING_LEVELS)}; got {value!r}"
+                )
+            _set_nested_pref_value(values, key, value)
+        elif key == "cursor-cloud.default_preset":
+            if value not in USER_PREF_VALID_PRESETS:
+                raise ValueError(
+                    "cursor-cloud.default_preset must be one of "
+                    f"{list(USER_PREF_VALID_PRESETS)}; got {value!r}"
                 )
             _set_nested_pref_value(values, key, value)
         elif key == "dispatch.ambiguity_resolution":
@@ -423,6 +458,8 @@ def apply_user_preference_sets(
             "cursor-cloud.starting_ref",
             "cursor-cloud.worker_name",
             "cursor-cloud.pool_name",
+            "cursor.default_model",
+            "cursor-cloud.default_time_budget",
         }:
             _set_nested_pref_value(values, key, value)
         elif key in {"last_set_at", "last_set_by"}:
@@ -478,6 +515,7 @@ def _known_preference_assignment_keys() -> list[str]:
             "defaults.prompt_each_dispatch",
             "cursor.output_format",
             "cursor.cli_args",
+            "cursor.default_model",
             "cursor-cloud.model",
             "cursor-cloud.starting_ref",
             "cursor-cloud.auto_create_pr",
@@ -486,6 +524,14 @@ def _known_preference_assignment_keys() -> list[str]:
             "cursor-cloud.default_cloud_target",
             "cursor-cloud.worker_name",
             "cursor-cloud.pool_name",
+            "cursor-cloud.default_mode",
+            "cursor-cloud.default_effort",
+            "cursor-cloud.default_max_mode",
+            "cursor-cloud.default_long_running",
+            "cursor-cloud.default_auto_proceed_after_plan",
+            "cursor-cloud.default_time_budget",
+            "cursor-cloud.default_thinking_level",
+            "cursor-cloud.default_preset",
             "claude.max_turns",
             "codex.sandbox",
             "lark.notify_on_completed",

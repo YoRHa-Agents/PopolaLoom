@@ -123,12 +123,19 @@ def test_user_thinking_level_to_proto_all_values() -> None:
 
 
 def test_build_request_minimal() -> None:
-    """Minimum body has prompt + repos with starting_ref defaulting to 'main'."""
+    """Minimum body has prompt + repos with startingRef defaulting to 'main'.
+
+    v1.3.0 P5: the body now carries 11 additional Connect-Protocol
+    wire-format fields plus the camelCase key transform (feedback §2).
+    The ``prompt`` + ``repos.startingRef`` are still the smoke-test
+    anchors; the v1.3.0 P5 additions are validated by
+    ``test_build_composer_camel.py``.
+    """
     body = build_start_composer_request(prompt="hi", repo_url="https://github.com/x/y")
-    assert body == {
-        "prompt": "hi",
-        "repos": [{"url": "https://github.com/x/y", "starting_ref": "main"}],
-    }
+    assert body["prompt"] == "hi"
+    assert body["repos"] == [
+        {"url": "https://github.com/x/y", "startingRef": "main"}
+    ]
 
 
 def test_build_request_all_advanced_flags_present() -> None:
@@ -146,18 +153,18 @@ def test_build_request_all_advanced_flags_present() -> None:
         starting_message_type="plan-start",
         auto_proceed_after_planning=True,
     )
-    assert body["model_details"] == {
-        "model_name": "gpt-5.5",
-        "max_mode": True,
-        "thinking_level": "THINKING_LEVEL_HIGH",
+    assert body["modelDetails"] == {
+        "modelName": "gpt-5.5",
+        "maxMode": True,
+        "thinkingLevel": "THINKING_LEVEL_HIGH",
     }
-    assert body["agent_mode"] == "AGENT_MODE_PLAN"
-    assert body["effort_mode"] == "EFFORT_MODE_HIGH"
-    assert body["time_budget_seconds"] == 1800
-    assert body["time_budget_ms"] == 1_800_000
-    assert body["long_running_agent_mode"] is True
-    assert body["starting_message_type"] == "STARTING_MESSAGE_TYPE_PLAN_START"
-    assert body["auto_proceed_after_planning"] is True
+    assert body["agentMode"] == "AGENT_MODE_PLAN"
+    assert body["effortMode"] == "EFFORT_MODE_HIGH"
+    assert body["timeBudgetSeconds"] == 1800
+    assert body["timeBudgetMs"] == 1_800_000
+    assert body["longRunningAgentMode"] is True
+    assert body["startingMessageType"] == "STARTING_MESSAGE_TYPE_PLAN_START"
+    assert body["autoProceedAfterPlanning"] is True
 
 
 def test_build_request_negative_time_budget_rejected() -> None:
@@ -191,7 +198,7 @@ def test_build_request_extras_merge_when_no_conflict() -> None:
         repo_url="https://github.com/x/y",
         extras={"client_metadata": {"foo": "bar"}},
     )
-    assert body["client_metadata"] == {"foo": "bar"}
+    assert body["clientMetadata"] == {"foo": "bar"}
 
 
 # ── CursorCloudInternalClient (Connect-RPC over httpx.MockTransport) ──
@@ -237,7 +244,7 @@ def test_start_composer_success_returns_outcome() -> None:
     assert captured["headers"]["authorization"] == "Bearer header.payload.sig"
     assert captured["headers"]["content-type"] == "application/json"
     assert captured["headers"]["connect-protocol-version"] == "1"
-    assert captured["body"]["agent_mode"] == "AGENT_MODE_PLAN"
+    assert captured["body"]["agentMode"] == "AGENT_MODE_PLAN"
 
 
 def test_start_composer_camel_case_response_key_accepted() -> None:

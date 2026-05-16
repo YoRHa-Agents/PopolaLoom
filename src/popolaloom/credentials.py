@@ -601,10 +601,15 @@ def _import_keyring() -> object | None:
     upstream stub package).
     """
     try:
-        import keyring  # type: ignore[import-not-found]  # noqa: PLC0415 — lazy on purpose
+        # When the ``credentials`` extra is not installed (CI env),
+        # ``keyring`` is absent and mypy raises ``import-not-found``;
+        # the symmetric ``unused-ignore`` code handles the dev env that
+        # DOES have keyring installed (otherwise mypy strict would
+        # complain that the suppression is unused).
+        import keyring  # type: ignore[import-not-found,unused-ignore]  # noqa: PLC0415 — lazy on purpose
     except ImportError:
         return None
-    return keyring  # type: ignore[no-any-return]
+    return keyring  # type: ignore[no-any-return,unused-ignore]
 
 
 def is_keyring_available() -> bool:

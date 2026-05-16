@@ -196,16 +196,17 @@ def test_path_b_branch_dispatches_via_connect_rpc(
     assert captured_headers.get("connect-protocol-version") == "1"
 
     assert captured_body["prompt"] == "smoke test"
+    # v1.3.0 P5: Connect-Protocol wire format is camelCase (feedback §2 wire-spec).
     assert captured_body["repos"] == [
-        {"url": "https://github.com/test/repo", "starting_ref": "main"}
+        {"url": "https://github.com/test/repo", "startingRef": "main"}
     ]
-    assert captured_body["model_details"]["model_name"] == "gpt-5.5"
-    assert captured_body["agent_mode"] == "AGENT_MODE_PLAN"
-    assert captured_body["effort_mode"] == "EFFORT_MODE_HIGH"
-    assert captured_body["long_running_agent_mode"] is True
-    assert captured_body["auto_proceed_after_planning"] is True
-    assert captured_body["time_budget_seconds"] == 14400
-    assert captured_body["time_budget_ms"] == 14400 * 1000
+    assert captured_body["modelDetails"]["modelName"] == "gpt-5.5"
+    assert captured_body["agentMode"] == "AGENT_MODE_PLAN"
+    assert captured_body["effortMode"] == "EFFORT_MODE_HIGH"
+    assert captured_body["longRunningAgentMode"] is True
+    assert captured_body["autoProceedAfterPlanning"] is True
+    assert captured_body["timeBudgetSeconds"] == 14400
+    assert captured_body["timeBudgetMs"] == 14400 * 1000
 
     handle = store.get(task_id)
     assert handle is not None

@@ -91,7 +91,7 @@ def test_init_cursor_project_writes_skill(
     assert body.startswith("---\nname: popola-loom\n")
     marker = target.parent / ".popola-loom-version"
     assert marker.exists()
-    assert marker.read_text(encoding="utf-8").strip() == "1.1.1"
+    assert marker.read_text(encoding="utf-8").strip() == "1.3.0"
 
 
 def test_init_claude_global_writes_to_home(

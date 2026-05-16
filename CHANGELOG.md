@@ -10,11 +10,43 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-Accumulating for the next v1.1.x patch:
+Accumulating for the next v1.3.x patch:
 
-- `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. v1.0.0 GA temporarily relaxed it 94 → 93 to absorb the 0.69pp transient regression from the v0.10.0 + v1.0.0 GA wave (~5500 net-new LOC; the path-B scaffolding is already at 99 % but the broader cloud_worker_cmd.py / cursor_cloud.py error paths need post-merge soak before targeted test additions). Same pattern as v0.3.0 → v0.3.1 (88 → 90); restoration is a single PR adding ~70 net-new tests on the high-miss-count files.
+- `BL-v1.3.x-path-b-non-github-routing` — Cursor server-side hard constraint; cannot fix client-side. Feedback `feedback_for_v1.2.0.md` §3/§4 documents the failure mode for non-GitHub repos via cursor-cloud REST self-hosted routing; no PopolaLoom patch can resolve it.
+- `BL-v1.3.x-bc-model-whitelist-sync` — Cursor BackgroundComposer model list ≠ REST `/v1/models` list (feedback §2 model whitelist table). Should add a one-shot probe + per-process cache.
+- `BL-v1.3.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh. Move to v1.4.0.
+- `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
-<!-- updated: 2026-05-11 -->
+<!-- updated: 2026-05-16 -->
+
+## [1.3.0] - 2026-05-16
+
+**Theme**: Self-hosted dispatch hardening + Path-B observability. Closes the 5 user requests + 3 confirmed bugs in [.local/feedbacks/feedback_for_v1.2.0.md](.local/feedbacks/feedback_for_v1.2.0.md) (a v1.1.1 field-report mis-named for v1.2.0). 6 disjoint patches + version bump; new test surface 69 cases (all green); 1438 of the 1443 broader pytest sweep cases pass — the remaining 5 are pre-existing env-dependent failures on the v1.1.1 baseline (CURSOR_API_KEY fallback resolution + ambient `popolad.toml`), independently verified against `823a46b` and not caused by this release.
+
+### Added
+
+- **P1 — `popola cloud worker start --detach`** (feedback §7): the worker can now be started as a fully-detached background process via a double-fork + `os.setsid()` pattern. The grandchild has PPID=1, runs in its own session, redirects stdin → `/dev/null`, and appends stdout/stderr to `~/.popola/log/worker-<name>.log`. The parent writes a pid file at `~/.popola/worker-<name>.pid` and prints one-line JSON `{"pid", "name", "worker_dir", "log_file", "pid_file", "management_addr", "detached": true}` before exiting `0`. Closing the spawning shell no longer cascades SIGHUP into the worker process. The foreground default (`--detach` absent) is preserved byte-for-byte. Implementation lives in `src/popolaloom/cli/cloud_worker_cmd.py` `_spawn_detached_worker` helper.
+- **P2 — `popola dispatch --thinking-level low|medium|high`** (feedback §4): a first-class Typer flag for Path-B's `model_details.thinking_level`. Previously the value was only reachable via the undiscoverable `--cli-flag thinking_level=high` extras key; v1.3.0 promotes it to a self-documenting flag, gated to `--auth-mode=session-jwt` like the other Path-B knobs. Wired through `_apply_path_b_flags` so it flows into the Connect-RPC body alongside `--mode/--effort/--max-mode/--time-budget/--long-running/--auto-proceed-after-plan/--preset`.
+- **P6 — Path-B presets persistable in `[user_preferences]`** (feedback §6): 8 new `cursor_cloud.default_*` fields (`default_mode`, `default_effort`, `default_max_mode`, `default_long_running`, `default_auto_proceed_after_plan`, `default_time_budget`, `default_thinking_level`, `default_preset`) plus `cursor.default_model` (1 new field) are now persistable via `popola init prefs --set <key>=<value>`. `popola dispatch --auth-mode=session-jwt` falls through to these prefs when the per-task flag is absent (precedence: per-task flag > per-task `--preset` > `prefs.default_preset` > `prefs.default_*` > Cursor default). The wizard surfaces the same controls when target is cursor-cloud. New validation constants `USER_PREF_VALID_AGENT_MODES`, `USER_PREF_VALID_EFFORT_MODES`, `USER_PREF_VALID_THINKING_LEVELS`, `USER_PREF_VALID_PRESETS` exported from `popolaloom.daemon.main`.
+
+### Fixed
+
+- **P3 — `popola cloud worker stop` matcher for Node-wrapped workers** (feedback §7 "popola cloud worker stop 当前定位 bug"): `_parse_worker_start_cmdline` previously rejected processes whose `argv[0]` was `node` (the modern cursor-agent installs ship the `agent` binary as a Node shim, so the running process has `argv = ["node", "/path/agent.js", "worker", "start", ...]`). The matcher now scans for the contiguous `["worker", "start"]` subsequence at any argv position ≥1 AND requires a "worker binary indicator" token anywhere in argv (basename `agent`/`cursor-agent` OR token ending in `/agent.js`/`/cursor-agent.js`, case-insensitive). The new matcher is strictly more permissive than v1.1.1; every cmdline that matched before still matches.
+- **P4 — `_post_rpc` honest 4xx Connect-Protocol envelope surfacing** (feedback §2 "Bug 报点 #1+#3"): `cursor_cloud_internal._post_rpc` previously classified every 4xx as either "401 auth", "404 method-missing", or "generic 4xx fall-through" and emitted a hint pointing only at the method-path-rename theory. Operators dispatching with an incomplete body saw the misleading "service path may have changed" hint when the actual cause was `HTTP 400 invalid_argument` with a Connect-Protocol error envelope listing required fields. v1.3.0 parses the Connect-Protocol envelope (`code` / `message` / `details[i].debug.details.detail`) and surfaces `connect_code`, `connect_message`, `details_summary` on the new `CursorCloudInternalError`; a typed `error_kind` enum (`path_b_rpc_401_auth | path_b_rpc_404 | path_b_rpc_400_invalid_argument | path_b_rpc_5xx | path_b_rpc_other`) lets downstream consumers branch. The 404 hint now acknowledges both causes (renamed path OR body validation failure). Each 4xx logs one WARNING with the full envelope chain.
+- **P5 — `build_start_composer_request` 11 missing wire fields + Connect-Protocol camelCase serialization** (feedback §2 "实测 wire 规格"): the function now constructs `snapshot_name_or_id` (derived from `repo_url` by stripping `https://` and `.git`), `devcontainer_starting_point` (`{url, ref}` struct), `repository_info` (empty dict), `snapshot_workspace_root_path` (default `/workspace`), `auto_branch` (default `True`), `return_immediately` (default `True`), `repo_url` (mirror), `conversation_history` (`[{text, type:"MESSAGE_TYPE_HUMAN", richText:"{}"}]`), `source` (default `"BACKGROUND_COMPOSER_SOURCE_WEBSITE"`), `bc_id` (default `f"bc-{uuid.uuid4()}"`), `add_initial_message_to_responses` (default `True`), and `use_private_worker` (default `True`). All keys are then transformed snake_case → camelCase via the new recursive `_camelize_keys` helper to match Cursor's Connect-Protocol JSON wire format. The Python kwarg API stays snake_case — only the serialized wire keys flip. The v1.0.0 kwargs (`model_name`, `max_mode`, `thinking_level`, `agent_mode`, `effort_mode`, `time_budget_s`, `long_running`, `starting_message_type`, `auto_proceed_after_planning`, `extras`) are unchanged at the Python boundary.
+
+### Changed
+
+- Path-B Connect-Protocol JSON body keys are now camelCase on the wire (e.g. `startingRef`, `modelDetails`, `agentMode`, `effortMode`, `longRunningAgentMode`, `autoProceedAfterPlanning`, `timeBudgetSeconds`, `timeBudgetMs`, `snapshotNameOrId`, `devcontainerStartingPoint`, `repositoryInfo`). This is the **on-wire format only**; Python callers continue to use snake_case kwargs on `build_start_composer_request`. Updated `tests/daemon/test_supervisor_path_b_branch.py` and `tests/cloud/internal/test_rpc_mock.py` to match.
+- `_apply_path_b_flags` now accepts an optional `thinking_level` parameter and an optional `prefs` parameter (for the P6 fall-back chain). Signature is backward-compatible; both new parameters default to "" / None.
+
+### Migration notes
+
+- Operators with custom `~/.popola/popolad.toml`: the 9 new `cursor_cloud.default_*` and `cursor.default_model` keys default to `""` / `False`; existing TOML files load and re-serialize unchanged.
+- Anyone consuming the experimental `CursorCloudInternalError` API directly should note the four new attributes (`connect_code`, `connect_message`, `details_summary`, `error_kind`); their absence in v1.1.1 means existing `except CursorCloudInternalError` callers continue to work.
+- The wire-format flip from snake_case to camelCase is invisible at the `build_start_composer_request` Python API — only on-wire format changes. The user-verified live wire test (feedback §2) confirmed the camelCase shape is what Cursor's Connect-Protocol server actually accepts; v1.1.1's snake_case body was 400ing with `invalid_argument`.
+
+<!-- updated: 2026-05-16 -->
 
 ## [1.1.1] - 2026-05-12
 
