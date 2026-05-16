@@ -236,3 +236,75 @@ def test_skill_md_no_residual_todo_marker(skill_text: str) -> None:
     )
 
 
+# ── Tracked project-level skill files (PR1 v1.3.0 skill bump) ────────────
+#
+# Two project-level skill files are git-tracked at the repo root and must
+# travel in lockstep with ``popolaloom.__version__``.  Their committed
+# content is what new contributors clone, so a release that bumps the
+# wheel-shipped ``src/popolaloom/skills/popola-loom/SKILL.md`` but forgets
+# these tracked copies leaves ``popola doctor`` reporting DRIFT on a fresh
+# clone (this is exactly what happened in PR #32 / PR #33 when the wheel
+# went 1.1.0 → 1.1.1 → 1.3.0 but these two files stayed at 1.1.0).
+#
+# This release-process safeguard is the cheap-and-loud counterpart to the
+# wheel-side ``test_skill_md_version_matches_package`` above: if a future
+# minor bump (v1.4.0, v1.5.0, …) lands without re-running
+# ``popola skill upgrade --target=<claude|copilot> --project`` on the
+# release branch, the default-lane test suite fails before the tag is cut.
+
+_TRACKED_PROJECT_SKILL_PATHS: tuple[tuple[str, Path], ...] = (
+    (
+        "claude-project",
+        _REPO_ROOT / ".claude" / "skills" / "popola-loom" / "SKILL.md",
+    ),
+    (
+        "copilot-project",
+        _REPO_ROOT / ".github" / "copilot-instructions.md",
+    ),
+)
+
+
+@pytest.mark.parametrize(
+    "tracked_path",
+    [pytest.param(path, id=label) for label, path in _TRACKED_PROJECT_SKILL_PATHS],
+)
+def test_tracked_project_skill_version_matches_package(tracked_path: Path) -> None:
+    """Tracked project skill files travel with :data:`popolaloom.__version__`.
+
+    Mirrors :func:`test_skill_md_version_matches_package` for the
+    wheel-bundled skill but operates on the in-repo tracked copies.  See
+    the module docstring above the parametrised paths for the full
+    rationale; the short version is "PR #32 / PR #33 forgot to bump these
+    files and ``popola doctor`` started reporting DRIFT".
+
+    Remediation when this test fires:
+        ``popola skill upgrade --target=<claude|copilot> --project``
+    """
+    assert tracked_path.is_file(), (
+        f"tracked project skill missing: {tracked_path}; PR1 of the "
+        f"v1.3.0 skill bump committed both files — restore via "
+        f"`popola skill upgrade --target=<claude|copilot> --project`."
+    )
+
+    text = tracked_path.read_text(encoding="utf-8")
+    match = _FRONTMATTER_RE.match(text)
+    assert match is not None, (
+        f"{tracked_path} does not start with a `---` YAML frontmatter block."
+    )
+
+    yaml = pytest.importorskip("yaml")
+    parsed = yaml.safe_load(match.group(1))
+    assert isinstance(parsed, dict), (
+        f"{tracked_path} frontmatter is not a mapping: "
+        f"{type(parsed).__name__}"
+    )
+
+    version = parsed.get("version")
+    assert version == __version__, (
+        f"{tracked_path} frontmatter version {version!r} drifts from "
+        f"popolaloom.__version__ {__version__!r}; bump the tracked file "
+        f"alongside the wheel-shipped SKILL.md "
+        f"(`popola skill upgrade --target=<claude|copilot> --project`)."
+    )
+
+
