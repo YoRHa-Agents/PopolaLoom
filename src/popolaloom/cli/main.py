@@ -633,19 +633,44 @@ def dispatch(
                 worker_name_flag=worker_name,
             )
 
-        if not model and cli == "cursor":
+        if cli == "cursor":
+            # v1.5.0 (feedback_for_v1.4.0 §7 issue #2) — propagate the
+            # persisted `[user_preferences.cursor].cli_args` to the
+            # adapter's `extra["cli_args"]` so a user who sets a
+            # standing flag set (e.g. `--trust --no-color`) once via
+            # `popola init prefs --set cursor.cli_args=...` doesn't have
+            # to re-pass them per dispatch. v1.3.0 silently dropped this
+            # because dispatch only consulted `default_model`; v1.5.0
+            # consults BOTH `default_model` and `cli_args` for the local
+            # cursor adapter path. An explicit `--cli-flag cli_args=...`
+            # always wins (we only fill when the key is absent).
             prefs_for_local_default = (
                 prefs_for_dispatch
                 if prefs_for_dispatch is not None
                 else _try_load_dispatch_preferences()
             )
-            local_default_model = (
-                getattr(getattr(prefs_for_local_default, "cursor", None), "default_model", "")
+            cursor_prefs = (
+                getattr(prefs_for_local_default, "cursor", None)
                 if prefs_for_local_default is not None
+                else None
+            )
+            local_default_model = (
+                str(getattr(cursor_prefs, "default_model", "") or "")
+                if cursor_prefs is not None
                 else ""
             )
-            if local_default_model:
+            if not model and local_default_model:
                 _apply_model_flag(extra, local_default_model, cli)
+            pref_cli_args = tuple(
+                getattr(cursor_prefs, "cli_args", ()) or ()
+            ) if cursor_prefs is not None else ()
+            if pref_cli_args and "cli_args" not in extra:
+                extra["cli_args"] = list(pref_cli_args)
+                logger.debug(
+                    "cursor: propagated [user_preferences.cursor].cli_args "
+                    "%r into extra (v1.5.0 feedback_for_v1.4.0 §7 issue #2)",
+                    pref_cli_args,
+                )
 
         if prefs_for_dispatch is None:
             prefs_for_dispatch = _try_load_dispatch_preferences()
