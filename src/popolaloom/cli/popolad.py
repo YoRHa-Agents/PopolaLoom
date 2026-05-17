@@ -342,10 +342,8 @@ def start(
                 "[--reload-env] stopping existing popolad to re-inject env...",
                 err=True,
             )
-            try:
+            with contextlib.suppress(ProcessLookupError):
                 os.kill(existing_pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
             deadline = time.monotonic() + _STOP_GRACE_S
             while time.monotonic() < deadline:
                 if not _pid_alive(existing_pid):

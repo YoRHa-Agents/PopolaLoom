@@ -2381,18 +2381,17 @@ def _run_preferences_wizard_step() -> None:
         # existing value (typically ``""`` = unset → "rest" applies).
         cursor_cloud_default_auth_mode = defaults.cursor_cloud.default_auth_mode
         jwt_auth_path = Path.home() / ".config" / "cursor" / "auth.json"
-        if jwt_auth_path.is_file():
-            if cursor_cloud_default_auth_mode != "session-jwt":
-                set_jwt_default = _prompt_pref_bool(
-                    f"Detected cached Cursor JWT at {jwt_auth_path}. "
-                    "Set [user_preferences.cursor-cloud].default_auth_mode "
-                    "= 'session-jwt' so cursor-cloud dispatches use the "
-                    "JWT path by default? (per-dispatch --auth-mode still "
-                    "overrides)",
-                    default=True,
-                )
-                if set_jwt_default:
-                    cursor_cloud_default_auth_mode = "session-jwt"
+        if jwt_auth_path.is_file() and cursor_cloud_default_auth_mode != "session-jwt":
+            set_jwt_default = _prompt_pref_bool(
+                f"Detected cached Cursor JWT at {jwt_auth_path}. "
+                "Set [user_preferences.cursor-cloud].default_auth_mode "
+                "= 'session-jwt' so cursor-cloud dispatches use the "
+                "JWT path by default? (per-dispatch --auth-mode still "
+                "overrides)",
+                default=True,
+            )
+            if set_jwt_default:
+                cursor_cloud_default_auth_mode = "session-jwt"
         # If no JWT and previous value was session-jwt, keep it — the
         # operator may be about to run `cursor login`.
 
