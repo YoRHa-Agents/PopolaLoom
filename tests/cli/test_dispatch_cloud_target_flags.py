@@ -41,7 +41,7 @@ from popolaloom.cli.main import (
 from popolaloom.cli.main import (
     app as main_app,
 )
-from popolaloom.daemon.main import UserPreferencesConfig
+from popolaloom.daemon.main import UserPreferencesConfig, UserPrefsCursorCloud
 
 
 @pytest.fixture
@@ -297,6 +297,39 @@ def test_dispatch_flag_only_routes_to_cursor_cloud(
     assert body["cli"] == "cursor-cloud"
     assert body["extra"]["cloud_target"] == "self-hosted"
     assert body["extra"]["worker_name"] == "probe-w1"
+
+
+def test_dispatch_explicit_rest_auth_overrides_session_jwt_pref_for_named_worker(
+    isolated_popola_home: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Explicit REST path-A must not be upgraded by default_auth_mode prefs."""
+    write_user_preferences_for_cli(
+        UserPreferencesConfig(
+            cursor_cloud=UserPrefsCursorCloud(default_auth_mode="session-jwt"),
+        )
+    )
+    mock_client = _mock_dispatch_client(monkeypatch, "rest-path-a-worker-1234")
+
+    result = runner.invoke(
+        main_app,
+        [
+            "dispatch",
+            "claim named worker",
+            "--cloud-target=self-hosted",
+            "--worker-name=probe-w1",
+            "--auth-mode=rest",
+        ],
+    )
+
+    assert result.exit_code == 0, _combined_output(result)
+    assert "[prefs] applying" not in _combined_output(result)
+    body = _posted_body(mock_client)
+    assert body["cli"] == "cursor-cloud"
+    assert body["extra"]["cloud_target"] == "self-hosted"
+    assert body["extra"]["worker_name"] == "probe-w1"
+    assert "__auth_mode__" not in body["extra"]
 
 
 def test_dispatch_flag_overrides_pref(

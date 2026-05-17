@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import click
 import httpx
 import typer
 from rich.console import Console
@@ -174,6 +175,23 @@ _VALID_CLOUD_TARGETS_DISPATCH: frozenset[str] = frozenset(
 must collapse it to ``self-hosted`` or ``cursor-managed`` BEFORE leaving the
 CLI process (DECISIONS Q-6, PLAN B3 AC 3).
 """
+
+
+def _option_was_set_on_command_line(param_name: str) -> bool:
+    """Return whether Click saw ``param_name`` from the current command line."""
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return False
+    try:
+        source = ctx.get_parameter_source(param_name)
+    except (AttributeError, RuntimeError, KeyError):
+        logger.debug(
+            "could not inspect Click parameter source for %s; treating as default",
+            param_name,
+            exc_info=True,
+        )
+        return False
+    return source is click.core.ParameterSource.COMMANDLINE
 
 
 @app.callback()
@@ -679,6 +697,7 @@ def dispatch(
             extra,
             cli=cli,
             auth_mode=auth_mode,
+            auth_mode_explicit=_option_was_set_on_command_line("auth_mode"),
             mode=mode,
             max_mode=max_mode,
             effort=effort,
@@ -2196,6 +2215,7 @@ def _apply_path_b_flags(
     *,
     cli: str,
     auth_mode: str,
+    auth_mode_explicit: bool | None = None,
     mode: str,
     max_mode: bool,
     effort: str,
@@ -2246,15 +2266,15 @@ def _apply_path_b_flags(
     if raw_auth == "jwt":
         raw_auth = "session-jwt"
     # v1.5.0 Phase H — consult `[user_preferences.cursor-cloud].default_auth_mode`
-    # when the operator left the CLI flag at its default ``"rest"``.
+    # only when the operator left the CLI flag at its default ``"rest"``.
     # Pref==session-jwt + CLI==rest (default) → upgrade to session-jwt
     # (no Silent Failure: a stderr `[prefs] ...` line announces the
     # override so the operator sees what's happening). The dispatch CLI
-    # ALWAYS wins when the operator explicitly passed `--auth-mode=...`,
-    # but Typer doesn't surface "was default vs explicit"; we use the
-    # heuristic "raw==rest + non-empty pref override" because the pref
-    # store doesn't carry the empty sentinel.
-    if raw_auth == "rest" and prefs is not None:
+    # ALWAYS wins when the operator explicitly passed `--auth-mode=...`;
+    # the command path provides that bit via Click's parameter-source API.
+    # Direct unit calls may leave auth_mode_explicit as None, preserving the
+    # historical "raw==rest + non-empty pref override" behavior.
+    if raw_auth == "rest" and prefs is not None and not auth_mode_explicit:
         cursor_cloud_prefs_node = getattr(prefs, "cursor_cloud", None)
         pref_auth = (
             str(getattr(cursor_cloud_prefs_node, "default_auth_mode", "") or "")
