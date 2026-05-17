@@ -29,9 +29,9 @@ What is covered (per PLAN.md D1 AC 3-7):
   400) — i.e. the early-refuse and late-catch paths produce the same
   typed error.
 - **Test 4** ``test_cleanup_archives_each_created_agent`` — exercises the
-  same ``_request_json("DELETE", ...)`` cleanup primitive the session
+  same ``_request_json("POST", .../archive)`` cleanup primitive the session
   teardown uses, then asserts ``GET /v1/agents?includeArchived=false``
-  no longer lists the deleted ``bc-*`` id (so the cleanup contract is
+  no longer lists the archived ``bc-*`` id (so the cleanup contract is
   observably enforced from within the test, not just at teardown).
 - **Test 5** ``test_workers_list_includes_probe_worker_when_started`` —
   additionally gated by ``POPOLA_PROBE_WORKER_NAME``; asserts
@@ -44,17 +44,17 @@ yields a ``(client, created_agents)`` tuple. Every test that creates a
 ``bc-*`` agent appends the id to ``created_agents`` BEFORE making any
 other assertion, so a failing assertion later in the same test still
 gets cleaned up. Teardown iterates ``created_agents`` and calls
-``client._request_json("DELETE", f"/v1/agents/{id}")`` on each id;
-individual delete failures are logged at WARN (best-effort sweep — one
+``client._request_json("POST", f"/v1/agents/{id}/archive")`` on each id;
+individual archive failures are logged at WARN (best-effort sweep — one
 stale id never blocks the remaining cleanups). Per the No-Silent-Failures
 workspace rule, every swallowed exception is logged with full context
 including the offending agent id.
 
-Cost-control (PLAN.md D1 AC 8 — budget ≤ 10 POST + 10 DELETE per
+Cost-control (PLAN.md D1 AC 8 — budget ≤ 10 POST + 10 archive per
 session): the 5 tests issue at most **3** ``POST /v1/agents`` calls
-(Tests 1, 2, 4) and at most **4** ``DELETE /v1/agents/{id}`` calls
+(Tests 1, 2, 4) and at most **4** ``POST /v1/agents/{id}/archive`` calls
 (Test 4 inline + teardown of Tests 1+2; Test 4's cleanup id is removed
-from the tracker so teardown does not double-delete). Test 3 raises
+from the tracker so teardown does not double-archive). Test 3 raises
 BEFORE its POST — it costs one ``GET /v1/repositories`` (the pre-flight)
 plus zero POSTs. Test 5 calls only ``GET /v0/private-workers``. The
 session also issues one ``GET /v1/me`` at fixture setup as a sanity
@@ -113,7 +113,7 @@ _GITHUB_TEST_REPO_URL = "https://github.com/octocat/Hello-World"
 # can attribute leftover smoke agents to this test file. The prefix never
 # influences the cleanup correctness (which is id-based) — it only aids
 # manual diagnosis if the teardown ever fails to archive an agent.
-_TEST_PROMPT_PREFIX = "popola-loom v0.10.0 D1 smoke probe — no-op, ignore"
+_TEST_PROMPT_PREFIX = "popola-loom v1.5.0 REST env=machine smoke probe - no-op, ignore"
 
 # Default probe-worker name when ``POPOLA_PROBE_WORKER_NAME`` is unset.
 # Used only by Test 2 (``env={type:'machine', name:<X>}``); the gateway
@@ -123,13 +123,12 @@ _TEST_PROMPT_PREFIX = "popola-loom v0.10.0 D1 smoke probe — no-op, ignore"
 # name resolves to a real worker — and skips when the env var is unset.
 _DEFAULT_PROBE_WORKER_NAME = "popola-probe-w1"
 
-# Model id passed to ``create_agent``. Pinned to ``"composer-2"`` to
-# match the existing ``tests/real_cursor_cloud/`` smoke (which has been
-# stable in CI), not to ``"default"`` — the model arg is orthogonal to
-# the env-shape pivot under test, so we use the known-working value
-# rather than coupling this Tier-4 smoke to PLAN A1's separate default-
-# fallback rename.
-_TEST_MODEL_ID = "composer-2"
+# Model id passed to ``create_agent``. ``composer-2`` used to be the
+# stable live-smoke model, but Cursor's REST gateway now rejects it with
+# ``invalid_model``. v1.5.0 validation uses the same model requested by
+# the self-hosted-worker handoff so the probe reaches the env-routing
+# assertion instead of failing at model validation.
+_TEST_MODEL_ID = "gpt-5.5"
 
 
 def _api_key_or_skip() -> str:
@@ -155,7 +154,7 @@ def live_client() -> Generator[tuple[CloudCursorClient, list[str]], None, None]:
     """Session-scoped (client, created_agents) pair with auto-archive teardown.
 
     Per PLAN.md D1 AC 6 — the teardown calls
-    ``client._request_json("DELETE", f"/v1/agents/{id}")`` on every
+    ``client._request_json("POST", f"/v1/agents/{id}/archive")`` on every
     ``bc-*`` id appended to ``created_agents`` during the session. Tests
     that create an agent MUST append the id BEFORE any other assertion
     so the teardown still fires when an assertion later in the same
@@ -209,8 +208,8 @@ def live_client() -> Generator[tuple[CloudCursorClient, list[str]], None, None]:
             for agent_id in list(created_agents):
                 try:
                     client._request_json(  # noqa: SLF001
-                        "DELETE",
-                        f"/v1/agents/{agent_id}",
+                        "POST",
+                        f"/v1/agents/{agent_id}/archive",
                     )
                 except Exception as exc:
                     # Best-effort sweep: log every cleanup failure with the
@@ -412,15 +411,14 @@ def test_github_app_preflight_refusal_when_repositories_empty(
 def test_cleanup_archives_each_created_agent(
     live_client: tuple[CloudCursorClient, list[str]],
 ) -> None:
-    """AC 6 — exercise the same DELETE primitive the teardown uses; assert listing excludes.
+    """AC 6 — exercise the same archive primitive the teardown uses; assert listing excludes.
 
     Mechanism: this test creates a fresh ``bc-*`` agent, immediately
-    deletes it via the SAME ``_request_json("DELETE", ...)`` primitive
+    archives it via the SAME ``_request_json("POST", .../archive)`` primitive
     the session-scoped teardown uses, then asserts
     ``GET /v1/agents?includeArchived=false`` no longer returns the id.
-    The deleted id is removed from ``created_agents`` so the teardown
-    does not double-delete (a second DELETE on an archived agent
-    typically 404s — handled by the teardown's swallow-and-log path).
+    The archived id is removed from ``created_agents`` so the teardown
+    does not double-archive.
 
     Note: this assertion does NOT check for absence of all
     ``_TEST_PROMPT_PREFIX``-named agents in the listing — Tests 1 and 2
@@ -441,8 +439,8 @@ def test_cleanup_archives_each_created_agent(
     assert agent_id.startswith("bc-")
 
     client._request_json(  # noqa: SLF001
-        "DELETE",
-        f"/v1/agents/{agent_id}",
+        "POST",
+        f"/v1/agents/{agent_id}/archive",
     )
     if agent_id in created_agents:
         created_agents.remove(agent_id)
@@ -459,7 +457,7 @@ def test_cleanup_archives_each_created_agent(
     )
     listed_ids = {row.get("id") for row in items if isinstance(row, dict)}
     assert agent_id not in listed_ids, (
-        f"agent {agent_id!r} was DELETEd but still appears in "
+        f"agent {agent_id!r} was archived but still appears in "
         f"GET /v1/agents?includeArchived=false (listed_ids sample: "
         f"{sorted(i for i in listed_ids if isinstance(i, str))[:5]!r}, "
         f"total listed={len(listed_ids)})"
