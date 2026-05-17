@@ -45,6 +45,7 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import TYPE_CHECKING, Any, cast
 
+import click
 import httpx
 import typer
 from rich.console import Console
@@ -174,6 +175,23 @@ _VALID_CLOUD_TARGETS_DISPATCH: frozenset[str] = frozenset(
 must collapse it to ``self-hosted`` or ``cursor-managed`` BEFORE leaving the
 CLI process (DECISIONS Q-6, PLAN B3 AC 3).
 """
+
+
+def _option_was_set_on_command_line(param_name: str) -> bool:
+    """Return whether Click saw ``param_name`` from the current command line."""
+    ctx = click.get_current_context(silent=True)
+    if ctx is None:
+        return False
+    try:
+        source = ctx.get_parameter_source(param_name)
+    except (AttributeError, RuntimeError, KeyError):
+        logger.debug(
+            "could not inspect Click parameter source for %s; treating as default",
+            param_name,
+            exc_info=True,
+        )
+        return False
+    return source is click.core.ParameterSource.COMMANDLINE
 
 
 @app.callback()
@@ -459,6 +477,71 @@ def dispatch(
             "标志预设;需要 --auth-mode=session-jwt。"
         ),
     ),
+    # v1.5.0 — Path-B "skip branch / PR" knobs (feedback_for_v1.4.0 G4).
+    # These mirror the equivalent Cursor web-UI toggles. Defaults match
+    # the historical Path-B behaviour so existing dispatches see no
+    # change; opt-in via the negated flag (e.g. --no-auto-branch).
+    auto_branch: bool = typer.Option(
+        True,
+        "--auto-branch/--no-auto-branch",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — toggle Cursor's auto-branch creation "
+            "on the agent worker (path-B only). Default ON matches the "
+            "Cursor web-UI default. Use --no-auto-branch to dispatch onto "
+            "the worker's current ref without creating a feature branch. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) 是否在 Worker 上自动创建分支;默认开启,与 Cursor "
+            "网页端一致。--no-auto-branch 跳过分支创建,直接在当前 ref 上派发。"
+        ),
+    ),
+    auto_create_pr: bool = typer.Option(
+        False,
+        "--auto-create-pr/--no-auto-create-pr",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — toggle the auto-create-PR step after "
+            "the agent finishes (path-B only). Default OFF so a JWT-direct "
+            "dispatch does NOT spawn a PR unless the operator opts in. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) Agent 完成后是否自动创建 PR;默认关闭。"
+        ),
+    ),
+    work_on_current_branch: bool = typer.Option(
+        False,
+        "--work-on-current-branch",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — instruct the worker to operate on "
+            "the cwd's current ref rather than checking out a new branch "
+            "(path-B only). Satisfies G4 of feedback_for_v1.4.0 ('跳过 "
+            "git 分支 / PR 相关操作'). Requires --auth-mode=session-jwt + "
+            "--cli=cursor-cloud. "
+            "(实验性) Worker 在当前 ref 上工作,不切分支。"
+        ),
+    ),
+    skip_reviewer_request: bool = typer.Option(
+        False,
+        "--skip-reviewer-request",
+        help=(
+            "EXPERIMENTAL (v1.5.0) — suppress the auto reviewer-request "
+            "on the resulting PR (path-B only). Pairs with --auto-create-pr "
+            "for the 'create PR but don't ping reviewers' workflow. "
+            "Requires --auth-mode=session-jwt + --cli=cursor-cloud. "
+            "(实验性) PR 创建后不发起 Reviewer 请求。"
+        ),
+    ),
+    allow_fallback: bool = typer.Option(
+        False,
+        "--allow-fallback",
+        help=(
+            "v1.5.0 No-Silent-Fallback opt-in: when --cli=<X> is "
+            "unavailable, allow the resolver to walk "
+            "[user_preferences.routing].fallback_chain. Default OFF — "
+            "popola hard-fails when the requested CLI adapter is missing. "
+            "(v1.5.0 no-silent-fallback invariant: explicit opt-in needed "
+            "before popola switches the dispatched CLI adapter.) "
+            "v1.5.0 不静默回退默认约束:除非显式 --allow-fallback,"
+            "否则当请求的 --cli 不可用时直接退出。"
+        ),
+    ),
     events_dir: Path | None = typer.Option(  # noqa: B008
         None,
         "--events-dir",
@@ -556,6 +639,7 @@ def dispatch(
                 prompt=prompt,
                 wizard=wizard,
                 no_wizard=no_wizard,
+                allow_fallback=allow_fallback,
             )
         elif cli == "cursor-cloud":
             prefs_for_dispatch = _load_dispatch_preferences_or_exit()
@@ -567,19 +651,44 @@ def dispatch(
                 worker_name_flag=worker_name,
             )
 
-        if not model and cli == "cursor":
+        if cli == "cursor":
+            # v1.5.0 (feedback_for_v1.4.0 §7 issue #2) — propagate the
+            # persisted `[user_preferences.cursor].cli_args` to the
+            # adapter's `extra["cli_args"]` so a user who sets a
+            # standing flag set (e.g. `--trust --no-color`) once via
+            # `popola init prefs --set cursor.cli_args=...` doesn't have
+            # to re-pass them per dispatch. v1.3.0 silently dropped this
+            # because dispatch only consulted `default_model`; v1.5.0
+            # consults BOTH `default_model` and `cli_args` for the local
+            # cursor adapter path. An explicit `--cli-flag cli_args=...`
+            # always wins (we only fill when the key is absent).
             prefs_for_local_default = (
                 prefs_for_dispatch
                 if prefs_for_dispatch is not None
                 else _try_load_dispatch_preferences()
             )
-            local_default_model = (
-                getattr(getattr(prefs_for_local_default, "cursor", None), "default_model", "")
+            cursor_prefs = (
+                getattr(prefs_for_local_default, "cursor", None)
                 if prefs_for_local_default is not None
+                else None
+            )
+            local_default_model = (
+                str(getattr(cursor_prefs, "default_model", "") or "")
+                if cursor_prefs is not None
                 else ""
             )
-            if local_default_model:
+            if not model and local_default_model:
                 _apply_model_flag(extra, local_default_model, cli)
+            pref_cli_args = tuple(
+                getattr(cursor_prefs, "cli_args", ()) or ()
+            ) if cursor_prefs is not None else ()
+            if pref_cli_args and "cli_args" not in extra:
+                extra["cli_args"] = list(pref_cli_args)
+                logger.debug(
+                    "cursor: propagated [user_preferences.cursor].cli_args "
+                    "%r into extra (v1.5.0 feedback_for_v1.4.0 §7 issue #2)",
+                    pref_cli_args,
+                )
 
         if prefs_for_dispatch is None:
             prefs_for_dispatch = _try_load_dispatch_preferences()
@@ -588,6 +697,7 @@ def dispatch(
             extra,
             cli=cli,
             auth_mode=auth_mode,
+            auth_mode_explicit=_option_was_set_on_command_line("auth_mode"),
             mode=mode,
             max_mode=max_mode,
             effort=effort,
@@ -596,6 +706,10 @@ def dispatch(
             auto_proceed_after_plan=auto_proceed_after_plan,
             preset=preset,
             thinking_level=thinking_level,
+            auto_branch=auto_branch,
+            auto_create_pr=auto_create_pr,
+            work_on_current_branch=work_on_current_branch,
+            skip_reviewer_request=skip_reviewer_request,
             prefs=prefs_for_dispatch,
         )
 
@@ -1727,6 +1841,7 @@ def _select_cli_from_preferences(
     prompt: str = "",
     wizard: bool = False,
     no_wizard: bool = False,
+    allow_fallback: bool = False,
 ) -> tuple[str, dict[str, Any]]:
     """Resolve an omitted ``--cli`` using the present preferences block.
 
@@ -1789,7 +1904,9 @@ def _select_cli_from_preferences(
             err=True,
         )
         raise typer.Exit(code=2)
-    return _select_available_local_cli(cli, prefs, extra=selected_extra)
+    return _select_available_local_cli(
+        cli, prefs, extra=selected_extra, allow_fallback=allow_fallback
+    )
 
 
 def _prompt_cli_from_preferences(prefs: Any) -> str:
@@ -1807,10 +1924,58 @@ def _select_available_local_cli(
     prefs: Any,
     *,
     extra: dict[str, Any],
+    allow_fallback: bool = False,
 ) -> tuple[str, dict[str, Any]]:
-    """Return the first available local CLI from requested + fallback_chain."""
+    """Return the requested local CLI, or walk the fallback chain (opt-in only).
+
+    v1.5.0 No-Silent-Fallback contract (per
+    ``feedback_for_v1.4.0.md`` operator-added hard constraint, surfaced
+    in PLAN §"硬约束 — 禁止 silent fallback"):
+
+    * **Default behaviour (allow_fallback=False)** — when the
+      ``requested`` adapter is unavailable, this function hard-fails
+      with exit code 1 and renders an actionable error pointing at the
+      ``--allow-fallback`` opt-in flag. The persisted
+      ``[user_preferences.routing].fallback_chain`` is NOT consulted.
+      This matches the No-Silent-Failures workspace rule: popola will
+      never silently switch the dispatched CLI adapter without explicit
+      operator consent.
+    * **allow_fallback=True** — the caller has explicitly passed
+      ``--allow-fallback`` on the dispatch CLI; the resolver walks
+      ``prefs.fallback_chain`` as it did pre-v1.5.0 and emits a stderr
+      ``[prefs] (fallback consent acknowledged) ...`` line per
+      switch (No Silent Failures: the switch is visible).
+
+    Failure mode: when every candidate is unavailable, exit 1 with a
+    list of every checked adapter so the operator can diagnose. SSE
+    observability fallbacks (``cloud.sse.fallback_to_poll``) are
+    explicitly OUT OF SCOPE of this invariant per PLAN §硬约束 — they
+    sit at the observability layer, not the dispatch-routing layer.
+    """
+    if _local_cli_available(requested):
+        return requested, extra
+
+    fallback_chain = list(getattr(prefs, "fallback_chain", []) or [])
+
+    if not allow_fallback:
+        typer.echo(
+            f"error: --cli={requested!r} is not available; "
+            f"fallback_chain={fallback_chain!r} ignored. "
+            f"Pass --allow-fallback to opt into auto-switching, OR "
+            f"re-dispatch with an explicit --cli=<X> that is installed. "
+            f"(v1.5.0 no-silent-fallback invariant: popola will NOT "
+            f"switch the dispatched CLI adapter without explicit "
+            f"operator consent.) "
+            f"(--cli={requested!r} 不可用;默认不自动回退到 "
+            f"fallback_chain={fallback_chain!r}。需要显式传 "
+            f"--allow-fallback 才会启用回退,或重新指定 --cli=<X>。)",
+            err=True,
+        )
+        raise typer.Exit(code=1)
+
+    # allow_fallback=True — operator explicitly opted in.
     candidates: list[str] = []
-    for name in [requested, *list(prefs.fallback_chain)]:
+    for name in [requested, *fallback_chain]:
         if name not in candidates:
             candidates.append(name)
 
@@ -1819,7 +1984,9 @@ def _select_available_local_cli(
         if _local_cli_available(candidate):
             if candidate != requested:
                 typer.echo(
-                    f"[prefs] {requested} unavailable; falling back to {candidate}",
+                    f"[prefs] (fallback consent acknowledged) "
+                    f"--cli={requested} unavailable; switched to {candidate} "
+                    f"per fallback_chain",
                     err=True,
                 )
             return candidate, extra
@@ -1827,7 +1994,9 @@ def _select_available_local_cli(
 
     typer.echo(
         "error: no preferred local CLI adapter is available "
-        f"(checked: {', '.join(unavailable)})",
+        f"(checked: {', '.join(unavailable)}). "
+        "Even with --allow-fallback the fallback_chain is exhausted; "
+        "install one of the listed adapters or pick a different --cli.",
         err=True,
     )
     raise typer.Exit(code=1)
@@ -2046,6 +2215,7 @@ def _apply_path_b_flags(
     *,
     cli: str,
     auth_mode: str,
+    auth_mode_explicit: bool | None = None,
     mode: str,
     max_mode: bool,
     effort: str,
@@ -2054,6 +2224,10 @@ def _apply_path_b_flags(
     auto_proceed_after_plan: bool,
     preset: str,
     thinking_level: str = "",
+    auto_branch: bool = True,
+    auto_create_pr: bool = False,
+    work_on_current_branch: bool = False,
+    skip_reviewer_request: bool = False,
     prefs: Any = None,
 ) -> None:
     """Validate Path-B Typer knobs before POST /dispatch (Q-13 / Q-19 / Q-22).
@@ -2091,6 +2265,31 @@ def _apply_path_b_flags(
     raw_auth = auth_mode.strip().replace("_", "-").lower()
     if raw_auth == "jwt":
         raw_auth = "session-jwt"
+    # v1.5.0 Phase H — consult `[user_preferences.cursor-cloud].default_auth_mode`
+    # only when the operator left the CLI flag at its default ``"rest"``.
+    # Pref==session-jwt + CLI==rest (default) → upgrade to session-jwt
+    # (no Silent Failure: a stderr `[prefs] ...` line announces the
+    # override so the operator sees what's happening). The dispatch CLI
+    # ALWAYS wins when the operator explicitly passed `--auth-mode=...`;
+    # the command path provides that bit via Click's parameter-source API.
+    # Direct unit calls may leave auth_mode_explicit as None, preserving the
+    # historical "raw==rest + non-empty pref override" behavior.
+    if raw_auth == "rest" and prefs is not None and not auth_mode_explicit:
+        cursor_cloud_prefs_node = getattr(prefs, "cursor_cloud", None)
+        pref_auth = (
+            str(getattr(cursor_cloud_prefs_node, "default_auth_mode", "") or "")
+            if cursor_cloud_prefs_node is not None
+            else ""
+        )
+        if pref_auth in {"rest", "session-jwt"} and pref_auth != "rest":
+            typer.echo(
+                f"[prefs] applying [user_preferences.cursor-cloud]."
+                f"default_auth_mode={pref_auth!r} "
+                f"(pass --auth-mode=rest explicitly to override). "
+                f"(已应用 default_auth_mode={pref_auth!r})",
+                err=True,
+            )
+            raw_auth = pref_auth
     normalized_auth_modes = frozenset({"rest", "session-jwt"})
     if raw_auth not in normalized_auth_modes:
         typer.echo(
@@ -2223,6 +2422,48 @@ def _apply_path_b_flags(
                 typer.echo(f"hint: {exc.hint}", err=True)
             raise typer.Exit(code=1) from exc
 
+        # v1.5.0 PLAN Phase L empirical finding (post-PR-#36 verification
+        # round, 2026-05-17): Cursor's path-B Connect-RPC
+        # ``StartBackgroundComposerFromSnapshot`` SILENTLY downgrades the
+        # ``env={type:"machine",name:X}`` field to ``env={type:"pool"}``
+        # server-side. Pool routing does NOT pin to the specific named
+        # worker — Cursor's server picks any matching worker from the
+        # user's pool. Direct routing to a NAMED self-hosted worker
+        # (G3 of feedback_for_v1.4.0) requires the REST path-A flow
+        # via ``--auth-mode=rest`` + ``CURSOR_API_KEY``.
+        #
+        # Surfacing this empirically-discovered limitation per the
+        # No-Silent-Fallback invariant: we WARN strongly but do NOT
+        # auto-switch transports. The operator either:
+        #   (a) accepts pool-level routing on path-B (any free worker
+        #       in their pool matching the repo claims the task), OR
+        #   (b) re-dispatches with --auth-mode=rest for guaranteed
+        #       named-worker routing.
+        cloud_target_val = str(extra.get("cloud_target", ""))
+        worker_name_val = str(extra.get("worker_name", ""))
+        if (
+            cloud_target_val == "self-hosted"
+            and worker_name_val
+            and merged.get("env_emit_mode") != "explicit_pool_ack"
+        ):
+            typer.echo(
+                "warn: path-B (--auth-mode=session-jwt) + "
+                f"--cloud-target=self-hosted --worker-name={worker_name_val!r} "
+                "has a known Cursor server-side limitation (v1.5.0 PLAN "
+                "Phase L empirical finding, 2026-05-17): the upstream "
+                "Connect-RPC silently downgrades env={type:machine,name:X} "
+                "to env={type:pool}. The dispatch will still reach a "
+                "worker in your private pool that matches the repo, but "
+                "NOT necessarily the named worker. For guaranteed "
+                "named-worker routing re-dispatch with --auth-mode=rest "
+                "(requires CURSOR_API_KEY). popola does NOT auto-switch "
+                "transports per v1.5.0 no-silent-fallback invariant. "
+                "(path-B + 自托管 + worker-name 组合时 Cursor 服务端会把 "
+                "env 降级到 pool;若需精确路由到指定 Worker,请改用 "
+                "--auth-mode=rest;popola 不会自动切换)",
+                err=True,
+            )
+
         # Inject the Path-B routing marker the supervisor branches on.
         extra["__auth_mode__"] = "session-jwt"
         # Forward every Path-B knob the user / preset resolved into
@@ -2241,10 +2482,24 @@ def _apply_path_b_flags(
         ):
             if key in merged:
                 extra[key] = merged[key]
+        # v1.5.0 — write the new "skip branch / PR" bool knobs into
+        # extras for the supervisor + builder to pick up. Only write
+        # when the value diverges from the default so we don't add
+        # noise to dispatches that didn't opt in.
+        if not auto_branch:
+            extra["auto_branch"] = False
+        if auto_create_pr:
+            extra["auto_create_pr"] = True
+        if work_on_current_branch:
+            extra["work_on_current_branch"] = True
+        if skip_reviewer_request:
+            extra["skip_reviewer_request"] = True
         logger.debug(
             "path-B enabled: mode=%r effort=%r long_running=%r "
             "max_mode=%r time_budget=%r auto_proceed_after_plan=%r "
-            "thinking_level=%r model=%r",
+            "thinking_level=%r model=%r auto_branch=%r "
+            "auto_create_pr=%r work_on_current_branch=%r "
+            "skip_reviewer_request=%r",
             extra.get("mode"),
             extra.get("effort"),
             extra.get("long_running"),
@@ -2253,6 +2508,10 @@ def _apply_path_b_flags(
             extra.get("auto_proceed_after_plan"),
             extra.get("thinking_level"),
             extra.get("model"),
+            extra.get("auto_branch", True),
+            extra.get("auto_create_pr", False),
+            extra.get("work_on_current_branch", False),
+            extra.get("skip_reviewer_request", False),
         )
 
 
@@ -2409,7 +2668,71 @@ def _apply_cloud_preferences(
         )
     if resolved_worker_name:
         out["worker_name"] = resolved_worker_name
+
+    # v1.5.0 (PLAN Phase K hotfix; feedback_for_v1.4.0 G4) — auto-derive
+    # ``repo_url`` from the workspace's git origin when the operator
+    # dispatches to a self-hosted worker without providing one. Cursor's
+    # path-B body (and the REST adapter's _normalize_cloud_extra) both
+    # REQUIRE ``repos[0].url`` even when the worker checks out from
+    # its own local clone (i.e. with --work-on-current-branch). G4's
+    # acceptance is "argv doesn't contain --repo-url=..." — auto-deriving
+    # satisfies that without dropping the field from the wire.
+    if (
+        resolved_target == "self-hosted"
+        and "repo_url" not in out
+        and "pr_url" not in out
+    ):
+        derived_repo_url = _derive_workspace_repo_url(cwd)
+        if derived_repo_url:
+            out["repo_url"] = derived_repo_url
+            typer.echo(
+                f"[prefs] auto-derived repo_url={derived_repo_url!r} from "
+                f"workspace git remote (v1.5.0; pass --cli-flag repo_url=<X> "
+                f"to override). "
+                f"(已从 workspace git remote 自动派生 repo_url)",
+                err=True,
+            )
     return out
+
+
+def _derive_workspace_repo_url(cwd: Path | None) -> str | None:
+    """Return ``git remote get-url origin`` for ``cwd`` (or :data:`None`).
+
+    Used by :func:`_apply_cloud_preferences` to satisfy the v1.5.0
+    feedback G4 contract: the operator shouldn't have to pass
+    ``--cli-flag repo_url=<X>`` for a self-hosted-worker dispatch.
+    Best-effort; returns :data:`None` on any failure (not a git repo,
+    no origin remote, git binary missing, etc.) so the caller can fall
+    through to the existing error path with full diagnostic context.
+    """
+    import subprocess
+
+    repo_root = (cwd or Path.cwd()).expanduser()
+    try:
+        result = subprocess.run(
+            ["git", "remote", "get-url", "origin"],
+            cwd=str(repo_root),
+            capture_output=True,
+            check=False,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return None
+    if result.returncode != 0:
+        return None
+    raw = result.stdout.decode("utf-8", errors="replace").strip()
+    if not raw:
+        return None
+    # Normalize the common ssh form ``git@github.com:owner/repo[.git]`` to
+    # ``https://github.com/owner/repo`` so the value lands in the same
+    # shape Cursor's BackgroundComposerService expects on path-B (and
+    # the REST adapter's snapshotNameOrId derivation strips ``.git``
+    # downstream regardless).
+    if raw.startswith("git@") and ":" in raw:
+        host, _, path = raw.partition(":")
+        host = host[len("git@"):]
+        raw = f"https://{host}/{path}"
+    return raw
 
 
 def _detect_self_hosted_worker_name(

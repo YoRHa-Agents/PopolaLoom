@@ -709,8 +709,11 @@ def _keyring_set(
             "keyring extra is not installed; "
             "re-run `./install.sh install --with-credentials` "
             "(or `./install.sh update --with-credentials` on existing installs) "
-            "to add it, or set `CURSOR_API_KEY` in the env / a 0o600 `.env` "
-            "(precedence #2 fallback per credentials.py)"
+            "to add it, or set `CURSOR_API_KEY` in the env / a 0o600 "
+            "`~/.popola/cursor_api_key.env` "
+            "(precedence #2 fallback per credentials.py; v1.5.0 — "
+            "the auto-source helper reads exactly this path, NOT a "
+            "generic `.env` in cwd)"
         )
     try:
         keyring_mod.set_password(service, username, value)  # type: ignore[attr-defined]

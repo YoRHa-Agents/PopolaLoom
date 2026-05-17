@@ -444,3 +444,200 @@ def test_dispatch_help_marks_path_b_as_experimental() -> None:
     typer_option = auth_mode_param.default
     help_text = getattr(typer_option, "help", "")
     assert "EXPERIMENTAL" in help_text
+
+
+# ── v1.5.0 — Path-B skip-branch / PR Typer flags ────────────────────
+
+
+def test_dispatch_signature_exposes_v1_5_0_path_b_flags() -> None:
+    """v1.5.0 — all 5 new Typer flags appear in the dispatch signature."""
+    import inspect
+
+    from popolaloom.cli.main import dispatch as _dispatch_fn
+
+    params = inspect.signature(_dispatch_fn).parameters
+    for needle in (
+        "auto_branch",
+        "auto_create_pr",
+        "work_on_current_branch",
+        "skip_reviewer_request",
+        "allow_fallback",
+    ):
+        assert needle in params, (
+            f"v1.5.0 dispatch must expose {needle}: {sorted(params)}"
+        )
+
+
+def test_apply_path_b_flags_no_auto_branch_writes_extras() -> None:
+    """v1.5.0 — passing ``auto_branch=False`` writes ``extra['auto_branch']``."""
+    pytest.importorskip("popolaloom.cloud.internal.jwt_auth")
+    import popolaloom.cloud.internal.jwt_auth as _jwt_mod
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="hdr.body.sig",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=2_000_000_000,
+    )
+
+    original_loader = _jwt_mod.load_jwt_bundle
+    _jwt_mod.load_jwt_bundle = lambda: fake_bundle  # type: ignore[assignment]
+    try:
+        extra: dict[str, object] = {}
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+            auto_branch=False,
+        )
+    finally:
+        _jwt_mod.load_jwt_bundle = original_loader  # type: ignore[assignment]
+
+    assert extra["auto_branch"] is False
+
+
+def test_apply_path_b_flags_skip_pr_knobs_write_extras() -> None:
+    """v1.5.0 — all 3 skip-PR knobs land in extras when True."""
+    pytest.importorskip("popolaloom.cloud.internal.jwt_auth")
+    import popolaloom.cloud.internal.jwt_auth as _jwt_mod
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="hdr.body.sig",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=2_000_000_000,
+    )
+
+    original_loader = _jwt_mod.load_jwt_bundle
+    _jwt_mod.load_jwt_bundle = lambda: fake_bundle  # type: ignore[assignment]
+    try:
+        extra: dict[str, object] = {}
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+            auto_create_pr=True,
+            work_on_current_branch=True,
+            skip_reviewer_request=True,
+        )
+    finally:
+        _jwt_mod.load_jwt_bundle = original_loader  # type: ignore[assignment]
+
+    assert extra["auto_create_pr"] is True
+    assert extra["work_on_current_branch"] is True
+    assert extra["skip_reviewer_request"] is True
+
+
+def test_session_jwt_self_hosted_worker_combo_emits_pool_downgrade_warn(
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """v1.5.0 PLAN Phase L — operator combining session-jwt + self-hosted +
+    worker_name gets a strong stderr warning about Cursor's path-B server
+    silently downgrading env={type:machine,name:X} to env={type:pool}.
+
+    Per the No-Silent-Fallback invariant we do NOT auto-switch transports;
+    the warning surfaces the empirically-discovered upstream limitation and
+    points at the REST workaround. Verified live against ``api2.cursor.sh``
+    2026-05-17 (Cursor's view: env type downgraded to ``pool``).
+    """
+    pytest.importorskip("popolaloom.cloud.internal.jwt_auth")
+    import popolaloom.cloud.internal.jwt_auth as _jwt_mod
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="hdr.body.sig",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=2_000_000_000,
+    )
+    original_loader = _jwt_mod.load_jwt_bundle
+    _jwt_mod.load_jwt_bundle = lambda: fake_bundle  # type: ignore[assignment]
+    try:
+        # Mirrors the marker shape `_apply_cloud_preferences` would
+        # produce for `--cloud-target=self-hosted --worker-name=<X>`.
+        extra: dict[str, object] = {
+            "cloud_target": "self-hosted",
+            "worker_name": "popolaloom-dev-worker-v15",
+        }
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+        )
+    finally:
+        _jwt_mod.load_jwt_bundle = original_loader  # type: ignore[assignment]
+
+    captured = capsys.readouterr()
+    combined = captured.err + captured.out
+    assert "path-B" in combined or "session-jwt" in combined
+    assert "popolaloom-dev-worker-v15" in combined
+    assert "downgrades" in combined
+    assert "pool" in combined
+    assert "--auth-mode=rest" in combined
+    assert "no-silent-fallback" in combined
+
+
+def test_apply_path_b_flags_default_auto_branch_not_written() -> None:
+    """v1.5.0 — default ``auto_branch=True`` is the supervisor's default;
+    don't write it to extras to avoid noise on dispatches that didn't
+    opt in to the v1.5.0 flag surface.
+    """
+    pytest.importorskip("popolaloom.cloud.internal.jwt_auth")
+    import popolaloom.cloud.internal.jwt_auth as _jwt_mod
+    from popolaloom.cloud.internal.jwt_auth import JWTBundle
+
+    fake_bundle = JWTBundle(
+        access_token="hdr.body.sig",
+        refresh_token=None,
+        source="env",
+        path=None,
+        exp_unix_s=2_000_000_000,
+    )
+    original_loader = _jwt_mod.load_jwt_bundle
+    _jwt_mod.load_jwt_bundle = lambda: fake_bundle  # type: ignore[assignment]
+    try:
+        extra: dict[str, object] = {}
+        _apply_path_b_flags(
+            extra,
+            cli="cursor-cloud",
+            auth_mode="session-jwt",
+            mode="",
+            max_mode=False,
+            effort="",
+            time_budget="",
+            long_running=False,
+            auto_proceed_after_plan=False,
+            preset="",
+        )
+    finally:
+        _jwt_mod.load_jwt_bundle = original_loader  # type: ignore[assignment]
+    assert "auto_branch" not in extra
+    assert "auto_create_pr" not in extra
+    assert "work_on_current_branch" not in extra
+    assert "skip_reviewer_request" not in extra

@@ -420,6 +420,20 @@ def test_store_raises_when_keyring_extra_missing(
     assert "./install.sh install --with-credentials" in msg
     assert "pip install" not in msg
     assert "popolaloom[credentials]" not in msg
+    # v1.5.0 (feedback_for_v1.4.0 §5 issue #4): the hint MUST point at
+    # the real cursor_api_key.env path, NOT a misleading bare ".env"
+    # (operators were writing ~/.popola/.env after seeing the v1.4.x
+    # copy and the daemon never picked it up).
+    assert "cursor_api_key.env" in msg, (
+        f"hint must reference ~/.popola/cursor_api_key.env, got: {msg!r}"
+    )
+    # Defensive: must not surface the misleading bare ".env" literal
+    # (i.e. ".env" appearing as its own standalone backtick-quoted token).
+    # Substring '.env' alone is allowed because it appears inside
+    # 'cursor_api_key.env'; we check the misleading composite phrase.
+    assert "a 0o600 `.env`" not in msg
+    assert "a 0o600 .env " not in msg
+    assert "or a 0o600 .env" not in msg
 
 
 def test_delete_is_idempotent(

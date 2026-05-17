@@ -398,3 +398,202 @@ def test_path_b_branch_skips_when_auth_mode_marker_absent(
         "REST CloudCursorClient.create_agent MUST be called when "
         f"__auth_mode__ marker is absent; got rest_calls={rest_calls}"
     )
+
+
+# ── v1.5.0 — extras passthrough to build_start_composer_request ────
+
+
+def test_path_b_branch_passes_worker_name_to_builder(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+) -> None:
+    """v1.5.0 — ``extra['worker_name']`` reaches builder as ``target_machine_name``
+    and emits ``env={"type":"machine","name":<X>}`` on the wire.
+    """
+    sup, _, log, task_id = cloud_task_env
+    captured_body: dict[str, Any] = {}
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            status_code=200,
+            json={"background_composer_id": "bc-v15-worker"},
+        )
+
+    fake_client = httpx.Client(transport=httpx.MockTransport(_handle))
+
+    from popolaloom.cloud.internal import (
+        CursorCloudInternalClient as _RealClient,
+    )
+
+    def _make_client(bundle: JWTBundle, **_kw: Any) -> _RealClient:
+        return _RealClient(bundle, http_client=fake_client)
+
+    cmd = _marker_cmd(
+        "v1.5 worker dispatch smoke",
+        {
+            "__auth_mode__": "session-jwt",
+            "repo_url": "https://github.com/test/repo",
+            "starting_ref": "main",
+            "worker_name": "popolaloom-dev-worker-v15",
+            "auto_branch": False,
+            "auto_create_pr": True,
+            "work_on_current_branch": True,
+            "skip_reviewer_request": True,
+        },
+    )
+
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=_fake_bundle(),
+    ), patch(
+        "popolaloom.cloud.internal.CursorCloudInternalClient",
+        side_effect=_make_client,
+    ):
+        sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+    fake_client.close()
+
+    assert captured_body.get("env") == {
+        "type": "machine",
+        "name": "popolaloom-dev-worker-v15",
+    }
+    assert captured_body["autoBranch"] is False
+    assert captured_body["autoCreatePr"] is True
+    assert captured_body["workOnCurrentBranch"] is True
+    assert captured_body["skipReviewerRequest"] is True
+
+    log.fsync()
+    queued = next(e for e in log.tail() if e["type"] == "cloud.queued")
+    assert queued["data"]["worker_name"] == "popolaloom-dev-worker-v15"
+    assert queued["data"]["env_emit_mode"] == "machine"
+    assert queued["data"]["auto_branch"] is False
+
+
+def test_path_b_branch_env_emit_mode_label_drops_env(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+) -> None:
+    """v1.5.0 escape hatch — ``env_emit_mode=label`` drops the ``env`` field."""
+    sup, _, log, task_id = cloud_task_env
+    captured_body: dict[str, Any] = {}
+
+    def _handle(request: httpx.Request) -> httpx.Response:
+        captured_body.update(json.loads(request.content.decode("utf-8")))
+        return httpx.Response(
+            status_code=200,
+            json={"background_composer_id": "bc-v15-label"},
+        )
+
+    fake_client = httpx.Client(transport=httpx.MockTransport(_handle))
+
+    from popolaloom.cloud.internal import (
+        CursorCloudInternalClient as _RealClient,
+    )
+
+    def _make_client(bundle: JWTBundle, **_kw: Any) -> _RealClient:
+        return _RealClient(bundle, http_client=fake_client)
+
+    cmd = _marker_cmd(
+        "label-mode smoke",
+        {
+            "__auth_mode__": "session-jwt",
+            "repo_url": "https://github.com/test/repo",
+            "starting_ref": "main",
+            "worker_name": "should-not-appear-in-env",
+            "env_emit_mode": "label",
+        },
+    )
+
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=_fake_bundle(),
+    ), patch(
+        "popolaloom.cloud.internal.CursorCloudInternalClient",
+        side_effect=_make_client,
+    ):
+        sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+    fake_client.close()
+
+    assert "env" not in captured_body
+    # snapshot is normalized when env_emit_mode=label
+    assert captured_body["snapshotNameOrId"] == "github.com/test/repo"
+
+
+def test_path_b_branch_initial_run_id_seeded_to_state(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+) -> None:
+    """v1.5.0 — response ``initial_run_id`` is forwarded into TaskHandle
+    and the ``cloud.queued`` event payload (so SSE / attach can
+    correlate without an extra round-trip).
+    """
+    sup, store, log, task_id = cloud_task_env
+
+    def _handle(_req: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            status_code=200,
+            json={
+                "composer": {"bcId": "bc-with-run"},
+                "initialRunId": "run-12345",
+            },
+        )
+
+    fake_client = httpx.Client(transport=httpx.MockTransport(_handle))
+
+    from popolaloom.cloud.internal import (
+        CursorCloudInternalClient as _RealClient,
+    )
+
+    def _make_client(bundle: JWTBundle, **_kw: Any) -> _RealClient:
+        return _RealClient(bundle, http_client=fake_client)
+
+    cmd = _marker_cmd(
+        "initial run id seed smoke",
+        {
+            "__auth_mode__": "session-jwt",
+            "repo_url": "https://github.com/test/repo",
+            "starting_ref": "main",
+        },
+    )
+
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=_fake_bundle(),
+    ), patch(
+        "popolaloom.cloud.internal.CursorCloudInternalClient",
+        side_effect=_make_client,
+    ):
+        sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+    fake_client.close()
+
+    handle = store.get(task_id)
+    assert handle is not None
+    assert handle.cursor_agent_id == "bc-with-run"
+    assert handle.cursor_run_id == "run-12345"
+
+    log.fsync()
+    queued = next(e for e in log.tail() if e["type"] == "cloud.queued")
+    assert queued["data"]["run_id"] == "run-12345"
+
+
+def test_path_b_branch_rejects_invalid_worker_name_type(
+    cloud_task_env: tuple[Supervisor, StateStore, EventLog, str],
+) -> None:
+    """v1.5.0 — wrong-typed ``extra['worker_name']`` → marker_decode_error."""
+    sup, _, log, task_id = cloud_task_env
+    cmd = _marker_cmd(
+        "bad worker_name type",
+        {
+            "__auth_mode__": "session-jwt",
+            "repo_url": "https://github.com/test/repo",
+            "starting_ref": "main",
+            "worker_name": 12345,  # not a str
+        },
+    )
+    with patch(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        return_value=_fake_bundle(),
+    ):
+        sup.spawn(task_id, cmd, cwd=None, env=None, event_log=log, on_exit=None)
+
+    log.fsync()
+    failed = next(e for e in log.tail() if e["type"] == "task.failed")
+    assert failed["data"]["error_kind"] == "marker_decode_error"
+    assert "worker_name" in failed["data"]["error_detail"]

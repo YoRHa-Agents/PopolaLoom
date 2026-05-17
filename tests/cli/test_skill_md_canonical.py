@@ -182,14 +182,22 @@ def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
         full prose lives in ``docs/USER_GUIDE.md``).
       - **v1.1.0 bump: 34 000 → 40 000** (Workflow 11 guided dispatch
         Q&A + Workflow 12 Path-B advanced dispatch).
-    Any further growth past 40 000 must re-trigger the trim-vs-bump
+      - **v1.5.0 bump: 40 000 → 48 000** (No-Silent-Fallback invariant
+        spec table + popolad 4-tier env injection chain doc + path-B
+        self-hosted worker dispatch quick-reference. The three new
+        subsections under ``## Configuration`` are the operator-facing
+        reference for the v1.5.0 contract; trimming them would push
+        operators back to spelunking the CHANGELOG. ~1.8 KB net growth
+        per PLAN.md Phase J.)
+    Any further growth past 48 000 must re-trigger the trim-vs-bump
     discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v1.1.0 bump: 34_000 → 40_000 (guided dispatch + Path-B workflows)
-    assert 8_000 <= body_len <= 40_000, (
+    # v1.5.0 bump: 40_000 → 48_000 (no-silent-fallback + popolad env chain +
+    # path-B self-hosted worker dispatch subsections)
+    assert 8_000 <= body_len <= 48_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 40 000] token-budget window (target ~ 11 000–36 000)."
+        f"[8 000, 48 000] token-budget window (target ~ 11 000–44 000)."
     )
 
 

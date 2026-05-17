@@ -139,6 +139,15 @@ def test_dispatch_fallback_chain_uses_next_available_cli(
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
+    """v1.5.0 — fallback_chain still works when the operator opts in.
+
+    Pre-v1.5.0 this happened silently (only stderr `[prefs]` WARN); the
+    No-Silent-Fallback invariant added in v1.5.0 now requires the
+    operator to pass ``--allow-fallback`` to opt into auto-switching.
+    Without ``--allow-fallback`` the dispatch hard-fails (covered by
+    :func:`test_dispatch_fallback_chain_hard_fails_without_consent` and
+    the dedicated suite in ``test_no_silent_fallback.py``).
+    """
     write_user_preferences_for_cli(
         UserPreferencesConfig(
             default_local_cli="cursor",
@@ -148,11 +157,38 @@ def test_dispatch_fallback_chain_uses_next_available_cli(
     _patch_availability(monkeypatch, {"cursor": False, "claude": True, "codex": True})
     mock_client = _mock_dispatch_client(monkeypatch, "claude-fallback-1234")
 
-    result = runner.invoke(main_app, ["dispatch", "fall back", "--no-wizard"])
+    result = runner.invoke(
+        main_app, ["dispatch", "fall back", "--no-wizard", "--allow-fallback"]
+    )
 
     assert result.exit_code == 0, _combined_output(result)
     assert _posted_body(mock_client)["cli"] == "claude"
-    assert "[prefs] cursor unavailable; falling back to claude" in _combined_output(result)
+    combined = _combined_output(result)
+    assert "fallback consent acknowledged" in combined
+    assert "switched to claude" in combined
+
+
+def test_dispatch_fallback_chain_hard_fails_without_consent(
+    isolated_popola_home: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.5.0 — without ``--allow-fallback``, dispatch hard-exits 1."""
+    write_user_preferences_for_cli(
+        UserPreferencesConfig(
+            default_local_cli="cursor",
+            fallback_chain=("claude", "codex"),
+        )
+    )
+    _patch_availability(monkeypatch, {"cursor": False, "claude": True, "codex": True})
+
+    result = runner.invoke(main_app, ["dispatch", "fall back", "--no-wizard"])
+
+    assert result.exit_code == 1, _combined_output(result)
+    combined = _combined_output(result)
+    assert "not available" in combined
+    assert "--allow-fallback" in combined
+    assert "no-silent-fallback invariant" in combined
 
 
 def test_dispatch_prompt_each_dispatch_overrides_local_default(

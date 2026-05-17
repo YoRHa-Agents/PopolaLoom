@@ -122,7 +122,9 @@ def _fail_no_keyring(*, action: str) -> NoReturn:
     )
     typer.echo(
         "  - or use the env var path: `export CURSOR_API_KEY=<key>` "
-        "(also picked up from a 0o600 `.env`)",
+        "(also picked up from a 0o600 `~/.popola/cursor_api_key.env`; "
+        "v1.5.0 — the auto-source helper reads exactly this path, "
+        "NOT a generic `.env` in cwd)",
         err=True,
     )
     typer.echo(
