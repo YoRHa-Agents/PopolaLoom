@@ -84,14 +84,18 @@ def test_adapter_is_registered_under_cursor_cloud() -> None:
     assert "cursor-cloud" in list_registered()
 
 
-def test_is_available_requires_env_var(monkeypatch: pytest.MonkeyPatch) -> None:
+def test_is_available_requires_resolvable_credential(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """Availability follows the credential resolver; isolate keyring from real machines."""
     adapter = CursorCloudAdapter()
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    assert adapter.is_available() is False
-    monkeypatch.setenv("CURSOR_API_KEY", "secret")
-    assert adapter.is_available() is True
-    monkeypatch.setenv("CURSOR_API_KEY", "   ")
-    assert adapter.is_available() is False
+    with patch("popolaloom.credentials._keyring_get", return_value=None):
+        monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+        assert adapter.is_available() is False
+        monkeypatch.setenv("CURSOR_API_KEY", "secret")
+        assert adapter.is_available() is True
+        monkeypatch.setenv("CURSOR_API_KEY", "   ")
+        assert adapter.is_available() is False
 
 
 def test_create_agent_uses_basic_auth(router: respx.Router, api_key: str) -> None:

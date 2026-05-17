@@ -2402,6 +2402,48 @@ def _apply_path_b_flags(
                 typer.echo(f"hint: {exc.hint}", err=True)
             raise typer.Exit(code=1) from exc
 
+        # v1.5.0 PLAN Phase L empirical finding (post-PR-#36 verification
+        # round, 2026-05-17): Cursor's path-B Connect-RPC
+        # ``StartBackgroundComposerFromSnapshot`` SILENTLY downgrades the
+        # ``env={type:"machine",name:X}`` field to ``env={type:"pool"}``
+        # server-side. Pool routing does NOT pin to the specific named
+        # worker — Cursor's server picks any matching worker from the
+        # user's pool. Direct routing to a NAMED self-hosted worker
+        # (G3 of feedback_for_v1.4.0) requires the REST path-A flow
+        # via ``--auth-mode=rest`` + ``CURSOR_API_KEY``.
+        #
+        # Surfacing this empirically-discovered limitation per the
+        # No-Silent-Fallback invariant: we WARN strongly but do NOT
+        # auto-switch transports. The operator either:
+        #   (a) accepts pool-level routing on path-B (any free worker
+        #       in their pool matching the repo claims the task), OR
+        #   (b) re-dispatches with --auth-mode=rest for guaranteed
+        #       named-worker routing.
+        cloud_target_val = str(extra.get("cloud_target", ""))
+        worker_name_val = str(extra.get("worker_name", ""))
+        if (
+            cloud_target_val == "self-hosted"
+            and worker_name_val
+            and merged.get("env_emit_mode") != "explicit_pool_ack"
+        ):
+            typer.echo(
+                "warn: path-B (--auth-mode=session-jwt) + "
+                f"--cloud-target=self-hosted --worker-name={worker_name_val!r} "
+                "has a known Cursor server-side limitation (v1.5.0 PLAN "
+                "Phase L empirical finding, 2026-05-17): the upstream "
+                "Connect-RPC silently downgrades env={type:machine,name:X} "
+                "to env={type:pool}. The dispatch will still reach a "
+                "worker in your private pool that matches the repo, but "
+                "NOT necessarily the named worker. For guaranteed "
+                "named-worker routing re-dispatch with --auth-mode=rest "
+                "(requires CURSOR_API_KEY). popola does NOT auto-switch "
+                "transports per v1.5.0 no-silent-fallback invariant. "
+                "(path-B + 自托管 + worker-name 组合时 Cursor 服务端会把 "
+                "env 降级到 pool;若需精确路由到指定 Worker,请改用 "
+                "--auth-mode=rest;popola 不会自动切换)",
+                err=True,
+            )
+
         # Inject the Path-B routing marker the supervisor branches on.
         extra["__auth_mode__"] = "session-jwt"
         # Forward every Path-B knob the user / preset resolved into

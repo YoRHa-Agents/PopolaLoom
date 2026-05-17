@@ -50,6 +50,14 @@ Accumulating for the next v1.5.x patch:
 - `BL-v1.4.x-misleading-missing-api-key-hint` — feedback §5 issue #4. Resolved by Phase F.
 - `BL-v1.4.x-popolad-start-env-injection` — feedback §6 + G8 + G9. Resolved by Phase G.
 
+### Empirical findings (PLAN Phase L, post-PR-#36 verification 2026-05-17)
+
+- **Path-B server-side pool downgrade** — Cursor's `StartBackgroundComposerFromSnapshot` Connect-RPC SILENTLY downgrades `env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side. The request body shape is accepted (200 + `bc_id` + `initial_run_id`), but `GET /v1/agents/<bcId>` returns `env={"type":"pool"}` — the `name` field is dropped. Confirmed empirically via two probes:
+  - Path-B dispatch with `env={type:"machine",name:"popolaloom-dev-worker-v15"}` → Cursor view: `env={"type":"pool"}`; worker `is_in_use:false` 5+ minutes after dispatch.
+  - REST path-A dispatch with identical `env` payload → Cursor view: `env={"type":"machine","name":"popolaloom-dev-worker-v15"}`; worker `is_in_use:true, active_bc_id:<the-bc>` within seconds.
+- **Implication**: Named-worker routing (feedback G3 of `feedback_for_v1.4.0.md`) requires the REST path-A flow. v1.5.0 honors the No-Silent-Fallback invariant by emitting a strong stderr warning at dispatch time when the operator combines `--auth-mode=session-jwt + --cloud-target=self-hosted + --worker-name=<X>`, pointing at the `--auth-mode=rest` workaround. The path-B body still emits `env={type:"machine",name:X}` (compatibility with Cursor's eventual server-side fix is preserved); the WARN documents the current empirical behavior.
+- **GPT-5.5 + long_running incompatibility** — Cursor's path-B server rejects bare `gpt-5.5` when `long_running_agent_mode=true` (grind preset) with `"Model 'gpt-5.5' does not support long-running agent mode."`. The cursor-agent CLI form `gpt-5.5-high` is accepted. v1.5.0's `--cli-flag model_id_override=gpt-5.5-high` escape hatch (risk §B in PLAN.md) is the documented workaround.
+
 ### Migration notes
 
 - **Default-`auth-mode` behaviour shift via pref**: operators who run `popola init` against an environment with a cached Cursor JWT will be prompted to set `default_auth_mode = "session-jwt"`. Accept = subsequent `popola dispatch --cli=cursor-cloud` calls use the JWT path by default. If you decline (or skip the wizard), behaviour is unchanged.

@@ -81,6 +81,15 @@ curl -fsSL http://127.0.0.1:39231/readyz | jq '.claimed'
 popola status $TASK_ID --wait --timeout 1800
 ```
 
+## Empirical limitations (PLAN Phase L verification, 2026-05-17)
+
+Post-PR-#36 live validation surfaced two upstream Cursor-server behaviors that v1.5.0 surfaces transparently (No-Silent-Fallback) but cannot resolve client-side:
+
+1. **Path-B server-side pool downgrade**: Cursor's `StartBackgroundComposerFromSnapshot` Connect-RPC SILENTLY downgrades `env={"type":"machine","name":X}` → `env={"type":"pool"}`. The path-B body shape is accepted (200 + `bc_id`), but the agent is routed to the pool, not the named worker. **Workaround**: for precise named-worker routing, dispatch with `--auth-mode=rest --cloud-target=self-hosted --worker-name=<X>` (verified end-to-end 2026-05-17 — Cursor view shows `env={"type":"machine","name":"popolaloom-dev-worker-v15"}`, worker `is_in_use:true`).
+2. **GPT-5.5 + long_running incompatibility**: Cursor's path-B rejects bare `gpt-5.5` with `long_running_agent_mode=true` (`"Model 'gpt-5.5' does not support long-running agent mode."`). The escape hatch `--cli-flag model_id_override=gpt-5.5-high` (planned risk §B) is the documented workaround.
+
+The dispatch CLI emits a strong stderr warning when `--auth-mode=session-jwt + --cloud-target=self-hosted + --worker-name=<X>` is combined, naming both limitations and the REST workaround.
+
 ## Migration notes
 
 - **`fallback_chain` no longer silent**: a `--cli=cursor` dispatch on a system without Cursor installed now hard-fails (exit 1). Restore old behaviour for a single dispatch with `--allow-fallback`; there's deliberately no persisted opt-in.

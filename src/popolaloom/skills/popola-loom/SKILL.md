@@ -558,10 +558,25 @@ popola dispatch \
   --cloud-target=self-hosted --worker-name=<your-worker> \
   --model=gpt-5.5 --thinking-level=high --preset=grind \
   --no-auto-branch --no-auto-create-pr --work-on-current-branch \
+  --cli-flag model_id_override=gpt-5.5-high \
   "<prompt>"
 ```
 
-Cursor's BackgroundComposerService routes the dispatch to the named worker via `env={"type":"machine","name":<X>}` on the request body. The four new Typer flags (`--no-auto-branch`, `--no-auto-create-pr`, `--work-on-current-branch`, `--skip-reviewer-request`) match the equivalent Cursor web-UI toggles for the "dispatch on the worker's current ref, no PR" workflow.
+Note `--cli-flag model_id_override=gpt-5.5-high`: Cursor's path-B server rejects bare `gpt-5.5` when `long_running_agent_mode=true` (grind preset) with "Model 'gpt-5.5' does not support long-running agent mode"; the `-high` suffix is the cursor-agent CLI form that the path-B accepts.
+
+#### ⚠️ Path-B server-side routing limitation (v1.5.0+ empirical)
+
+Cursor's path-B Connect-RPC `StartBackgroundComposerFromSnapshot` SILENTLY downgrades `env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side. Pool routing picks ANY free worker in your private pool that matches the repo — NOT necessarily the named worker. Empirically verified 2026-05-17 against `api2.cursor.sh`:
+
+- Request body: `env={type:"machine",name:"popolaloom-dev-worker-v15"}`
+- Cursor's response (`GET /v1/agents/<bcId>`): `env={"type":"pool"}` — `name` dropped
+
+**Workarounds** (operator-explicit per the No-Silent-Fallback invariant; popola does NOT auto-switch):
+
+1. **Pool routing is fine** — accept that any free worker in the pool will claim the task (works when you have one worker per repo).
+2. **Need precise named-worker routing** — re-dispatch with `--auth-mode=rest --cloud-target=self-hosted --worker-name=<X>` (requires `CURSOR_API_KEY`). REST path-A confirms `env={type:"machine",name:"<X>"}` and assigns the named worker (verified 2026-05-17).
+
+The dispatch CLI emits a strong stderr warning when the `session-jwt + self-hosted + worker-name` combination is used so the operator sees the limitation at dispatch time.
 
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
