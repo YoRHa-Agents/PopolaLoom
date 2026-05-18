@@ -113,7 +113,7 @@ def test_no_detach_invokes_foreground_subprocess(
     """
     foreground_calls: list[list[str]] = []
 
-    def fake_fg(argv: list[str], *, pool: bool) -> int:
+    def fake_fg(argv: list[str]) -> int:
         foreground_calls.append(list(argv))
         return 0
 

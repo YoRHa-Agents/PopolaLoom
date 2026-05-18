@@ -33,6 +33,19 @@ from popolaloom.cli.main import app as main_app
 from popolaloom.daemon.main import UserPreferencesConfig
 
 
+@pytest.fixture(autouse=True)
+def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.6.0 — ``_apply_path_b_flags`` eagerly verifies the JWT bundle
+    when self-hosted forces ``__auth_mode__=session-jwt``. Tests in
+    this file exercise the no-silent-fallback wire shape rather than
+    JWT auth, so stub the loader so the eager-verify step is a no-op.
+    """
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+
+
 @pytest.fixture
 def isolated_popola_home(
     tmp_path: Path,

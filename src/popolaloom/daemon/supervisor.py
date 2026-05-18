@@ -410,6 +410,34 @@ class Supervisor:
                 error_detail="marker payload requires string 'prompt'",
             )
 
+        # v1.6.0 (feedback_for_v1.5.2 constraint #5) — enforce the
+        # single canonical path at the daemon boundary too: when
+        # ``cloud_target=self-hosted`` the dispatch MUST carry
+        # ``__auth_mode__=session-jwt``. The CLI (`_apply_path_b_flags`)
+        # already forces this, but a legacy CLI pinned by an operator
+        # or a hand-rolled marker payload could still set
+        # ``rest`` — reject defensively with a Path-B-tagged
+        # ``error_kind`` so the constraint is satisfied at the
+        # daemon level as well.
+        if (
+            str(extra.get("cloud_target") or "") == "self-hosted"
+            and extra.get("__auth_mode__") != "session-jwt"
+        ):
+            return _fail(
+                error_kind="invalid_auth_mode_for_self_hosted",
+                error_detail=(
+                    "self-hosted dispatch requires "
+                    "extra.__auth_mode__='session-jwt' (v1.6.0 "
+                    "feedback_for_v1.5.2 constraint #5: self-hosted has "
+                    "exactly ONE canonical transport — Path-B JWT). Got "
+                    f"extra.__auth_mode__={extra.get('__auth_mode__')!r}. "
+                    "Re-dispatch via `popola dispatch ... --cli=cursor-cloud "
+                    "--cloud-target=self-hosted` (the CLI defaults to "
+                    "session-jwt for self-hosted) or "
+                    "--cloud-target=cursor-managed for REST."
+                ),
+            )
+
         # v1.1.0 (Track 6) — Path-B (--auth-mode=session-jwt) branch.
         # The CLI's `_apply_path_b_flags` injects `extra["__auth_mode__"]
         # = "session-jwt"` after eagerly verifying the JWT loads. Here we

@@ -835,11 +835,21 @@ def _build_workspace_worker_dispatch_body(
     starting_ref: str,
     model: str,
 ) -> dict[str, Any]:
-    """Build the direct ``popolad`` dispatch body for ``cursor-cloud``."""
+    """Build the direct ``popolad`` dispatch body for ``cursor-cloud``.
+
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #5): hard-set
+    ``cloud_target="self-hosted"`` + ``__auth_mode__="session-jwt"``
+    so the daemon supervisor routes via the single canonical Path-B
+    JWT path. The CLI's main ``popola dispatch`` path resolves these
+    in ``_apply_cloud_preferences`` / ``_apply_path_b_flags``; this
+    body is built directly so we mirror the same shape explicitly.
+    """
     extra: dict[str, Any] = {
         "worker_name": worker_name,
         "starting_ref": starting_ref,
         "model": model,
+        "cloud_target": "self-hosted",
+        "__auth_mode__": "session-jwt",
     }
     if repo_url is not None:
         extra["repo_url"] = repo_url
@@ -1302,6 +1312,27 @@ def worker_dispatch_cmd(
         if worker is not None and worker.name
         else _default_worker_name(resolved_worker_dir)
     )
+
+    # v1.6.0 (feedback_for_v1.5.2 constraint #5 — single canonical
+    # path): the ``popola cloud worker dispatch`` verb is, by
+    # construction, the self-hosted-target dispatch path. Pre-load the
+    # JWT here so a missing ``~/.config/cursor/auth.json`` surfaces a
+    # friendly ``cursor login`` hint AT this CLI boundary (not later at
+    # the daemon's first RPC). No Silent Failures: any JWTAuthError
+    # propagates to exit 1 with the hint surfaced.
+    from popolaloom.cloud.internal.jwt_auth import JWTAuthError, load_jwt_bundle
+
+    try:
+        load_jwt_bundle()
+    except JWTAuthError as exc:
+        typer.echo(
+            "error: popola cloud worker dispatch needs a Cursor JWT "
+            f"(~/.config/cursor/auth.json or CURSOR_SESSION_JWT env): {exc}",
+            err=True,
+        )
+        if exc.hint:
+            typer.echo(f"hint: {exc.hint}", err=True)
+        raise typer.Exit(code=1) from exc
 
     # v0.10.0 (DECISIONS Q-3 + Q-4 + Q-7): self-hosted worker existence
     # pre-flight. The ``popola cloud worker dispatch`` verb is, by

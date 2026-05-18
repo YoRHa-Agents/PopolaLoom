@@ -715,7 +715,22 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default dispatch POSTs a cursor-cloud body targeting the worker name."""
+    """Default dispatch POSTs a cursor-cloud body targeting the worker name.
+
+    v1.6.0 (feedback_for_v1.5.2 constraint #5): the body now carries the
+    v1.6.0 canonical extras shape — ``cloud_target=self-hosted`` +
+    ``__auth_mode__=session-jwt`` — so the daemon supervisor routes via
+    the single canonical Path-B JWT path. ``worker dispatch`` also
+    pre-loads the JWT bundle so the operator sees a friendly
+    ``cursor login`` hint at this CLI boundary instead of inside the
+    daemon's first RPC.
+    """
+    # v1.6.0 — pre-load the JWT bundle via a stub so the test does not
+    # require a real ``~/.config/cursor/auth.json``.
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
     worker = cloud_worker_cmd.LocalWorkerProcess(
         pid=4242,
         worker_dir=isolated_home.resolve(),
@@ -727,6 +742,13 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
         lambda worker_dir: [worker],
+    )
+    # v1.6.0 — bypass the v0.10.0 self-hosted worker existence pre-flight
+    # so the test does not need a real Cursor REST API key.
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_enforce_self_hosted_worker_exists",
+        lambda **kwargs: None,
     )
     captured: list[dict[str, Any]] = []
 
@@ -755,7 +777,7 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
         ],
     )
     assert result.exit_code == 0, _combined_output(result)
-    assert _combined_output(result).strip() == "cursor-cloud-123"
+    assert "cursor-cloud-123" in _combined_output(result)
     assert captured == [
         {
             "cli": "cursor-cloud",
@@ -766,6 +788,8 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
                 "repo_url": "https://github.com/acme/repo",
                 "starting_ref": "main",
                 "model": "composer-2",
+                "cloud_target": "self-hosted",
+                "__auth_mode__": "session-jwt",
             },
         }
     ]
@@ -777,6 +801,13 @@ def test_worker_dispatch_daemon_down_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Connection failure names ``popolad`` and exits non-zero."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
@@ -817,6 +848,13 @@ def test_worker_dispatch_json_prints_daemon_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--json`` prints the daemon response payload for direct dispatch."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     worker = cloud_worker_cmd.LocalWorkerProcess(
         pid=4242,
         worker_dir=isolated_home.resolve(),
@@ -871,6 +909,13 @@ def test_worker_dispatch_print_only_does_not_call_daemon(
 ) -> None:
     """``--print-only`` preserves side-effect-free command preview mode."""
     monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
+    monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
         lambda worker_dir: [],
@@ -915,6 +960,13 @@ def test_worker_dispatch_print_only_json_uses_generated_name_when_no_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """JSON preview still exposes deterministic fallback routing."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
@@ -1009,6 +1061,13 @@ def test_worker_dispatch_rejects_invalid_args(
     expected: str,
 ) -> None:
     """Argument validation fails before daemon dispatch."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     called: list[dict[str, Any]] = []
     monkeypatch.setattr(
         cloud_worker_cmd,

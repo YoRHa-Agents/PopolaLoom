@@ -395,9 +395,13 @@ def dispatch(
             "unlock --mode/--max-mode/--effort/--time-budget/--long-running/"
             "--auto-proceed-after-plan/--preset). Path-B (session-jwt) is "
             "NOT part of the v1.x SemVer stability surface; Cursor may "
-            "change the wire format without notice. "
+            "change the wire format without notice. v1.6.0 "
+            "(feedback_for_v1.5.2 constraint #5): --cloud-target=self-hosted "
+            "FORCES --auth-mode=session-jwt — an explicit --auth-mode=rest "
+            "with --cloud-target=self-hosted exits 2. "
             "(实验性) cursor-cloud 派发使用的鉴权通道;'rest' 为默认稳定接口,"
             "'session-jwt' 启用实验性 RPC 路径以支持 --mode 等高级控制项。"
+            "v1.6.0 起 --cloud-target=self-hosted 强制 session-jwt。"
         ),
     ),
     mode: str = typer.Option(
@@ -2335,6 +2339,42 @@ def _apply_path_b_flags(
             err=True,
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    # v1.6.0 (feedback_for_v1.5.2 constraint #5 — single canonical path):
+    # when ``cloud_target=self-hosted`` (resolved upstream by
+    # ``_apply_cloud_preferences``), force ``auth_mode=session-jwt``.
+    #   - Operator explicitly passed ``--auth-mode=rest`` for a
+    #     self-hosted dispatch → exit 2 with a bilingual error pointing
+    #     at ``--auth-mode=session-jwt`` (the v1.6.0 single path).
+    #   - Operator left the flag at its default ``"rest"`` → silently
+    #     upgrade to ``session-jwt`` and emit a one-line ``[prefs] ...``
+    #     stderr note so the change is visible (No Silent Failures).
+    cloud_target_resolved = str(extra.get("cloud_target") or "")
+    if cloud_target_resolved == "self-hosted" and raw_auth == "rest":
+        if auth_mode_explicit:
+            typer.echo(
+                "error: --auth-mode=rest is rejected when "
+                "--cloud-target=self-hosted (v1.6.0 feedback_for_v1.5.2 "
+                "constraint #5: self-hosted dispatch has exactly ONE "
+                "canonical path — Path-B JWT direct). Use "
+                "--auth-mode=session-jwt (the implicit default when "
+                "you omit --auth-mode for a self-hosted dispatch), or "
+                "switch to --cloud-target=cursor-managed if you really "
+                "need REST. Hint: run `cursor login` to populate "
+                "~/.config/cursor/auth.json if your JWT is missing. "
+                "(error: --cloud-target=self-hosted 时禁止 --auth-mode=rest;"
+                "请使用 --auth-mode=session-jwt(留空即默认),或改用 "
+                "--cloud-target=cursor-managed)",
+                err=True,
+            )
+            raise typer.Exit(code=_EXIT_INVALID_ARGS)
+        raw_auth = "session-jwt"
+        typer.echo(
+            "[prefs] forcing --auth-mode=session-jwt for "
+            "--cloud-target=self-hosted (v1.6.0 single-path contract). "
+            "(已将 --auth-mode 设为 session-jwt — self-hosted 单路径默认)",
+            err=True,
+        )
 
     auth_mode_normalized = raw_auth
 
