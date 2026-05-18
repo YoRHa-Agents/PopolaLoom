@@ -578,11 +578,16 @@ Cursor's path-B Connect-RPC `StartBackgroundComposerFromSnapshot` SILENTLY downg
 
 The dispatch CLI emits a strong stderr warning when the `session-jwt + self-hosted + worker-name` combination is used so the operator sees the limitation at dispatch time.
 
-#### ⚠️ Cursor REST `is_in_use` clears too eagerly (v1.5.1+ empirical)
+#### ⚠️ Cursor REST `is_in_use` / `lastActivityAt` always null for named workers (v1.5.1+ empirical)
 
-Cursor's `GET /v1/agents/<bc-id>` returns `target.is_in_use=false` while the underlying self-hosted worker is still mid-task — the field clears the moment the agent enters terminal phase or roughly within ~30s of inactivity, **not** when the worker process exits or releases its repo lock. Treating `is_in_use` as a worker-liveness oracle leads to false-positive "worker free" verdicts and double-dispatch races. Empirically verified 2026-05-17 against `api2.cursor.sh`: a `cursor-cloud` task showed `is_in_use=false` in REST while the worker process still held an exclusive lock on the repo's `.git/index.lock` for another ~12 seconds.
+Cursor's `GET /v0/private-workers` returns `is_in_use=null`, `active_bc_id=null`, AND `lastActivityAt=null` for a named self-hosted worker EVEN WHILE the agent is mid-run (`agent.status=ACTIVE`, popola-side `cloud_phase=RUNNING`). The fields never flip to a non-null value during the agent's lifetime, so treating them as a worker-liveness oracle leads to false-positive "worker free" verdicts and double-dispatch races. Empirically verified 2026-05-18 against `api.cursor.com` with `popolaloom-dev-worker-v15`: 5 mid-run snapshots at 30 s intervals (across both `running` and `completed` task states) ALL reported `{is_in_use: null, active_bc_id: null, lastActivityAt: null}` even though the popola-side task definitively reached `cloud_phase=RUNNING` and then `cloud_phase=FINISHED` end-to-end.
 
-**Replacement oracle (G3).** Use the dual signal `agent.target.machine_name` from `GET /v1/agents/<bc-id>` (worker assignment is durable for the agent's lifetime) **plus** the Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` exposed by the worker's own `--management-addr` `/metrics` endpoint. Treat a worker as free only when `now - last_activity_unix_seconds > 60` AND no in-flight agent has `machine_name == <X>`. Do NOT poll `is_in_use` for routing decisions.
+**Replacement oracle (G3).** Use the dual signal:
+
+1. `agent.env` from `GET /v1/agents/<bc-id>` — for a dispatch routed at a named worker, the response contains `env: {"type": "machine", "name": "<your-worker>"}` and this assignment is durable for the agent's lifetime. (NOTE: `agent.target` is `null` in this response shape; the routing target lives in the `env` field instead.)
+2. Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` exposed by the worker's own `--management-addr` `/metrics` endpoint.
+
+Treat a worker as free only when `now - cursor_self_hosted_worker_last_activity_unix_seconds > 60` AND no in-flight agent (any `bc-*` from your `GET /v1/agents`) has `env.type == "machine"` + `env.name == "<X>"`. Do NOT poll `is_in_use` for routing decisions.
 
 #### ⚠️ Cursor REST `model_details=null` for path-A agents (v1.5.1+ empirical)
 
