@@ -51,7 +51,6 @@ from popolaloom.cli.main import app as main_app
 from popolaloom.cloud.preflight import check_github_app_installed
 from popolaloom.daemon import supervisor as sup_mod
 
-
 # ---------------------------------------------------------------------------
 # Shared fixtures
 # ---------------------------------------------------------------------------

@@ -305,6 +305,13 @@ def test_missing_api_key_when_env_unset_and_no_extra_override(
     omits ``error_detail``).
     """
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    # Isolate the OS keyring precedence slot so a developer-stored
+    # CURSOR_API_KEY in the system keychain does not leak into
+    # `resolve_cursor_api_key` and short-circuit this test through the
+    # create_agent 401 branch instead.
+    monkeypatch.setattr(
+        "popolaloom.credentials._import_keyring", lambda: None
+    )
     sup, _, log, task_id = cloud_env
     cmd = _marker_cmd("hi", {"repo_url": "https://github.com/o/r"})
     cb = MagicMock()
