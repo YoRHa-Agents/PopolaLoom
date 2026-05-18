@@ -158,18 +158,39 @@ popola init --dry-run --cursor-api-key "cr_..."
 
 > See: `src/popolaloom/cli/init_cmd.py::_resolve_cursor_api_key_input` + `src/popolaloom/credentials.py::CredentialResolver` + [`Credentials 与安全存储`](#credentials-与安全存储v092)
 
-## Self-hosted worker handoff（v0.9.1+）
+## Self-hosted worker handoff（v0.9.1+；**v1.6.0 单路径**）
 
-`popola cloud worker` 是 Cursor `agent worker` CLI 的薄包装。`debug` 做预检，`start` 启动或复用当前 workspace 的 worker，`status` 读取本机 management server，`handoff` 输出可复制到 Cursor Cloud Agents UI 的 prompt + URL，`dispatch` 则通过 `popolad` 创建一个 popola 可追踪的 `cursor-cloud` 任务。
+<!-- updated: 2026-05-18 -->
+
+`popola cloud worker` 是 Cursor `agent worker` CLI 的薄包装。`debug` 做预检，`start` 启动或复用当前 workspace 的 worker（v1.6.0 起 **仅 My Machines 模式**；`--pool` / `--pool-name` 标志已移除），`status` 读取本机 management server，`handoff` 输出可复制到 Cursor Cloud Agents UI 的 prompt + URL，`dispatch` 则通过 `popolad` 创建一个 popola 可追踪的 Path-B JWT 直连任务。
+
+> **v1.6.0 单路径 self-hosted dispatch**（关闭 [`feedback_for_v1.5.2.md`](../../.local/feedbacks/feedback_for_v1.5.2.md) 的 6 项强约束）：`popola dispatch ... --cloud-target=self-hosted` 走且**只走** Path-B JWT 直连。变更摘要：
+>
+> | v1.5.x | v1.6.0 |
+> |---|---|
+> | `popola cloud worker start --pool` | Click `UsageError`（退 2）—— 改用 `agent worker start --pool` 直接走上游 CLI |
+> | `popola dispatch --cloud-target=self-hosted --auth-mode=rest` | 退 2,提示改用 `--auth-mode=session-jwt`（隐式默认） |
+> | `popola dispatch --cloud-target=self-hosted --allow-fallback` | no-op + 中英双语 WARN（绝不回退到本地 CLI） |
+> | （派发后不打印 URL） | stdout 多打印一行 `view: https://cursor.com/agents/<bcId>` |
+>
+> Managed cloud（`--cloud-target=cursor-managed`）和本地 CLI 派发不变。self-hosted 新形态需要一次性 `cursor login`（生成 `~/.config/cursor/auth.json`）—— 不再需要 `CURSOR_API_KEY`。
 
 ```bash
-popola cloud worker debug --worker-dir "$(pwd)"
-popola cloud worker start --worker-dir "$(pwd)"
+cursor login                                                # 一次性 JWT bootstrap
+popola cloud worker debug --worker-dir "$(pwd)"             # 预检
+popola cloud worker start --worker-dir "$(pwd)"             # My Machines 模式
 popola cloud worker status --management-addr 127.0.0.1:39231 --json
 popola cloud worker handoff --worker-dir "$(pwd)" --prompt "Run the migration smoke"
+
+# v1.6.0 单路径 self-hosted 派发:
+popola dispatch "ship the release notes" \
+  --cloud-target=self-hosted --worker-name=popolaloom-myrepo-deadbeef \
+  --cli-flag repo_url=https://github.com/acme/myrepo
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...
 ```
 
-默认未传 `--name` 时，PopolaLoom 会按 workspace 生成稳定 worker 名，并复用已经存在的同目录 worker；只有明确传 `--allow-duplicate` 才会启动第二个。
+默认未传 `--name` 时，PopolaLoom 会按 workspace 生成稳定 worker 名，并复用已经存在的同目录 worker；只有明确传 `--allow-duplicate` 才会启动第二个。需要 Self-Hosted Pool worker 的运维人员请直接调用 `agent worker start --pool --pool-name <X>`（需 service-account `CURSOR_API_KEY`，详见 [Cursor service accounts 文档](https://cursor.com/docs/account/enterprise/service-accounts)）—— popola v1.6.0 不再包装该路径。
 
 ## 云端派发（v1.0.0-pre.1）
 

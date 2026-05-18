@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.5.1
+version: 1.6.0
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -10,15 +10,15 @@ metadata:
   cliHelp: "popola --help"
 tier: 1
 token_estimate: 3400
-last_updated: "2026-05-17"
+last_updated: "2026-05-18"
 ---
 
-<!-- updated: 2026-05-17; v1.4.0 popola update verb (Python equivalent of install.sh update) -->
+<!-- updated: 2026-05-18; v1.6.0 single-path self-hosted dispatch (closes feedback_for_v1.5.2) -->
 
 
 # PopolaLoom Skill
 
-> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
+> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。**v1.6.0 single-path self-hosted breaking changes**：`popola cloud worker {start,debug}` 不再接受 `--pool` / `--pool-name`；`--cloud-target=self-hosted --auth-mode=rest` 退 2（改用隐式默认 `--auth-mode=session-jwt`，需先 `cursor login`）；`--allow-fallback` 对 self-hosted 是 no-op + WARN。Managed cloud + 本地 CLI 行为不变。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
 
 ## What is PopolaLoom?
 
@@ -203,28 +203,58 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
    popola eval show --json
    ```
 
-### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+; **stable since v0.9.0**)
+### Workflow 6 — Cloud Agent dispatch (`--cli=cursor-cloud`, v0.8.5+ / SSE v0.8.6+; **stable since v0.9.0**; **single-path self-hosted since v1.6.0**)
 
-<!-- updated: 2026-05-08 -->
+<!-- updated: 2026-05-18 -->
 
 > **v0.9.0 GA**：本 Workflow 涉及的 CLI verb (`popola dispatch --cli=cursor-cloud`) + `--cli-flag` keys + `popola list` `runtime` 列 + `popola attach --no-stream` flag 全部进 v0.9.x stable surface。仅 `cloud.sse.*` 子事件类型 payload shape 仍 experimental（[API_STABILITY §3.4](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#34-sse-event-sub-types-cloudsse)）。需要纯云端项目脚手架走 `popola init --target=cloud-only`（v0.9.0+，Q-D-4 偏离默认）；要 copy-paste-ready 上手脚本走 [`cloud-quickstart.sh`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/cloud-quickstart.sh)。
 
-云端 Background Agent：**不走本机 subprocess**，而是用 httpx 调 Cursor Cloud Agents REST（`CloudCursorClient`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()` + **cloud poller** 线程对齐状态事件。
+> **v1.6.0 single-path self-hosted**（[`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) 6 项强约束）：**`--cloud-target=self-hosted` 走且仅走 Path-B JWT 直连**（`StartBackgroundComposerFromSnapshot`）。`--auth-mode=session-jwt` 是 self-hosted 的隐式默认（不传即生效；显式传 `--auth-mode=rest` 会被拒绝退 2）；不再支持 `--pool` worker；`--allow-fallback` 对 self-hosted 是 no-op + WARN；self-hosted 不会做 GitHub/GitLab 校验；每次派发完毕 stdout 多打印一行 `view: https://cursor.com/agents/<bcId>`。Managed Cloud (`--cloud-target=cursor-managed`) 仍走稳定的 Path-A REST，行为不变。
 
-先决：**非空 `CURSOR_API_KEY` 环境变量** — HTTP Basic：`username=api_key`、`password=` 空串（适配器读环境变量，`CloudCursorAdapter.is_available()` 亦以此为准）。
+云端 Background Agent：**不走本机 subprocess**，而是经 daemon 侧 `Supervisor` 调用 Cursor Cloud Agents（managed 走 Path-A REST `POST /v1/agents`、self-hosted 走 Path-B Connect-RPC `StartBackgroundComposerFromSnapshot`），任务出现在浏览器里的 Cloud Agents UI（仪表盘入口例如 `https://cursor.com/dashboard/cloud-agents`，任务列表亦可从 `https://cursor.com/agents` 跳转）。daemon 侧的 `Supervisor` 检测到 `CLOUD_BUILD_COMMAND_MARKER` sentinel 就走 `_spawn_cloud()`，再按 `cloud_target` 选 Path-A / Path-B 分支 + **cloud poller** 线程对齐状态事件。
 
-派发命令形态（与工作区 Decision matrix Q6 对齐：默认 **`autoCreatePR=false`**，需要的话用 flag 打开）：
+先决：
+- Managed cloud：**非空 `CURSOR_API_KEY` 环境变量** — HTTP Basic：`username=api_key`、`password=` 空串（适配器读环境变量，`CloudCursorAdapter.is_available()` 亦以此为准）。
+- Self-hosted (v1.6.0 单路径)：**`cursor login` 生成的 `~/.config/cursor/auth.json`**（Path-B JWT 直连用；不需要 `CURSOR_API_KEY`）。同时本机需要先用 `popola cloud worker start --worker-dir <repo>` 注册一个 self-hosted worker。
+
+派发命令形态 1 — **managed cloud（Path-A REST，行为同 v0.9.0）**，与工作区 Decision matrix Q6 对齐：默认 **`autoCreatePR=false`**，需要的话用 flag 打开：
 
 ```bash
 export CURSOR_API_KEY="cr_..."
 popola dispatch "implement smoke-test stub in README" \
   --cli=cursor-cloud \
+  --cloud-target=cursor-managed \
   --cwd ~/src/myrepo \
   --cli-flag repo_url=https://github.com/acme/monorepo \
   --cli-flag starting_ref=main \
   --cli-flag model=composer-2 \
   --cli-flag auto_create_pr=false
+# → cursor-cloud-deadbeef
+# → view: https://cursor.com/agents/bc-...
 ```
+
+派发命令形态 2 — **self-hosted（v1.6.0 单路径 Path-B JWT，构成 Workflow 12 的实际形态）**：
+
+```bash
+cursor login   # 一次性,生成 ~/.config/cursor/auth.json
+popola cloud worker start --worker-dir "$(pwd)" --management-addr 127.0.0.1:39231
+
+popola dispatch "ship the v1.6.0 release notes" \
+  --cloud-target=self-hosted --worker-name=popolaloom-myrepo-deadbeef \
+  --cwd "$(pwd)" \
+  --cli-flag repo_url=https://github.com/acme/myrepo \
+  --model=gpt-5.5 --preset=grind \
+  --no-auto-branch --no-auto-create-pr --work-on-current-branch
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...   (web 端可点开看任务运行状态 + workspace 内容)
+```
+
+注意 self-hosted 形态：
+1. **不需要** `--cli=cursor-cloud`（`--cloud-target=self-hosted` 自动设 `--cli=cursor-cloud`）。
+2. **不需要** `--auth-mode=session-jwt`（v1.6.0 单路径默认；显式 `--auth-mode=rest` 退 2）。
+3. **不需要** `CURSOR_API_KEY`（Path-B 走 JWT）。
+4. **不会** 校验 GitHub/GitLab —— worker 已经持有 workspace clone。
+5. `view:` URL 是 web-side 观测入口，可点开看 agent 运行状态、读 workspace 内容、跟实时输出。
 
 支持的 `--cli-flag extra` keys（传给 `cursor_cloud.CursorCloudAdapter` / REST）：
 
@@ -427,15 +457,18 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
 
 出处：wire 级细节见 `.local/research/v0.8.8_multi_run/runs-subcommand-spec.md`（`.local/` 仅本地存在，已 gitignore）。
 
-### Workflow 10 — Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
+### Workflow 10 — Self-hosted worker handoff (`popola cloud worker`, v0.9.1+; **single-path since v1.6.0**)
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-18 -->
 
-触发：`agent worker` / "self-hosted worker" / "My Machines" / "Self-Hosted Pool" / "把本机注册到 Cursor 云端"。`start` / `handoff` **不**创建 popola task id；要 popola-tracked task 可用 Workflow 6 (`--cli=cursor-cloud` REST) 或本 workflow 的 `dispatch` 便捷命令。
+触发：`agent worker` / "self-hosted worker" / "My Machines" / "把本机注册到 Cursor 云端"。`start` / `handoff` **不**创建 popola task id；要 popola-tracked task 用本 workflow 的 `dispatch` 便捷命令（v1.6.0 起单路径 Path-B JWT，自动设 `--cloud-target=self-hosted` + `--auth-mode=session-jwt`）。
 
-5 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），自动生成 `popolaloom-<repo>-<hash>` 名称并按 `--worker-dir` 复用已有进程，`--allow-duplicate` 才强制开第二份；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`；`dispatch` 默认直接 POST 到 `popolad`，携带 `cli=cursor-cloud`、`worker_name`、repo/PR、`starting_ref`、`model` extras，把任务路由到当前 workspace worker；`--print-only` / `--dry-run` 只输出等价命令。
+> **v1.6.0 constraint #1**：`popola cloud worker {start,debug}` 不再接受 `--pool` / `--pool-name` 标志（My Machines workers 是 popola 唯一支持的模式）。Self-Hosted Pool workers 操作员可继续 `agent worker start --pool` 直接走上游 CLI；popola 不包装该路径。
+
+5 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），自动生成 `popolaloom-<repo>-<hash>` 名称并按 `--worker-dir` 复用已有进程，`--allow-duplicate` 才强制开第二份；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`；`dispatch` 直接 POST 到 `popolad`，预加载 JWT bundle（缺则退 1 并提示 `cursor login`），携带 `cli=cursor-cloud`、`cloud_target=self-hosted`、`__auth_mode__=session-jwt`、`worker_name`、repo/PR、`starting_ref`、`model` extras，把任务路由到当前 workspace worker；派发后 stdout 多打印一行 `view: https://cursor.com/agents/<bcId>`；`--print-only` / `--dry-run` 只输出等价命令。
 
 ```bash
+cursor login   # 一次性,生成 ~/.config/cursor/auth.json (Path-B JWT 来源)
 popola cloud worker start --worker-dir "$(pwd)" \
     --management-addr 127.0.0.1:39231
 # → "Run agents: https://cursor.com/agents#workerId=<uuid>"
@@ -443,6 +476,8 @@ popola cloud worker status --management-addr 127.0.0.1:39231 --json | jq
 popola cloud worker handoff --worker-id <uuid> --prompt "..."
 popola cloud worker dispatch "..." --worker-dir "$(pwd)" \
     --repo-url https://github.com/acme/repo
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...
 ```
 
 完整文档：[USER_GUIDE §Self-hosted worker handoff](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/USER_GUIDE.md#self-hosted-worker-handoff-popola-cloud-worker-v091)。
@@ -459,9 +494,23 @@ popola dispatch "review migration plan" --profile daily-driver --json
 
 Expected: routing/UX defaults only; secrets stay in keyring / `CURSOR_API_KEY` / 0o600 fallback. Schema experimental until v1.1.1 stable.
 
-### Workflow 12 — Path-B advanced dispatch
+### Workflow 12 — Path-B self-hosted dispatch (v1.6.0 single path)
 
-Experimental v1.1.1 Path-B: `popola dispatch "feature X" --cli=cursor-cloud --cloud-target=self-hosted --worker-name=<X> --model=gpt-5.5 --auth-mode=session-jwt --effort=high --long-running --preset=grind --cli-flag repo_url=https://github.com/org/repo`. Path-B uses Cursor session JWT + Connect-RPC and is not a v1.x stability surface; on 401/404 tell the user to retry stable REST (`--auth-mode=rest`) or run `cursor login`.
+<!-- updated: 2026-05-18 -->
+
+v1.6.0 单路径 self-hosted dispatch — `--auth-mode=session-jwt` 是隐式默认，**不要显式传**（显式传 `--auth-mode=rest` 会被拒绝退 2）。Path-B 走 Cursor session JWT + Connect-RPC `StartBackgroundComposerFromSnapshot`，不查 GitHub/GitLab，每次派发完毕 stdout 多打印一行 `view: https://cursor.com/agents/<bcId>`：
+
+```bash
+popola dispatch "feature X" \
+  --cloud-target=self-hosted --worker-name=<your-worker> \
+  --model=gpt-5.5 --effort=high --long-running --preset=grind \
+  --no-auto-branch --no-auto-create-pr --work-on-current-branch \
+  --cli-flag repo_url=https://github.com/org/repo
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...
+```
+
+派发失败时：`401/404` JWT 过期或 worker 不存在 → 让用户跑 `cursor login` 重生成 JWT，或 `popola cloud worker start --name <your-worker> --worker-dir <repo-root>` 注册 worker；**绝不**告诉用户回退 `--auth-mode=rest`（v1.6.0 constraint #5：self-hosted 只有 Path-B 这一条路径）。
 
 ### Workflow 13 — Guided dispatch with option-group Q&A
 
@@ -513,6 +562,93 @@ Use AskQuestion for target → model → thinking_depth → special_modes, then 
 
 v1.1.1 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
 
+### No-Silent-Fallback invariant (v1.5.0+, **single-path tightened in v1.6.0**)
+
+popola does NOT switch the dispatched CLI adapter, auth-mode, or path-B knob without explicit operator consent. Four dispatch-defining dimensions hard-fail on rejection rather than silently retry on another value:
+
+| Dimension | Failure semantics (v1.6.0) |
+|---|---|
+| `--auth-mode` (rest / session-jwt) | `--cloud-target=self-hosted` forces `session-jwt` (the implicit default; explicit `--auth-mode=rest` exits 2). Managed cloud keeps `rest` default. JWT load failure on the self-hosted path → exit 1; popola NEVER auto-switches to REST. |
+| `--cli` (cursor / cursor-cloud / claude / ...) | requested adapter missing → exit 1; `[user_preferences.routing].fallback_chain` is consulted ONLY when `--allow-fallback` is passed explicitly AND `--cloud-target` is NOT `self-hosted`. With `--cloud-target=self-hosted`, `--allow-fallback` is a no-op + bilingual WARN (v1.6.0 constraint #2). |
+| `--cloud-target` (self-hosted / cursor-managed) | self-hosted worker absent → exit 78, no swap to cursor-managed. self-hosted dispatch skips the Cursor GitHub-App preflight (v1.6.0 constraint #3 — worker holds its own clone) AND the daemon rejects `extra.env.type='pool'` for self-hosted (v1.6.0 constraint #1). |
+| `--model` | model id rejected upstream → exit 1; no auto-rename to `default` (operator opts in via `--cli-flag model_id_override=<id>`). `--preset` (grind / quick-fix / ...) parse failure → exit 1; preset is NEVER silently stripped. |
+
+**Out of scope** (allowed to fall back without consent): the SSE → poll observability fallback emitted by `cloud_poller.py` (event `cloud.sse.fallback_to_poll`). This sits at the *observability* layer — the task has already been dispatched; only the event-stream read mode degrades. Dispatch-routing decisions are governed by this invariant; observability-stream choices are not.
+
+Operator-facing escape hatches when the upstream server rejects the default v1.6.0 shape (each requires an explicit opt-in; **none of them swap self-hosted to a different transport**):
+
+| Symptom | Opt-in command |
+|---|---|
+| Server returns "model 'gpt-5.5' not available" | `popola dispatch ... --cli-flag model_id_override=gpt-5.5-high` (or `=gpt-5.5` per attempt) |
+| `--cli=cursor` unavailable for **managed cloud / local** dispatch, want fallback_chain | `popola dispatch ... --allow-fallback` (per-dispatch opt-in; not persisted; no-op for `--cloud-target=self-hosted`) |
+
+### popolad env injection (v1.5.0+)
+
+`popola popolad start` walks a 4-tier injection chain to build the daemon child env (so the daemon's cloud dispatches pick up `CURSOR_API_KEY` even when the operator's current shell didn't export it):
+
+1. existing `os.environ` (operator's shell — highest precedence; never overwritten)
+2. `--env-file <path>` (Typer flag; mode 0o600 required)
+3. `~/.popola/cursor_api_key.env` (existing v0.9.9 boot-time fallback; mode 0o600)
+4. `<cwd>/.local/.secrets/cursor_user_api_key.secret` (single-line bare key; CLI-side env injection ONLY, does NOT enter `resolve_cursor_api_key` precedence chain — JWT remains the dispatch primary path)
+5. `<cwd>/.env` (mode 0o600; legacy dotenv fallback)
+
+`popola popolad start --reload-env` is a convenience equivalent for `stop && start <same flags>`; use it after editing one of the file sources to push the new env into a running daemon.
+
+### Path-B self-hosted worker dispatch (v1.6.0 single canonical path)
+
+JWT-direct dispatch onto a registered self-hosted worker, skipping git host (GitHub / GitLab) authentication. v1.6.0 makes this the ONLY supported self-hosted path (`feedback_for_v1.5.2.md` constraints #1–#6); `--auth-mode=session-jwt` is the implicit default, `--pool` is removed from `popola cloud worker {start,debug}`, and `--allow-fallback` is a no-op + WARN when `--cloud-target=self-hosted`:
+
+```bash
+popola dispatch \
+  --cloud-target=self-hosted --worker-name=<your-worker> \
+  --model=gpt-5.5 --thinking-level=high --preset=grind \
+  --no-auto-branch --no-auto-create-pr --work-on-current-branch \
+  --cli-flag model_id_override=gpt-5.5-high \
+  "<prompt>"
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...
+```
+
+Note `--cli-flag model_id_override=gpt-5.5-high`: Cursor's path-B server rejects bare `gpt-5.5` when `long_running_agent_mode=true` (grind preset) with "Model 'gpt-5.5' does not support long-running agent mode"; the `-high` suffix is the cursor-agent CLI form that the path-B accepts.
+
+### Verifying a self-hosted dispatch (v1.6.0)
+
+After `popola dispatch ... --cloud-target=self-hosted` exits 0, the CLI surfaces two lines on stdout for web-side observability:
+
+```
+self-hosted-feedf00d
+view: https://cursor.com/agents/bc-1a2b3c4d-5e6f-7890-abcd-ef1234567890
+```
+
+The `view:` URL points at Cursor's web UI for the just-dispatched agent — operators can click through to read the workspace contents the worker checked out, watch tool calls live, and inspect the terminal state. To follow events locally too, run `popola attach <task_id> --follow` in another shell.
+
+If the daemon hasn't emitted `cloud.queued` within ~2 s (e.g. when the JWT load fails or the worker is unreachable) the CLI prints a bilingual stderr WARN (`warn: dashboard_url not surfaced ...`) and falls back to the task_id-only line — `popola attach <task_id> --follow` will show the actual failure cause as soon as the daemon writes `task.failed`. Per the No-Silent-Failures rule, the URL surface is NEVER silently skipped.
+
+#### ⚠️ Cursor server-side `env=machine→pool` downgrade (upstream regression, carried into v1.6.0)
+
+Cursor's path-B Connect-RPC `StartBackgroundComposerFromSnapshot` SILENTLY downgrades `env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side. Pool routing picks ANY free worker in your private pool that matches the repo — NOT necessarily the named worker. Empirically verified 2026-05-17 against `api2.cursor.sh`:
+
+- Request body: `env={type:"machine",name:"popolaloom-dev-worker-v15"}`
+- Cursor's response (`GET /v1/agents/<bcId>`): `env={"type":"pool"}` — `name` dropped
+
+popola CANNOT fix this server-side routing — constraint #1 is satisfied at the popola layer (the worker process is My Machines only and the daemon rejects `extra.env.type='pool'` for self-hosted), but if your account hosts multiple workers Cursor may route the dispatch to a sibling that matches the repo. Operators running ONE worker per repo are unaffected. See [`docs/known-issues.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/known-issues.md) for the live upstream-regression log.
+
+#### ⚠️ Cursor REST `is_in_use` / `lastActivityAt` always null for named workers (v1.5.1+ empirical)
+
+Cursor's `GET /v0/private-workers` returns `is_in_use=null`, `active_bc_id=null`, AND `lastActivityAt=null` for a named self-hosted worker EVEN WHILE the agent is mid-run (`agent.status=ACTIVE`, popola-side `cloud_phase=RUNNING`). The fields never flip to a non-null value during the agent's lifetime, so treating them as a worker-liveness oracle leads to false-positive "worker free" verdicts and double-dispatch races. Empirically verified 2026-05-18 against `api.cursor.com` with `popolaloom-dev-worker-v15`: 5 mid-run snapshots at 30 s intervals (across both `running` and `completed` task states) ALL reported `{is_in_use: null, active_bc_id: null, lastActivityAt: null}` even though the popola-side task definitively reached `cloud_phase=RUNNING` and then `cloud_phase=FINISHED` end-to-end.
+
+**Replacement oracle (G3).** Use the dual signal:
+
+1. `agent.env` from `GET /v1/agents/<bc-id>` — for a dispatch routed at a named worker, the response contains `env: {"type": "machine", "name": "<your-worker>"}` and this assignment is durable for the agent's lifetime. (NOTE: `agent.target` is `null` in this response shape; the routing target lives in the `env` field instead.)
+2. Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` exposed by the worker's own `--management-addr` `/metrics` endpoint.
+
+Treat a worker as free only when `now - cursor_self_hosted_worker_last_activity_unix_seconds > 60` AND no in-flight agent (any `bc-*` from your `GET /v1/agents`) has `env.type == "machine"` + `env.name == "<X>"`. Do NOT poll `is_in_use` for routing decisions.
+
+#### ⚠️ Cursor REST `model_details=null` for path-A agents (v1.5.1+ empirical)
+
+`GET /v1/agents/<bc-id>` returns `model_details=null` for agents created via path-A REST `POST /v1/agents`, even when the create call passed a non-default model (e.g. `gpt-5.5` with `--cli-flag model_id_override=gpt-5.5-high`). The `model_details` field is populated only for path-B (`StartBackgroundComposerFromSnapshot`) sessions, so any post-dispatch model-validation logic that consults `model_details` will mis-classify path-A agents as "model unset" and either falsely retry or falsely reject. Empirically verified 2026-05-17 against `api2.cursor.sh` for an agent dispatched with `--auth-mode=rest --model=gpt-5.5 --cli-flag model_id_override=gpt-5.5-high`.
+
+**Replacement oracle (G5).** Confirm model wiring not by the `model_details` field but by the agent's terminal-state outcome: a path-A agent reached the correct model when it transitions to a terminal state without raising the Cursor server error `Model '<X>' does not support long-running agent mode`. Equivalently, scan the agent's run-event NDJSON log for that exact error string; absence on terminal = success. Do NOT gate dispatch retry on `model_details` for path-A.
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
 
@@ -554,15 +690,16 @@ timeout_seconds = 120
 
 ## Version + upgrade
 
-- **Current**: v1.1.1 GA（2026-05-11，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`.
+- **Current**: v1.6.0 GA（2026-05-18，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`. v1.6.0 collapses self-hosted dispatch to a single canonical Path-B JWT path; see [`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) for the 6 hard constraints and [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) §v1.6.0 for the migration notes.
 - **Install / Upgrade**:
   ```bash
   ./install.sh install
-  ./install.sh install --ref=v1.1.1
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.1.1
+  ./install.sh install --ref=v1.6.0
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.0
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
-  > PyPI remains deferred for v0.9.x / v1.1.1; default installer uses GitHub.
+  > PyPI remains deferred for v0.9.x / v1.6.0; default installer uses GitHub.
 - **Check / drift**: `popola version`, `cat ~/.cursor/skills/popola-loom/.popola-loom-version`, then `popola doctor`.
 - **Idempotency**: `popola init <verb>` skips existing installs; force refresh via `popola skill upgrade`.
 - **v0.7.x → v0.9.0**：详见 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
+- **v1.5.x → v1.6.0 migration**: self-hosted dispatch loses `--pool` / `--pool-name` flags and the explicit `--auth-mode=rest` path. Operators using a pool worker via popola should switch to `agent worker start --pool` directly (upstream Cursor CLI), or accept the v1.6.0 My-Machines-only popola contract.

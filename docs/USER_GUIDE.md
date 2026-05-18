@@ -966,11 +966,23 @@ Use `popola auth cursor status --json` after setup when you need to audit the re
 
 > See: `src/popolaloom/cli/init_cmd.py::_resolve_cursor_api_key_input` + `src/popolaloom/credentials.py::CredentialResolver` + [`Credentials & secure storage`](#credentials--secure-storage-v092)
 
-## Self-hosted worker handoff (`popola cloud worker`, v0.9.1+)
+## Self-hosted worker handoff (`popola cloud worker`, v0.9.1+; **single-path since v1.6.0**)
 
-<!-- updated: 2026-05-09 -->
+<!-- updated: 2026-05-18 -->
 
 > **Tier**: any plan. v0.9.1 adds a thin wrapper around Cursor's `agent worker` CLI so an operator on this machine can spin up a worker, sanity-check the connection, and hand off a task prompt to the [Cloud Agents UI](https://cursor.com/agents) without confusing it with the broad-audience `popola dispatch --cli=cursor-cloud` REST path. This section is the reference for the new four-verb subcommand group; the upstream Cursor docs at [My Machines](https://cursor.com/docs/cloud-agent/my-machines) and [Self-Hosted Pool](https://cursor.com/docs/cloud-agent/self-hosted-pool) remain the source of truth for the worker semantics themselves.
+
+> **v1.6.0 single-path self-hosted dispatch** (closes the 6 hard constraints in [`feedback_for_v1.5.2.md`](../.local/feedbacks/feedback_for_v1.5.2.md)): self-hosted dispatch (`popola dispatch ... --cloud-target=self-hosted`) goes through **exactly one path** — Path-B JWT direct via `cursor-cloud-internal`. Breaking-change matrix:
+>
+> | Pre-v1.6.0 | v1.6.0 |
+> |---|---|
+> | `popola cloud worker start --pool` | Click `UsageError` (exit 2) — use `agent worker start --pool` directly upstream |
+> | `popola cloud worker debug --pool` | Click `UsageError` (exit 2) |
+> | `popola dispatch --cloud-target=self-hosted --auth-mode=rest` | Exit 2 with bilingual hint pointing at `--auth-mode=session-jwt` |
+> | `popola dispatch --cloud-target=self-hosted --allow-fallback` | No-op + bilingual stderr WARN (NEVER falls back to local CLI) |
+> | (no URL printed at dispatch time) | Prints `view: https://cursor.com/agents/<bcId>` to stdout after task_id |
+>
+> Managed cloud (`--cloud-target=cursor-managed`) and local CLI dispatch (`--cli=cursor|claude|codex|copilot`) are **unchanged**. The new self-hosted dispatch shape requires a one-time `cursor login` (populates `~/.config/cursor/auth.json`) — no `CURSOR_API_KEY` needed.
 
 ### Three dispatch shapes (mental model)
 
@@ -979,8 +991,8 @@ PopolaLoom v0.9.1+ recognises three distinct paths for getting a Cursor agent to
 | Surface | What runs where | How you start it | Needs `CURSOR_API_KEY`? | Appears in Cloud Agents UI? |
 |---|---|---|---|---|
 | Local agent | Local subprocess on this box | `popola dispatch --cli=cursor` | No | No |
-| Cloud REST | Cursor-managed cloud workload | `popola dispatch --cli=cursor-cloud` (see [Cloud Agent dispatch](#cloud-agent-dispatch-v085)) | Yes | Yes |
-| Self-hosted worker | Cursor cloud orchestration + tool calls executed on this box | `popola cloud worker start` + dashboard / Slack / GitHub trigger | Pool only (service-account key); My Machines accepts browser login | Yes |
+| Cloud REST (managed) | Cursor-managed cloud workload | `popola dispatch --cloud-target=cursor-managed` (see [Cloud Agent dispatch](#cloud-agent-dispatch-v085)) | Yes | Yes |
+| Self-hosted worker (v1.6.0 Path-B JWT) | Cursor cloud orchestration + tool calls executed on this box | `popola cloud worker start --worker-dir <repo>` then `popola dispatch --cloud-target=self-hosted --worker-name=<X>` | No — uses `~/.config/cursor/auth.json` JWT (populated by `cursor login`) | Yes |
 
 `popola cloud worker start` does **not** create a Cloud Agent run by itself. The worker process registers this machine with Cursor; a run can then be created from the dashboard ([cursor.com/agents](https://cursor.com/agents)), a chat-surface trigger (Slack / GitHub / Linear), or the Cloud Agents REST. The `worker handoff` verb just emits the prompt + URL pair so the human-driven step is copy-paste-friendly; the `worker dispatch` helper directly POSTs to `popolad` by default when you want PopolaLoom tracking and worker-name routing, with `--print-only` / `--dry-run` available for command preview.
 
@@ -988,11 +1000,11 @@ PopolaLoom v0.9.1+ recognises three distinct paths for getting a Cursor agent to
 
 | Verb | Purpose | Notes |
 |---|---|---|
-| `popola cloud worker debug` | Wraps `agent worker debug` preflight | Forwards stdout/stderr verbatim. `--pool` requires `CURSOR_API_KEY`. |
-| `popola cloud worker start` | Start or reuse the worker (foreground) | My Machines mode by default; `--pool` is Self-Hosted Pool (Enterprise). Omitted `--name` becomes `popolaloom-<repo>-<hash>`. Duplicate starts for the same `--worker-dir` exit 0 with a reuse message; `--allow-duplicate` opts out. |
+| `popola cloud worker debug` | Wraps `agent worker debug` preflight | Forwards stdout/stderr verbatim. v1.6.0: `--pool` / `--pool-name` flags REMOVED (constraint #1) — use `agent worker debug --pool` directly upstream. |
+| `popola cloud worker start` | Start or reuse the worker (foreground) | My Machines mode ONLY (v1.6.0 constraint #1). `--pool` / `--pool-name` flags REMOVED — use `agent worker start --pool` directly upstream. Omitted `--name` becomes `popolaloom-<repo>-<hash>`. Duplicate starts for the same `--worker-dir` exit 0 with a reuse message; `--allow-duplicate` opts out. |
 | `popola cloud worker status` | Probe `/healthz` + `/readyz` + `/metrics` | Default `--management-addr 127.0.0.1:39231`. Loopback only; no `CURSOR_API_KEY` needed. |
 | `popola cloud worker handoff` | Emit prompt + URL envelope | `--worker-id` builds `https://cursor.com/agents#workerId=<id>`; `--worker-url` overrides. JSON or Markdown. |
-| `popola cloud worker dispatch` | Directly dispatch a worker-targeted REST run | Detects the existing workspace worker and POSTs `cli=cursor-cloud` to `popolad` with `worker_name`, repo/PR, `starting_ref`, and `model` extras. `--print-only` / `--dry-run` previews the equivalent command without contacting the daemon. |
+| `popola cloud worker dispatch` | Directly dispatch a worker-targeted Path-B JWT run | v1.6.0: pre-loads JWT via `~/.config/cursor/auth.json` (exit 1 with `cursor login` hint when missing); hard-sets `cloud_target=self-hosted` + `__auth_mode__=session-jwt` in extras (constraint #5); prints `view: https://cursor.com/agents/<bcId>` to stdout after task_id (constraint #4). `--print-only` / `--dry-run` previews the equivalent command without contacting the daemon. |
 
 ### Worker bootstrap walkthrough
 
@@ -1037,19 +1049,26 @@ popola cloud worker dispatch \
 
 `popola cloud worker start` normalizes `--worker-dir` and scans local Linux procfs for an existing `agent worker start` / `cursor-agent worker start` process with the same resolved worker directory. When one is found, PopolaLoom prints `pid`, `name`, `management_addr` (when present), and `worker_dir`, then exits `0` without spawning another foreground worker. If procfs is unavailable or unreadable, detection fails open and the normal start path continues. Pass `--allow-duplicate` only when you intentionally want two Cursor workers serving the same workspace.
 
-### Pool mode requires a service-account API key
+### Pool mode (REMOVED at the popola layer in v1.6.0 — go upstream)
 
-`agent worker start --pool` is Enterprise-only; PopolaLoom mirrors that contract:
+`agent worker start --pool` is Enterprise-only and v1.6.0 closes `feedback_for_v1.5.2.md` constraint #1 by removing the wrapped flag from the popola layer entirely:
 
 ```bash
 $ popola cloud worker start --pool --pool-name popolaloom
-error: --pool requires a Cursor service-account API key (Enterprise).
-Export CURSOR_API_KEY=<service-account-key> and retry, OR drop --pool
-to launch a shared 'My Machines' worker (works with `agent login`).
-  see: https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers
+Usage: popola cloud worker start [OPTIONS]
+Try 'popola cloud worker start --help' for help.
+Error: No such option: --pool
+# exit code 2 (Click UsageError)
 ```
 
-Exit code `77` (matches the cloud-auth code used by `popola cloud runs`). Set `CURSOR_API_KEY=<service-account-key>` (NOT a personal / user / team key — see Cursor's [service accounts](https://cursor.com/docs/account/enterprise/service-accounts) doc for details) and retry. My Machines mode (`popola cloud worker start` without `--pool`) works with the standard browser-login auth.
+Operators who need a Self-Hosted Pool worker should invoke the upstream Cursor CLI directly:
+
+```bash
+export CURSOR_API_KEY=<service-account-key>   # personal / user / team keys are NOT accepted
+agent worker start --pool --pool-name popolaloom --worker-dir "$(pwd)"
+```
+
+See Cursor's [service accounts](https://cursor.com/docs/account/enterprise/service-accounts) doc for the API key requirements and [Self-Hosted Pool quickstart](https://cursor.com/docs/cloud-agent/self-hosted-pool) for the full pool worker workflow. PopolaLoom only wraps **My Machines** workers (`popola cloud worker start` without `--pool`), which work with the standard browser-login auth via `agent login`.
 
 ### `popola cloud worker stop` (v0.9.9 F6)
 
@@ -1179,6 +1198,20 @@ curl -sH "Authorization: Bearer $CURSOR_API_KEY" \
 ```
 
 Empty `--model` (the default) preserves the v0.10.0 `"default"` marker so Cursor picks the recommended model for the user's plan. When both `--model X` and `--cli-flag model=Y` are supplied, the explicit `--model` flag wins and a WARN is emitted (No Silent Failures). For the higher-fidelity controls (`--mode`, `--max-mode`, `--effort`, `--time-budget`, `--long-running`, `--auto-proceed-after-plan`, `--preset`), see [Path-B advanced controls (`--auth-mode=session-jwt`)](#path-b-advanced-controls---auth-modesession-jwt-v100-ga) below.
+
+### Verifying a self-hosted dispatch (v1.6.0+)
+
+Every `popola dispatch --cloud-target=self-hosted` invocation prints **two lines** to stdout: the task_id followed by the Cursor web UI URL. Operators can click through to read the workspace contents the worker checked out, watch tool calls live, and inspect the agent's terminal state:
+
+```text
+$ popola dispatch "ship the release notes" \
+    --cloud-target=self-hosted --worker-name=popolaloom-myrepo-deadbeef \
+    --cli-flag repo_url=https://github.com/acme/myrepo
+self-hosted-feedf00d
+view: https://cursor.com/agents/bc-1a2b3c4d-5e6f-7890-abcd-ef1234567890
+```
+
+When the daemon hasn't emitted `cloud.queued` within ~2 s (e.g. when the JWT load fails or the worker is unreachable) the CLI prints a bilingual stderr WARN (`warn: dashboard_url not surfaced ...`) instead of the `view:` line. Per the No-Silent-Failures rule the URL surface is NEVER silently skipped — operators always see either the URL or an explanation. To follow events locally too, run `popola attach <task_id> --follow` in another shell.
 
 ### No-fallback contract — what happens when the worker is missing
 

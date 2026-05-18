@@ -16,6 +16,36 @@ addressed in future versions* — file an issue under
 [`.local/feedbacks/`](../.local/feedbacks/) if you hit one and the
 listed workaround does not unblock you.
 
+## v1.6.0 — Cursor server downgrades `env=machine→pool` (upstream regression)
+
+<!-- updated: 2026-05-18 -->
+
+**Limitation.** Cursor's Connect-RPC `StartBackgroundComposerFromSnapshot`
+server SILENTLY downgrades the request body's
+`env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side.
+The request body shape is accepted (200 + `bc_id` + `initial_run_id`), but
+`GET /v1/agents/<bcId>` afterwards returns `env={"type":"pool"}` — the
+`name` field is dropped. Verified empirically 2026-05-17 against
+`api2.cursor.sh` with `env={"type":"machine","name":"popolaloom-dev-worker-v15"}`.
+
+**Implication.** PopolaLoom CANNOT fix server-side routing. v1.6.0's
+constraint #1 is satisfied at the popola layer (the worker process is My
+Machines only via `popola cloud worker start` — no `--pool` flag — AND
+the daemon supervisor rejects `extra.env.type='pool'` for
+`cloud_target=self-hosted` with `error_kind="pool_forbidden_self_hosted"`),
+but operators on a multi-worker account may see a different worker claim
+the task than the named one.
+
+**Workaround.** Run **one worker per repo**: with a single My-Machines
+worker registered per workspace, the Cursor server's pool fallback
+trivially picks the only matching worker. Operators with multiple workers
+sharing the same repo should either consolidate to one worker per repo OR
+accept that Cursor's server-side scheduling may route to a sibling.
+
+**Tracking.** `BL-v1.6.x-cursor-env-machine-to-pool` in `CHANGELOG.md`
+§Unreleased. Deferred to a future v1.7.x (or later) iteration if Cursor
+exposes a non-downgrading RPC; popola cannot fix this client-side.
+
 ## v1.1.0 — experimental Path-B RPC endpoint may return HTTP 404
 
 <!-- updated: 2026-05-11 -->

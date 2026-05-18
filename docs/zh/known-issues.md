@@ -12,6 +12,16 @@ translation_url: /known-issues.html
 
 本页是英文 [`known-issues.md`](../known-issues.html) 的中文导航版，记录当前 v0.9.x 文档中最常见、且已有绕行方式的限制。完整细节以英文页为准。
 
+## v1.6.0 — Cursor 服务端 `env=machine→pool` 静默降级（上游回归）
+
+<!-- updated: 2026-05-18 -->
+
+| 限制 | 绕行方式 |
+|---|---|
+| **Cursor 的 Connect-RPC `StartBackgroundComposerFromSnapshot` 把请求 body 里的 `env={"type":"machine","name":X}` 静默降级到 `env={"type":"pool"}`** —— 请求 200 + `bc_id` 都正常,但 `GET /v1/agents/<bcId>` 返回 `env={"type":"pool"}`、`name` 字段被删 | popola **无法**在客户端修复服务端路由。v1.6.0 在 popola 层已经满足 constraint #1（worker 进程只走 My Machines 模式,popola daemon 拒绝 self-hosted 派发携带 `extra.env.type='pool'`），但若你的账号挂多个 worker,Cursor 服务端的 pool fallback 可能让另一个 worker 抢到任务。**绕行方式**：每个仓库只挂 1 个 My-Machines worker —— 单个 worker 的情况下 pool fallback 没得选,自然落到目标 worker 上 |
+
+跟踪：`BL-v1.6.x-cursor-env-machine-to-pool`，详见英文 [`known-issues.md` §v1.6.0 — Cursor server downgrades `env=machine→pool`](../known-issues.html#v160--cursor-server-downgrades-envmachinepool-upstream-regression) 和 [`CHANGELOG.md` §Unreleased](../../CHANGELOG.md)。
+
 ## v0.9.x 常见限制
 
 | 限制 | 绕行方式 |

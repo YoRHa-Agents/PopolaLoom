@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 1.5.1
+version: 1.6.0
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -10,7 +10,7 @@ metadata:
   cliHelp: "popola init --help"
 tier: 1
 token_estimate: 1900
-last_updated: "2026-05-11"
+last_updated: "2026-05-18"
 triggers:
   - "install popola"
   - "install popola-loom"
@@ -59,6 +59,38 @@ The canonical `popola-loom/SKILL.md` (loaded after install) assumes `popola` is 
 ### Cloud Agent prerequisite (v0.8.5+)
 
 If you will drive **Cursor Background / Cloud Agents** through PopolaLoom (`--cli=cursor-cloud`), provision a **`CURSOR_API_KEY`** alongside your shell profile **before** invoking `popola dispatch`. This is unrelated to ordinary local `cursor-agent` binaries — omit the key entirely if you only use `--cli=cursor|claude|codex|kimi|copilot` subprocess adapters.
+
+### Self-hosted setup (one-path, v1.6.0+)
+
+**Self-hosted dispatch (`popola dispatch ... --cloud-target=self-hosted`) has exactly ONE supported path in v1.6.0: Path-B JWT direct.** This closes the 6 hard constraints in `feedback_for_v1.5.2.md`:
+
+1. **`cursor login`** — populates `~/.config/cursor/auth.json` with the session JWT that Path-B reads. No `CURSOR_API_KEY` needed for self-hosted dispatch (constraint #5 / #3).
+2. **`popola cloud worker start --worker-dir <repo-root>`** — registers ONE My Machines worker per workspace. `--pool` / `--pool-name` flags are REMOVED at the popola layer (constraint #1); Self-Hosted Pool workers go through `agent worker start --pool` directly outside popola.
+3. **No GitHub-App probe** — the registered worker holds its own clone, so popola skips the `GET /v1/repositories` preflight for self-hosted (constraint #3).
+4. **`view: https://cursor.com/agents/<bcId>` URL** — every `--cloud-target=self-hosted` dispatch prints this line to stdout (after the task_id) for web-side observability (constraint #4).
+5. **No `--allow-fallback`** — passing `--allow-fallback` with `--cloud-target=self-hosted` is a no-op + bilingual stderr WARN (constraint #2). Self-hosted NEVER falls back to a local CLI.
+6. **No `--auth-mode=rest` for self-hosted** — `--auth-mode=session-jwt` is the implicit default; explicit `--auth-mode=rest` with `--cloud-target=self-hosted` exits 2 (constraint #5).
+
+End-to-end self-hosted bootstrap:
+
+```bash
+# 0. install popolaloom (Step 0 above)
+# 1. Cursor session JWT
+cursor login                      # opens browser → writes ~/.config/cursor/auth.json
+
+# 2. register the workspace worker (My Machines mode — no API key)
+popola cloud worker start --worker-dir "$(pwd)" --management-addr 127.0.0.1:39231
+
+# 3. start the daemon
+popola popolad start
+
+# 4. dispatch — auth-mode defaults to session-jwt for self-hosted
+popola dispatch "ship the v1.6.0 release notes" \
+  --cloud-target=self-hosted --worker-name=popolaloom-myrepo-deadbeef \
+  --cwd "$(pwd)" --cli-flag repo_url=https://github.com/acme/myrepo
+# → self-hosted-feedf00d
+# → view: https://cursor.com/agents/bc-...
+```
 
 ### Cloud-only project init (v0.9.0 GA)
 

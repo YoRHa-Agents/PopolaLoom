@@ -189,15 +189,25 @@ def test_skill_md_body_length_in_token_budget(skill_body: str) -> None:
         reference for the v1.5.0 contract; trimming them would push
         operators back to spelunking the CHANGELOG. ~1.8 KB net growth
         per PLAN.md Phase J.)
-    Any further growth past 48 000 must re-trigger the trim-vs-bump
+      - **v1.6.0 bump: 48 000 → 54 000** (`feedback_for_v1.5.2.md`
+        single-path self-hosted dispatch: rewritten Workflow 6 with
+        explicit managed vs self-hosted code blocks, updated
+        Workflow 10 / 12 to the single-path shape, new
+        ``Verifying a self-hosted dispatch`` section with the
+        ``view:`` URL contract, and the v1.6.0 No-Silent-Fallback
+        4-row table. ~3.5 KB net growth — the new self-hosted
+        examples replace the v1.5.x ``--auth-mode=session-jwt``
+        boilerplate that operators had to copy across multiple
+        sections).
+    Any further growth past 54 000 must re-trigger the trim-vs-bump
     discussion — do NOT bump again silently.
     """
     body_len = len(skill_body)
-    # v1.5.0 bump: 40_000 → 48_000 (no-silent-fallback + popolad env chain +
-    # path-B self-hosted worker dispatch subsections)
-    assert 8_000 <= body_len <= 48_000, (
+    # v1.6.0 bump: 48_000 → 54_000 (single-path self-hosted Workflow 6/10/12
+    # rewrites + Verifying a self-hosted dispatch + 4-row no-silent-fallback)
+    assert 8_000 <= body_len <= 54_000, (
         f"SKILL.md body length {body_len} chars is outside the "
-        f"[8 000, 48 000] token-budget window (target ~ 11 000–44 000)."
+        f"[8 000, 54 000] token-budget window (target ~ 11 000–50 000)."
     )
 
 
@@ -216,13 +226,19 @@ def test_skill_md_body_has_all_canonical_sections(skill_body: str) -> None:
 
 
 def test_skill_md_documents_ambiguity_protocol(skill_body: str) -> None:
-    """v1.1.0 guided dispatch and Path-B docs are present."""
+    """v1.1.0 guided dispatch and Path-B docs are present.
+
+    v1.6.0 renames the Workflow 12 header to
+    ``Workflow 12 — Path-B self-hosted dispatch (v1.6.0 single path)``
+    to reflect the single-canonical-path contract; the substring check
+    below uses the v1.6.0 wording.
+    """
     required = [
         "## Ambiguity Resolution Protocol",
         "target/model/thinking depth/special modes",
         "AskQuestion",
         "Workflow 13 — Guided dispatch with option-group Q&A",
-        "Workflow 12 — Path-B advanced dispatch",
+        "Workflow 12 — Path-B self-hosted dispatch",
         "popola dispatch <prompt> --wizard",
         "schema_version = 2",
     ]

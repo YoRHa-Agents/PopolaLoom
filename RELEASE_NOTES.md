@@ -1,33 +1,42 @@
 > **Policy (v0.7.0+)**: This file is overwritten with each release; for the full historical archive of every version see [`CHANGELOG.md`](CHANGELOG.md).
 
-# PopolaLoom v1.5.1 — cloud-cancel race window + Cursor REST schema docs
+# PopolaLoom v1.6.0 — single-path self-hosted dispatch
 
 <!-- updated: 2026-05-18 -->
 
-## v1.5.1 callouts
+## v1.6.0 callouts
 
-> **Cloud-cancel race window closed.** `popola cancel` of a `cursor-`-prefixed task that races the supervisor's cloud-handle hydration no longer trips the LOCAL "has no pid yet" guard or the cloud "cloud_cancel_no_handle" guard. `Popolad.cancel_task(...)` gains a new `cloud_cancel_grace_s: float = 3.0` keyword that bounds a 50-ms-tick polling loop until either the supervisor populates `runtime="cloud"` + `cursor_agent_id` (cancel proceeds), the task hits a terminal state mid-wait (raise the L1047 terminal guard's `RuntimeError`), or the deadline expires (emit structured `task.failed` event with `error_kind="cloud_cancel_race_window_exceeded"` + raise `RuntimeError`). No silent fallback. Daemon shutdown clamps the grace at 1.0 s to keep total shutdown bounded.
+> **Single canonical self-hosted dispatch path.** v1.6.0 closes the 6 hard constraints in [`feedback_for_v1.5.2.md`](.local/feedbacks/feedback_for_v1.5.2.md) by collapsing self-hosted dispatch (`popola dispatch ... --cloud-target=self-hosted`) to exactly ONE path — Path-B JWT direct via `cursor-cloud-internal`. Zero auto-decision fallback. Managed cloud (`--cloud-target=cursor-managed`) and local CLI dispatch (`--cli=cursor|claude|codex|...`) are unchanged.
 
-> **G3 verification oracle replaced (Cursor REST `is_in_use` always null for named workers).** The v1.5.0 oracle "self-hosted-worker dispatch routed correctly when `worker.is_in_use=true active_bc_id=<bc>`" is unusable — Stage T live probe (5 mid-run snapshots at 30 s intervals against `api.cursor.com` on 2026-05-18) showed `is_in_use`, `active_bc_id`, AND `lastActivityAt` ALL stayed `null` even while the agent ran end-to-end. The recommended G3 oracle is now **`agent.env`** from `GET /v1/agents/<bc-id>` — a named-worker dispatch sees `env: {"type": "machine", "name": "<your-worker>"}` durably for the agent's lifetime (NOTE: `agent.target` is `null` in this response; the routing target lives in `env`) — **PLUS** the Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` from the worker's own `--management-addr` `/metrics`. Documented in both SKILL.md mirrors.
+> **`--pool` / `--pool-name` removed from `popola cloud worker {start,debug}`** (constraint #1). The popola layer no longer wraps Self-Hosted Pool mode. My Machines is now the ONLY supported worker mode at the popola layer; operators on Cursor Enterprise pools can continue to use `agent worker start --pool` directly against the upstream Cursor CLI without going through popola.
 
-> **G5 verification oracle replaced (Cursor REST `model_details=null` for path-A agents).** `GET /v1/agents/<bc-id>` now returns `model_details=null` for agents created via path-A REST `POST /v1/agents`, even when `--cli-flag model_id_override=<X>` was honored. The v1.5.0 oracle "`agent.model_details.model_name ends with '-high'`" no longer fires for path-A. The recommended G5 oracle is now **absence of the Cursor server error `Model '<X>' does not support long-running agent mode`** in the agent's run-event NDJSON log, with successful terminal state.
+> **`--cloud-target=self-hosted --auth-mode=rest` is rejected** (constraint #5). Operators who explicitly passed `--auth-mode=rest` with `--cloud-target=self-hosted` previously dispatched via Path-A REST. v1.6.0 hard-fails with exit 2 and a bilingual hint pointing at `--auth-mode=session-jwt`. When `--auth-mode` is omitted the CLI silently upgrades to `session-jwt` with a one-line `[prefs] forcing --auth-mode=session-jwt ...` stderr note (No-Silent-Failures: the upgrade is visible).
+
+> **`--allow-fallback` is a no-op + WARN for self-hosted** (constraint #2). Per locked decision Q-4 in the v1.6.0 plan, the flag stays available for non-self-hosted CLIs (`cursor-managed`, local `cursor|claude|codex|copilot`) but becomes a no-op + bilingual stderr WARN when `cloud_target=self-hosted`. The resolver NEVER walks `[user_preferences.routing].fallback_chain` on the self-hosted path.
+
+> **`view: https://cursor.com/agents/<bcId>` printed at dispatch time** (constraint #4). Every cloud dispatch (managed + self-hosted) now prints a `view:` URL on stdout after the task_id so operators get web-side observability immediately. Path-A REST `cloud.queued` event carries the URL derived from the agent_id; Path-B was already emitting it.
+
+> **GitHub-App preflight skipped for self-hosted** (constraint #3). `check_github_app_installed(..., target='self-hosted')` short-circuits to `installed=None` because the registered self-hosted worker holds its own workspace clone — the upstream Cursor GitHub-App is not required.
+
+> **Both SKILL.md copies + the Copilot mirror bumped to v1.6.0**, byte-identical across `src/popolaloom/skills/popola-loom/SKILL.md`, `.claude/skills/popola-loom/SKILL.md`, and `.github/copilot-instructions.md` (constraint #6). Workflow 6 / 10 / 12 rewritten to a SINGLE self-hosted example; new `Verifying a self-hosted dispatch` section documents the `view:` URL contract; the No-Silent-Fallback table compressed from 6 rows to 4.
 
 ## Highlights
 
-| Item | v1.5.1 resolution |
+| Item | v1.6.0 resolution |
 |---|---|
-| `popola cancel` cloud race window | New `cloud_cancel_grace_s: float = 3.0` kwarg on `Popolad.cancel_task`; 50 ms polling loop with structured `task.failed` event on deadline. |
-| Daemon shutdown bound | `popolaloom.daemon.rpc.lifespan` shutdown loop clamps `cloud_cancel_grace_s=1.0`. |
-| G3 oracle (worker routing) | `agent.env` (`{type:"machine",name:"<X>"}`) + worker `/metrics` `cursor_self_hosted_worker_last_activity_unix_seconds` (replaces `is_in_use`, which stayed null mid-run during Stage T live probe). |
-| G5 oracle (model wiring) | Absence of `Model 'X' does not support long-running agent mode` error on terminal state (replaces null `model_details`). |
-| `.claude` SKILL mirror docs catch-up | `.claude/skills/popola-loom/SKILL.md` brings forward the v1.5.0 No-Silent-Fallback / popolad env / path-B sections it was missing. |
-| Tests | 5 new race-window contract tests pinning the v1.5.1 `cloud_cancel_grace_s` contract. |
+| Pool mode (constraint #1) | `--pool` / `--pool-name` flags REMOVED from `popola cloud worker {start,debug}`; supervisor rejects `extra.env.type='pool'` for self-hosted with `error_kind="pool_forbidden_self_hosted"`. |
+| Local CLI fallback (constraint #2) | `--allow-fallback` is a no-op + bilingual stderr WARN when `cloud_target=self-hosted`; resolver never consults `fallback_chain` on the self-hosted path. |
+| GitHub-App preflight (constraint #3) | `check_github_app_installed(..., target='self-hosted')` short-circuits to `installed=None` without calling `_request_json`. |
+| Dashboard URL (constraint #4) | `_print_dashboard_url_or_warn` polls `$POPOLA_HOME/events/<task_id>.jsonl` for ~2 s waiting for `cloud.queued.dashboard_url`; prints `view: <url>` on observe, bilingual WARN on timeout. |
+| Single canonical path (constraint #5) | `_apply_path_b_flags` forces `auth_mode=session-jwt` for self-hosted; explicit `--auth-mode=rest` exits 2. Supervisor rejects `extra.__auth_mode__ != 'session-jwt'` for self-hosted with `error_kind="invalid_auth_mode_for_self_hosted"`. |
+| Skill enforcement (constraint #6) | Both SKILL.md copies + `.github/copilot-instructions.md` bumped to v1.6.0, byte-identical; Workflows 6/10/12 rewritten; install-popola SKILL gains "Self-hosted setup (one-path)" subsection. |
+| Tests | NEW `tests/contract/test_self_hosted_single_path.py` (15 cases, 1:1 mapping to the 6 constraints); NEW `tests/cli/test_dispatch_dashboard_url.py` (6 cases); modifications + inverted assertions across `test_cloud_worker_cmd.py`, `test_no_silent_fallback.py`, `test_dispatch_cloud_target_flags.py`, `test_cloud_worker_dispatch_worker_existence.py`. |
 
-## Backward compatibility
+## Migration notes (v1.5.x → v1.6.0)
 
-`cloud_cancel_grace_s=0.0` (NEW v1.5.1 default-opt-out) preserves the v1.5.0 immediate-fail semantics — the deadline check fires on the FIRST polling iteration and the path emits the structured event + raises `RuntimeError` without blocking. The error message string changes from the v1.5.0 LOCAL `task <id> has no pid yet (race window between dispatch and spawn)` guard to the v1.5.1 `task <id> cloud handle not populated within 0.00s grace window` — both loud failures with no silent fallback. External scripts that grep the old error text should broaden the match.
-
-The default of `3.0 s` is conservative and effectively transparent for normal-flow callers — by the time an operator runs `popola cancel`, `supervisor.spawn` has already had >50 ms to flip `runtime="cloud"` and populate `cursor_agent_id`. The grace-window code path only fires for genuinely-racy cancels.
+- **Operators using `popola cloud worker start --pool`** must drop the flag and either accept My Machines mode (the v1.6.0 popola contract) OR invoke `agent worker start --pool` directly against the upstream Cursor CLI outside popola.
+- **Operators using `popola dispatch --cloud-target=self-hosted --auth-mode=rest`** must remove the explicit `--auth-mode=rest` (the v1.6.0 default is `session-jwt` for self-hosted) AND run `cursor login` once to populate `~/.config/cursor/auth.json`. No more `CURSOR_API_KEY` needed for self-hosted dispatch.
+- **Operators using `popola dispatch --allow-fallback` with `--cloud-target=self-hosted`** should drop the flag — it's a no-op + WARN under v1.6.0. The flag still works for non-self-hosted dispatches (managed cloud + local CLI).
 
 ## Upgrade
 
@@ -36,20 +45,21 @@ The default of `3.0 s` is conservative and effectively transparent for normal-fl
 popola update
 
 # Or fresh install:
-pip install --upgrade git+https://github.com/YoRHa-Agents/PopolaLoom@v1.5.1
+pip install --upgrade git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.0
 
-popola version  # → popolaloom 1.5.1
+popola version  # → popolaloom 1.6.0
 ```
 
-## Known limitations carry-over from v1.5.0
+## Known limitations carry-over
 
-- **Path-B server-side pool downgrade** — Cursor's `StartBackgroundComposerFromSnapshot` Connect-RPC SILENTLY downgrades `env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side. Use `--auth-mode=rest` for precise named-worker routing. (Documented in SKILL.md ⚠️ Path-B server-side routing limitation.)
+- **Cursor Connect-RPC server-side `env=machine→pool` downgrade** ([docs/known-issues.md](docs/known-issues.md)) — Cursor's `StartBackgroundComposerFromSnapshot` silently downgrades `env={"type":"machine","name":X}` → `env={"type":"pool"}` server-side. PopolaLoom CANNOT fix server-side routing; constraint #1 is satisfied at the popola layer (worker process is My Machines only; daemon rejects pool routing for self-hosted), but operators on a multi-worker account may see a different worker claim the task than the named one. Workaround: run one worker per repo.
 - **GPT-5.5 + `long_running_agent_mode`** — Cursor's path-B server rejects bare `gpt-5.5` when `long_running_agent_mode=true`. The escape hatch `--cli-flag model_id_override=gpt-5.5-high` remains the documented workaround.
 - **JWT auto-refresh** — JWT exp is 1 h; popolaloom currently warns at boundary but doesn't refresh (`BL-v1.4.x-jwt-auto-refresh`).
 - **Coverage 94% floor** — temporarily at 93%; soak on `cloud_worker_cmd.py` / `cursor_cloud.py` error paths still pending (`BL-v1.0.x-coverage-94-restore`).
 
-## Next steps (deferred to v1.5.2 / v1.6.0)
+## Next steps (deferred to v1.6.x / v1.7.0)
 
+- BL-v1.6.x-cursor-env-machine-to-pool — track Cursor's server-side fix for the `env=machine→pool` downgrade; popola will pick up named-worker routing automatically once the upstream regression is resolved.
 - BL-v1.3.x-bc-model-whitelist-sync — probe-and-cache the path-B model list (escape hatch landed in v1.5.0 via `--cli-flag model_id_override=<id>`).
 - BL-v1.3.x-path-b-non-github-routing — Cursor server-side hard constraint (cursor-managed cloud + non-GitHub repos).
-- Anything filed in `.local/feedbacks/feedback_for_v1.5.1.md` after the v1.5.1 Stage T live probe.
+- Anything filed in `.local/feedbacks/feedback_for_v1.6.0.md` after the v1.6.0 Stage T live probe.
