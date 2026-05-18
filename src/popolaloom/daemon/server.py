@@ -996,6 +996,7 @@ class Popolad:
         task_id: str,
         *,
         sigterm_grace_s: float = 5.0,
+        cloud_cancel_grace_s: float = 3.0,
         daemon_started_at: datetime | None = None,
     ) -> dict[str, Any]:
         """Send SIGTERM to the task subprocess, escalate to SIGKILL after grace.
@@ -1022,9 +1023,32 @@ class Popolad:
         the legacy "race window between dispatch and spawn" error
         forever. See Step 2 of fix/v0.7.1-* dispatch.
 
+        v1.5.1 cloud-cancel race window closure (closes O.G3.3 in
+        ``.local/feedbacks/feedback_for_v1.5.0.md``): for ``cursor-*``
+        ``task_id``s a short grace window polls :class:`StateStore`
+        until ``runtime == "cloud"`` AND ``cursor_agent_id`` is
+        populated, so a popola cancel that races the supervisor's
+        cloud-handle hydration (``supervisor.py:383`` /
+        ``:703-711`` / ``:1010-1019``) no longer trips the LOCAL
+        "has no pid yet" guard nor the cloud ``cloud_cancel_no_handle``
+        guard. Orphan-eligible handles bypass the wait so the existing
+        :meth:`_soft_cancel_orphan` path keeps firing immediately.
+
         Args:
             task_id: 已注册的 task_id。
             sigterm_grace_s: SIGTERM 后等待秒数, 超时 SIGKILL。
+            cloud_cancel_grace_s: v1.5.1 — upper bound (seconds) for
+                polling the state store until the cloud-runtime handle
+                is populated, for ``task_id``s starting with
+                ``"cursor-"`` (covers both ``cursor-...`` and
+                ``cursor-cloud-...`` ids). Polling interval is 50 ms.
+                On deadline exceeded we emit
+                ``task.failed`` (error_kind
+                ``cloud_cancel_race_window_exceeded``) AND raise
+                :class:`RuntimeError`. Set to ``0.0`` to opt out
+                (legacy v1.5.0 behavior). The shutdown loop in
+                :mod:`popolaloom.daemon.rpc` passes ``1.0`` to keep
+                total daemon-shutdown bounded.
             daemon_started_at: optional UTC start time of the running
                 popolad process; supplied by :mod:`popolaloom.daemon.rpc`
                 so we can identify orphan handles created by a previous
@@ -1035,7 +1059,8 @@ class Popolad:
 
         Raises:
             KeyError: 当 ``task_id`` 未注册。
-            RuntimeError: 当任务已是终态 / 没有 pid。
+            RuntimeError: 当任务已是终态 / 没有 pid / cloud-cancel grace
+                window 内 cloud handle 仍未 populated。
         """
         import os as _os
         import signal as _signal
@@ -1048,6 +1073,143 @@ class Popolad:
             raise RuntimeError(
                 f"task {task_id} already in terminal state {handle.state}; cannot cancel"
             )
+
+        # v1.5.1 — Cloud-cancel race window grace. The dispatch path
+        # registers TaskHandle with default runtime="local" at the dispatch
+        # site (server.py:560-571); the supervisor only flips
+        # runtime="cloud" + populates cursor_agent_id later
+        # (supervisor.py:383 path-A or :1010 path-B; ids appear via
+        # ``state_store.rehydrate([dataclasses.replace(...)])`` at
+        # supervisor.py:703-711 / :1010-1019, which REPLACES the dict
+        # entry). Until both happen, racing a `popola cancel` against a
+        # fresh cursor-cloud dispatch falls into either the LOCAL guard
+        # below ("has no pid yet") or the cloud guard inside
+        # :meth:`_cancel_cloud_task` ("cloud_cancel_no_handle") — neither
+        # of which is what the user asked for. Closes O.G3.3 of
+        # ``.local/feedbacks/feedback_for_v1.5.0.md``.
+        #
+        # Predicate notes:
+        # (a) ``task_id.startswith("cursor-")`` is deliberately broad — it
+        #     matches both ``cursor-...`` and ``cursor-cloud-...`` ids,
+        #     per Stage R.4 #5 of the v1.5.1 design (both prefixes route
+        #     through the cloud-capable supervisor paths above).
+        # (b) Orphan-eligible handles (rehydrated from a prior daemon
+        #     that crashed before recording popola_dispatch) MUST NOT
+        #     wait — they will never populate; the existing
+        #     :meth:`_soft_cancel_orphan` path below is the correct
+        #     terminal verdict and we want it to fire immediately.
+        # (c) The loop re-fetches via ``self._state.get(task_id)`` on
+        #     every tick instead of reusing the captured ``handle``
+        #     because the supervisor hydrates cloud ids via
+        #     ``state_store.rehydrate([dataclasses.replace(...)])`` which
+        #     REPLACES the dict entry — the captured ``handle`` is a
+        #     stale reference whose attributes will never mutate in
+        #     place even after the supervisor "updates" the handle.
+        is_orphan_eligible = (
+            daemon_started_at is not None
+            and handle.started_at < daemon_started_at
+            and not self._has_popola_dispatch_row(handle.arktower_task_id)
+        )
+        needs_cloud_grace = (
+            task_id.startswith("cursor-")
+            and (handle.runtime != "cloud" or handle.cursor_agent_id is None)
+            and not is_orphan_eligible
+        )
+        if needs_cloud_grace:
+            deadline = _time.monotonic() + max(0.0, cloud_cancel_grace_s)
+            wait_start = _time.monotonic()
+            while True:
+                current = self._state.get(task_id)
+                if current is None:
+                    logger.warning(
+                        "cloud-cancel grace: task=%s vanished from state store "
+                        "while waiting; falling through to legacy cancel paths",
+                        task_id,
+                    )
+                    break
+                if current.is_terminal():
+                    # Loud-not-silent: mirror the L1047 terminal guard above.
+                    # The task entered a terminal state mid-wait (e.g. the
+                    # supervisor's spawn aborted to FAILED, or the user
+                    # already cancelled via another path), so cancel is
+                    # a no-op and we surface the same error the pre-wait
+                    # check would have raised.
+                    handle = current
+                    raise RuntimeError(
+                        f"task {task_id} already in terminal state "
+                        f"{handle.state}; cannot cancel"
+                    )
+                if (
+                    current.runtime == "cloud"
+                    and current.cursor_agent_id is not None
+                ):
+                    handle = current
+                    logger.debug(
+                        "cloud-cancel grace: task=%s cloud handle populated "
+                        "after %.3fs (agent_id=%s, run_id=%s)",
+                        task_id,
+                        _time.monotonic() - wait_start,
+                        current.cursor_agent_id,
+                        current.cursor_run_id,
+                    )
+                    break
+                now = _time.monotonic()
+                if now >= deadline:
+                    # Rebind so the event payload + logger.error report the
+                    # freshest snapshot rather than the stale captured handle.
+                    # Use a distinct variable name from the post-grace
+                    # ``event_log`` (the LOCAL pid-cancel branch below
+                    # picks ``event_log = self._event_logs.get(task_id)``,
+                    # typed ``EventLog | None``) to avoid mypy widening
+                    # the inferred type for that later assignment.
+                    handle = current
+                    grace_event_log = self._ensure_task_event_log(
+                        task_id, handle
+                    )
+                    err_detail = (
+                        f"cloud handle did not populate within "
+                        f"{cloud_cancel_grace_s:.2f}s "
+                        f"(runtime={handle.runtime}, "
+                        f"cursor_agent_id={handle.cursor_agent_id!r})"
+                    )
+                    logger.error(
+                        "cloud-cancel grace: task=%s exceeded %.2fs wait "
+                        "(elapsed=%.3fs, runtime=%s, cursor_agent_id=%s) — "
+                        "emitting cloud_cancel_race_window_exceeded",
+                        task_id,
+                        cloud_cancel_grace_s,
+                        now - wait_start,
+                        handle.runtime,
+                        handle.cursor_agent_id,
+                    )
+                    grace_event_log.append(
+                        "task.failed",
+                        {
+                            "task_id": task_id,
+                            "runtime": handle.runtime,
+                            "error_kind": "cloud_cancel_race_window_exceeded",
+                            "error_detail": err_detail,
+                            "cloud_cancel_grace_s": cloud_cancel_grace_s,
+                            "cursor_agent_id": handle.cursor_agent_id,
+                            "cursor_run_id": handle.cursor_run_id,
+                        },
+                    )
+                    raise RuntimeError(
+                        f"task {task_id} cloud handle not populated within "
+                        f"{cloud_cancel_grace_s:.2f}s grace window"
+                    )
+                # Per-iteration debug only (low-noise; matches the SIGTERM
+                # grace loop style below — no info/warning until terminal).
+                logger.debug(
+                    "cloud-cancel grace: task=%s waiting "
+                    "(runtime=%s, cursor_agent_id=%s, elapsed=%.3fs)",
+                    task_id,
+                    current.runtime,
+                    current.cursor_agent_id,
+                    now - wait_start,
+                )
+                _time.sleep(0.05)
+
         if handle.runtime == "cloud":
             return self._cancel_cloud_task(handle)
 
