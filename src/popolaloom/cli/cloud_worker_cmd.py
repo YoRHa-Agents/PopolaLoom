@@ -1411,6 +1411,18 @@ def worker_dispatch_cmd(
         typer.echo(json.dumps(response_payload, ensure_ascii=False))
     else:
         typer.echo(response_payload["task_id"])
+        # v1.6.0 (feedback_for_v1.5.2 constraint #4): surface the
+        # ``view: <url>`` line from the daemon's ``cloud.queued``
+        # event so operators get web-side observability at dispatch
+        # time. The events log lives at
+        # ``$POPOLA_HOME/events/<task_id>.jsonl`` — same path the main
+        # ``popola dispatch`` verb reads via
+        # :func:`popolaloom.cli.main._print_dashboard_url_or_warn`.
+        # Deferred import to avoid circular-import risk between this
+        # module and ``cli/main.py``.
+        from popolaloom.cli.main import _print_dashboard_url_or_warn
+
+        _print_dashboard_url_or_warn(str(response_payload["task_id"]))
 
 
 def _build_self_hosted_worker_missing_hint(worker_name: str) -> str:

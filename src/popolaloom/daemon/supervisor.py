@@ -760,6 +760,13 @@ class Supervisor:
             cloud_phase="CREATING",
         )
         self._state_store.rehydrate([seeded_handle])
+        # v1.6.0 (feedback_for_v1.5.2 constraint #4): derive the Cursor
+        # web-side URL from the agent_id so the CLI's post-dispatch
+        # poller can surface ``view: <url>``. Path-A REST response
+        # does not carry an explicit ``dashboard_url`` (that's a
+        # Path-B Connect-RPC field), but the canonical URL shape is
+        # stable — ``https://cursor.com/agents/<bc-id>``.
+        rest_dashboard_url = f"https://cursor.com/agents/{agent_id}"
         event_log.append(
             "cloud.queued",
             {
@@ -768,13 +775,15 @@ class Supervisor:
                 "run_id": run_id,
                 "runtime": "cloud",
                 "initial_phase": "CREATING",
+                "dashboard_url": rest_dashboard_url,
             },
         )
         logger.info(
-            "cloud task queued task=%s agent=%s run=%s",
+            "cloud task queued task=%s agent=%s run=%s dashboard=%s",
             task_id,
             agent_id,
             run_id,
+            rest_dashboard_url,
         )
 
         poll_thread = run_poll_loop(

@@ -790,6 +790,16 @@ def dispatch(
                 "subprocess tasks)"
             )
 
+        # v1.6.0 (feedback_for_v1.5.2 constraint #4): cloud dispatches
+        # need a clear web-side observability link printed AT dispatch
+        # time so operators can verify the task is queued and inspect
+        # the workspace clone via Cursor's UI. The daemon emits
+        # ``cloud.queued`` carrying ``dashboard_url`` once the
+        # supervisor's StartBackgroundComposerFromSnapshot RPC
+        # returns; poll for up to ~2 s and surface the URL.
+        if cli == "cursor-cloud":
+            _print_dashboard_url_or_warn(task_id)
+
 
 # ── status ────────────────────────────────────────────────────────────────
 
@@ -917,6 +927,74 @@ def _build_status_busy_line(task_id: str) -> str | None:
     if not events:
         return None
     return _busy_line_from_events(events)
+
+
+_DASHBOARD_URL_POLL_TOTAL_S: float = 2.0
+"""Total time the post-dispatch poller waits for ``cloud.queued`` (s).
+
+v1.6.0 (``feedback_for_v1.5.2.md`` constraint #4): after a successful
+``cloud`` / ``cloud-target=self-hosted`` dispatch the CLI polls the
+events log for the daemon's ``cloud.queued`` event and prints its
+``dashboard_url`` to stdout as ``view: <url>``. A 2 s ceiling keeps
+the common case snappy without blocking the operator's shell when
+the daemon is slow / the dispatch failed. On timeout we emit a
+stderr WARN (No-Silent-Failures: NEVER silently skip).
+"""
+
+_DASHBOARD_URL_POLL_INTERVAL_S: float = 0.05
+"""Per-iteration sleep between events-log reads (50 ms)."""
+
+
+def _print_dashboard_url_or_warn(task_id: str) -> None:
+    """Poll the events log for ``cloud.queued`` and print ``view: <url>``.
+
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #4) — every cloud
+    dispatch (managed cloud or self-hosted-via-Path-B) needs a clear
+    URL printed at dispatch time so operators can verify the task is
+    queued and inspect the workspace clone via Cursor's UI.
+
+    Reads ``$POPOLA_HOME/events/<task_id>.jsonl`` directly because the
+    daemon already owns the authoritative writes via ``EventLog`` —
+    we don't need to add a new RPC method for the post-dispatch
+    polling. On timeout (~2 s default) emit a single stderr WARN
+    explaining the skip (No-Silent-Failures rule: NEVER silently
+    swallow the missing URL).
+
+    Args:
+        task_id: The task id returned by ``POST /dispatch``.
+    """
+    deadline = time.monotonic() + _DASHBOARD_URL_POLL_TOTAL_S
+    while time.monotonic() < deadline:
+        events = _read_events_for_task(task_id)
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") != "cloud.queued":
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            url = data.get("dashboard_url") if isinstance(data, dict) else None
+            if isinstance(url, str) and url:
+                typer.echo(f"view: {url}")
+                return
+            # A cloud.queued event with no dashboard_url is unexpected —
+            # emit an explicit WARN rather than silently skipping.
+            typer.echo(
+                "warn: cloud.queued event for "
+                f"task_id={task_id} did not carry a dashboard_url; "
+                "inspect ~/.popola/events/<task_id>.jsonl for details",
+                err=True,
+            )
+            return
+        time.sleep(_DASHBOARD_URL_POLL_INTERVAL_S)
+    typer.echo(
+        f"warn: dashboard_url not surfaced within "
+        f"{_DASHBOARD_URL_POLL_TOTAL_S:.1f}s for task_id={task_id} "
+        "(cloud.queued event not observed). Run `popola attach "
+        f"{task_id} --follow` to see why the dispatch is delayed, OR "
+        "`popola status` once the daemon emits the event. "
+        "(warn: 派发后 2s 内未观察到 cloud.queued 事件,无法显示 dashboard_url)",
+        err=True,
+    )
 
 
 def _events_path_for_task(task_id: str) -> Path:
