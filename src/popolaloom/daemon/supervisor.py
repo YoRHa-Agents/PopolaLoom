@@ -659,6 +659,7 @@ class Supervisor:
                 pr_url=pr_url,
                 env_vars=env_vars_param,
                 env=env_param,
+                cloud_target=cloud_target_str or None,
                 timeout_s=timeout_s_param,
             )
         except ValueError as exc:

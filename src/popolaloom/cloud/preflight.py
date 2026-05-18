@@ -203,6 +203,8 @@ def check_self_hosted_worker_exists(
 def check_github_app_installed(
     client: CloudCursorClient,
     repo_url: str,
+    *,
+    target: str | None = None,
 ) -> GithubAppCheckResult:
     """Pre-flight the Cursor GitHub-App installation for a github.com repo URL.
 
@@ -215,6 +217,16 @@ def check_github_app_installed(
     branch-validation gotcha" L161-165); other hosts use unrelated
     integrations that are out-of-scope for v0.10.0.
 
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #3): when
+    ``target == "self-hosted"`` the gate short-circuits to
+    ``installed=None`` because the operator already has a registered
+    workspace worker that holds the local clone — the upstream
+    GitHub-App is irrelevant. The contract is pinned by
+    ``tests/cloud/test_preflight.py``: even though the Path-B
+    ``cursor-cloud-internal`` transport does not own a
+    ``_request_json`` method, callers that route Path-A REST against a
+    self-hosted target see the same skip semantics.
+
     Args:
         client: A connected :class:`CloudCursorClient` instance.
         repo_url: The repository URL the operator is about to dispatch
@@ -222,11 +234,15 @@ def check_github_app_installed(
             and scheme-less (``github.com/owner/name``) forms are accepted —
             :func:`urllib.parse.urlsplit` requires a scheme, so a missing
             scheme is auto-prepended before parsing.
+        target: The resolved ``cloud_target`` for the dispatch (Q-7 /
+            B3 schema). Pass ``"self-hosted"`` to skip the gate entirely;
+            any other value (``"cursor-managed"`` / ``None`` / ``""``)
+            preserves the v0.10.0 behaviour.
 
     Returns:
         A :class:`GithubAppCheckResult`. Per PLAN.md A2 AC 3, ``installed``
-        is ``True`` / ``False`` / ``None`` depending on the response shape
-        and the URL host.
+        is ``True`` / ``False`` / ``None`` depending on the response shape,
+        the URL host, AND the ``target`` value.
 
     Raises:
         popolaloom.adapters.cursor_cloud.CursorCloudError: any HTTP / JSON
@@ -243,7 +259,22 @@ def check_github_app_installed(
         >>> # And check_github_app_installed(client, "https://gitlab.example.com/x/y")
         >>> # returns:
         >>> #   .installed == None  (skipped — not github.com)
+        >>> # And check_github_app_installed(client, "https://github.com/x/y",
+        >>> #                                target="self-hosted")
+        >>> # returns:
+        >>> #   .installed == None  (skipped — self-hosted target)
     """
+    if target == "self-hosted":
+        return GithubAppCheckResult(
+            installed=None,
+            message=(
+                "self-hosted target — GitHub-App preflight skipped "
+                "(v1.6.0 feedback_for_v1.5.2 constraint #3: the named "
+                "self-hosted worker holds its own workspace clone, so "
+                "the upstream GitHub-App is not required)"
+            ),
+        )
+
     if not repo_url:
         return GithubAppCheckResult(
             installed=None,

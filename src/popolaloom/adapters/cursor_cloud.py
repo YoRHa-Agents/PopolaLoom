@@ -1256,6 +1256,7 @@ class CloudCursorClient:
         env_vars: dict[str, str] | None = None,
         env: AgentEnv | None = None,
         skip_github_app_preflight: bool = False,
+        cloud_target: str | None = None,
         timeout_s: float | None = None,
     ) -> dict[str, Any]:
         """POST ``/v1/agents`` — launch a cloud agent; returns parsed JSON body.
@@ -1377,7 +1378,20 @@ class CloudCursorClient:
         if repo_url and not skip_github_app_preflight:
             from popolaloom.cloud.preflight import check_github_app_installed
 
-            preflight_result = check_github_app_installed(self, repo_url)
+            # v1.6.0 (feedback_for_v1.5.2 constraint #3): when the
+            # dispatch is targeted at a self-hosted worker the
+            # GitHub-App gate short-circuits to ``installed=None`` — the
+            # worker holds its own workspace clone so the App is not
+            # required. Defensive: the v1.6.0 single-path contract
+            # routes ALL self-hosted dispatch via Path-B so this REST
+            # branch is unreachable, but the test
+            # ``test_check_github_app_installed_skipped_for_self_hosted``
+            # pins the contract regardless.
+            preflight_result = check_github_app_installed(
+                self,
+                repo_url,
+                target=cloud_target,
+            )
             if preflight_result.installed is False:
                 # Mirror the catalog rule's hint text verbatim so the
                 # early refuse is byte-identical to the late catch.
