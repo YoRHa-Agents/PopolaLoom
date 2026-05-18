@@ -499,6 +499,15 @@ class Supervisor:
         # `use_private_worker=True + labels.worker=X` are both present we
         # translate to `env={type:"machine", name:X}` and emit one warning.
         # If `env` IS present the legacy keys are ignored (env wins).
+        #
+        # v1.6.0 (feedback_for_v1.5.2 constraint #1): pool routing is
+        # forbidden at the popola layer when ``cloud_target=self-hosted``.
+        # The CLI no longer offers a ``--pool`` flag and the wizard no
+        # longer shows a pool option, but a legacy CLI pinned by an
+        # operator or a hand-rolled marker payload could still set
+        # ``env={type:'pool'}`` — we reject it explicitly so the
+        # constraint is satisfied at the daemon boundary as well.
+        cloud_target_str = str(extra.get("cloud_target") or "")
         env_param: AgentEnv | None = None
         env_raw = extra.get("env")
         if env_raw is not None:
@@ -522,6 +531,19 @@ class Supervisor:
                         "extra.env.type must be one of "
                         "['cloud', 'machine', 'pool']; "
                         f"got {env_type!r}"
+                    ),
+                )
+            if env_type == "pool" and cloud_target_str == "self-hosted":
+                return _fail(
+                    error_kind="pool_forbidden_self_hosted",
+                    error_detail=(
+                        "extra.env.type='pool' is forbidden when "
+                        "cloud_target='self-hosted' (v1.6.0 feedback_for_v1.5.2 "
+                        "constraint #1: popola only routes My Machines workers "
+                        "on the self-hosted path). Use --cli=cursor-cloud "
+                        "--cloud-target=self-hosted --worker-name=<X> for a "
+                        "named worker, or invoke `agent worker start --pool` "
+                        "directly outside popola if you need a pool worker."
                     ),
                 )
             env_name_raw = env_raw.get("name")

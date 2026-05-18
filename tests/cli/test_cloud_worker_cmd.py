@@ -6,12 +6,15 @@ Hermetic — every test monkeypatches the three indirection points in
 so no real
 subprocess is spawned and no real network IO occurs.
 
-Coverage summary (mirrors v0.9.1 plan §"Coverage targets"):
+Coverage summary (mirrors v0.9.1 plan §"Coverage targets"; v1.6.0
+constraint #1 — popola only wraps My Machines workers; pool flags
+removed from the popola layer):
 
-- argv construction for My Machines (no ``--pool``) and Self-Hosted
-  Pool (``--pool``) modes.
-- ``--pool`` without ``CURSOR_API_KEY`` exits ``77`` with an explicit
-  service-account-API-key hint (No Silent Failures).
+- argv construction for My Machines mode (the only supported mode at
+  the popola layer; Self-Hosted Pool workers go through ``agent worker
+  start --pool`` directly outside popola).
+- ``--pool`` / ``--pool-name`` flags raise Click ``UsageError`` (exit 2)
+  on ``popola cloud worker start`` and ``popola cloud worker debug``.
 - ``--dry-run`` prints the argv and does not invoke the subprocess
   helper.
 - ``status`` parses ``/healthz`` / ``/readyz`` / ``/metrics`` and
@@ -335,60 +338,99 @@ def test_format_unix_timestamp_unparseable_renders_dash() -> None:
 
 
 def test_build_start_argv_my_machines_default(tmp_path: Path) -> None:
-    """My Machines mode: no ``--pool`` flag, no ``--pool-name``."""
+    """v1.6.0: only My Machines mode is supported (no ``--pool`` ever)."""
     argv = cloud_worker_cmd._build_start_argv(
         binary="/bin/agent",
         worker_dir=tmp_path,
         name="dev-1",
-        pool=False,
-        pool_name=None,
-        idle_release_timeout=None,
-        labels=[],
-        management_addr=None,
+        idle_release_timeout=600,
+        labels=[("env", "prod")],
+        management_addr=":8080",
     )
     assert "--pool" not in argv
     assert "--pool-name" not in argv
     assert "--name" in argv and "dev-1" in argv
     assert "--worker-dir" in argv and str(tmp_path) in argv
-
-
-def test_build_start_argv_pool_mode(tmp_path: Path) -> None:
-    """Pool mode: ``--pool`` + optional ``--pool-name`` propagate."""
-    argv = cloud_worker_cmd._build_start_argv(
-        binary="/bin/agent",
-        worker_dir=tmp_path,
-        name=None,
-        pool=True,
-        pool_name="popolaloom",
-        idle_release_timeout=600,
-        labels=[("env", "prod"), ("hitl", "enabled")],
-        management_addr=":8080",
-    )
-    assert "--pool" in argv
-    pool_idx = argv.index("--pool-name")
-    assert argv[pool_idx + 1] == "popolaloom"
     idle_idx = argv.index("--idle-release-timeout")
     assert argv[idle_idx + 1] == "600"
     addr_idx = argv.index("--management-addr")
     assert argv[addr_idx + 1] == ":8080"
-    # Labels are emitted as repeatable ``--label key=value`` pairs.
-    assert argv.count("--label") == 2
     assert "env=prod" in argv
-    assert "hitl=enabled" in argv
 
 
 def test_build_debug_argv_minimal(tmp_path: Path) -> None:
-    """Debug argv has the ``debug`` subcommand + worker dir at minimum."""
+    """v1.6.0: debug argv has the ``debug`` subcommand + worker dir; no pool flags."""
     argv = cloud_worker_cmd._build_debug_argv(
         binary="/bin/agent",
         worker_dir=tmp_path,
         name=None,
-        pool=False,
-        pool_name=None,
         labels=[],
     )
     assert argv[:3] == ["/bin/agent", "worker", "debug"]
     assert "--worker-dir" in argv
+    assert "--pool" not in argv
+    assert "--pool-name" not in argv
+
+
+def test_pool_flag_does_not_exist_on_worker_start(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.0 constraint #1: ``popola cloud worker start --pool`` is rejected."""
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--pool",
+        ],
+    )
+    # Click rejects the unknown flag with a UsageError → exit code 2.
+    assert result.exit_code == 2
+    assert spawned == []
+
+
+def test_pool_flag_does_not_exist_on_worker_debug(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.0 constraint #1: ``popola cloud worker debug --pool`` is rejected."""
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "debug",
+            "--worker-dir",
+            str(isolated_home),
+            "--pool",
+        ],
+    )
+    assert result.exit_code == 2
+    assert spawned == []
 
 
 # ---------------------------------------------------------------------------
@@ -425,68 +467,13 @@ def test_worker_debug_invokes_agent_subprocess(
     assert str(isolated_home) in argv
 
 
-def test_worker_debug_pool_without_api_key_exits_77(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--pool`` without ``CURSOR_API_KEY`` fails with the canonical hint."""
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    monkeypatch.setattr(
-        cloud_worker_cmd, "_run_subprocess", lambda argv: 0
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "debug",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-        ],
-    )
-    assert result.exit_code == cloud_worker_cmd._EXIT_POOL_REQUIRES_API_KEY
-    out = _combined_output(result)
-    assert "service-account API key" in out
-    assert "CURSOR_API_KEY" in out
-
-
-def test_worker_debug_pool_with_api_key_runs(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--pool`` with ``CURSOR_API_KEY`` exported reaches subprocess."""
-    monkeypatch.setenv("CURSOR_API_KEY", "test-service-account-key")
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        cloud_worker_cmd,
-        "_run_subprocess",
-        lambda argv: captured.append(argv) or 0,
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "debug",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-            "--pool-name",
-            "default",
-        ],
-    )
-    assert result.exit_code == 0, _combined_output(result)
-    assert len(captured) == 1
-    assert "--pool" in captured[0]
+# v1.6.0 (feedback_for_v1.5.2 constraint #1): the v1.5.x
+# ``test_worker_debug_pool_without_api_key_exits_77`` /
+# ``test_worker_debug_pool_with_api_key_runs`` /
+# ``test_worker_start_pool_without_api_key_exits_77`` cases were deleted
+# alongside the ``--pool`` / ``--pool-name`` flags. See
+# ``test_pool_flag_does_not_exist_on_worker_{start,debug}`` above for the
+# replacement contract.
 
 
 # ---------------------------------------------------------------------------
@@ -564,39 +551,6 @@ def test_worker_start_without_name_uses_workspace_default(
     assert argv[name_idx + 1].startswith(
         f"popolaloom-{isolated_home.name}-"
     )
-
-
-def test_worker_start_pool_without_api_key_exits_77(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``start --pool`` without ``CURSOR_API_KEY`` fails before spawning."""
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    spawned: list[Any] = []
-    monkeypatch.setattr(
-        cloud_worker_cmd,
-        "_run_subprocess",
-        lambda argv: spawned.append(argv) or 0,
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "start",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-        ],
-    )
-    assert result.exit_code == cloud_worker_cmd._EXIT_POOL_REQUIRES_API_KEY
-    assert spawned == []
-    out = _combined_output(result)
-    assert "service-account API key" in out
 
 
 def test_worker_start_reuses_existing_workspace_worker(

@@ -8,8 +8,8 @@ operators on this machine can:
 1. ``popola cloud worker debug`` — preflight diagnostics that pass
    through to ``agent worker debug``.
 2. ``popola cloud worker start`` — start a Cursor self-hosted worker
-   process (My Machines mode by default; ``--pool`` opts into
-   Self-Hosted Pool which requires a service-account API key).
+   process (My Machines mode only — v1.6.0 closes ``feedback_for_v1.5.2.md``
+   constraint #1 by removing Self-Hosted Pool mode from the popola layer).
 3. ``popola cloud worker status`` — poll the worker's optional
    management server (``/healthz``, ``/readyz``, ``/metrics``) without
    needing ``CURSOR_API_KEY``.
@@ -20,18 +20,24 @@ operators on this machine can:
 5. ``popola cloud worker dispatch`` — directly POST to ``popolad`` with
    ``cli=cursor-cloud`` extras that route to the current workspace worker
    by ``worker_name`` (``--print-only`` / ``--dry-run`` keeps the preview
-   behavior).
+   behavior). v1.6.0 forces ``--auth-mode=session-jwt`` and the
+   ``self-hosted`` cloud target so the dispatch follows the single
+   canonical Path-B JWT path.
 
-Design boundary (per v0.9.1 plan §"Design constraints"):
+Design boundary (per v0.9.1 plan §"Design constraints" + v1.6.0
+``feedback_for_v1.5.2.md`` hard constraints):
 
 - ``agent worker start`` registers this machine for browser-driven (or
   trigger-surface-driven) Cloud Agent runs. ``worker dispatch`` is the
-  PopolaLoom-tracked REST path: it contacts ``popolad`` and asks the
-  ``cursor-cloud`` adapter to route to the detected workspace worker.
-- Pool mode requires a **service-account API key** (Enterprise);
-  PopolaLoom refuses to launch a pool worker when ``CURSOR_API_KEY`` is
-  unset (No Silent Failures).  Shared / "My Machines" workers happily
-  inherit the user's browser-based ``agent login`` session.
+  PopolaLoom-tracked Path-B (JWT direct) path: it contacts ``popolad``
+  and asks the daemon supervisor to call
+  ``StartBackgroundComposerFromSnapshot`` against the named
+  self-hosted worker.
+- v1.6.0 (constraint #1): My Machines is the ONLY supported worker
+  mode at the popola layer. Self-Hosted Pool workers can still be
+  launched directly via upstream ``agent worker start --pool``; the
+  ``--pool`` / ``--pool-name`` flags are removed from
+  ``popola cloud worker start`` / ``debug``.
 - All failure paths exit non-zero with a stderr message naming the
   exact missing prerequisite — never fall back to a different mode.
 - ``start`` is workspace-reuse-first: the default worker name includes
@@ -106,10 +112,6 @@ _EXIT_OK: int = 0
 _EXIT_UNREACHABLE: int = 1
 _EXIT_INVALID_ARGS: int = 2
 _EXIT_MISSING_AGENT_BINARY: int = 4
-_EXIT_POOL_REQUIRES_API_KEY: int = 77
-"""Pool worker requested but ``CURSOR_API_KEY`` unset; mirrors
-``_EXIT_CLOUD_AUTH_ERROR`` in ``cloud_cmd.py`` so scripts can branch on
-the same code regardless of which sub-verb hit the auth gap."""
 
 _EXIT_PRE_FLIGHT_GATE: int = 78
 """Cloud-dispatch pre-flight gate refused — the operator must change
@@ -423,18 +425,18 @@ def _build_debug_argv(
     binary: str,
     worker_dir: Path,
     name: str | None,
-    pool: bool,
-    pool_name: str | None,
     labels: list[tuple[str, str]],
 ) -> list[str]:
-    """Construct the ``agent worker debug`` argv list (pure)."""
+    """Construct the ``agent worker debug`` argv list (pure).
+
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #1): pool flags are
+    removed; the popola layer only supports My Machines workers. Use
+    ``agent worker debug --pool`` directly if you need to probe a
+    Self-Hosted Pool worker.
+    """
     cmd: list[str] = [binary, "worker", "debug", "--worker-dir", str(worker_dir)]
     if name is not None:
         cmd.extend(["--name", name])
-    if pool:
-        cmd.append("--pool")
-        if pool_name is not None:
-            cmd.extend(["--pool-name", pool_name])
     for key, value in labels:
         cmd.extend(["--label", f"{key}={value}"])
     return cmd
@@ -445,20 +447,20 @@ def _build_start_argv(
     binary: str,
     worker_dir: Path,
     name: str | None,
-    pool: bool,
-    pool_name: str | None,
     idle_release_timeout: int | None,
     labels: list[tuple[str, str]],
     management_addr: str | None,
 ) -> list[str]:
-    """Construct the ``agent worker start`` argv list (pure)."""
+    """Construct the ``agent worker start`` argv list (pure).
+
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #1): pool flags are
+    removed; the popola layer only supports My Machines workers. Use
+    ``agent worker start --pool`` directly if you need to register a
+    Self-Hosted Pool worker.
+    """
     cmd: list[str] = [binary, "worker", "start", "--worker-dir", str(worker_dir)]
     if name is not None:
         cmd.extend(["--name", name])
-    if pool:
-        cmd.append("--pool")
-        if pool_name is not None:
-            cmd.extend(["--pool-name", pool_name])
     if idle_release_timeout is not None:
         cmd.extend(["--idle-release-timeout", str(idle_release_timeout)])
     for key, value in labels:
@@ -527,65 +529,17 @@ def _run_subprocess(argv: list[str]) -> int:
         signal.signal(signal.SIGINT, previous_int)
 
 
-def _resolve_pool_env(env: dict[str, str]) -> dict[str, str]:
-    """Inject ``CURSOR_API_KEY`` into ``env`` from the credential resolver.
+def _spawn_worker_subprocess(argv: list[str]) -> int:
+    """Spawn the ``agent worker`` subprocess and return its exit code.
 
-    v0.9.2: ``agent worker start --pool`` reads ``CURSOR_API_KEY`` from
-    the spawned subprocess environment. When the operator stored their
-    service-account key via ``popola auth cursor set`` (precedence #3)
-    instead of ``export CURSOR_API_KEY=...``, we need to surface the
-    resolved value into the subprocess env so the upstream CLI sees it.
-
-    Returns a fresh dict (does not mutate the caller's). Returns the
-    input unchanged when no API key is configured (caller has already
-    failed via :func:`_fail_pool_requires_api_key` in that case).
-    """
-    from popolaloom.credentials import resolve_cursor_api_key
-
-    if env.get("CURSOR_API_KEY", "").strip():
-        return env
-    resolved = resolve_cursor_api_key()
-    if not resolved:
-        return env
-    out = dict(env)
-    out["CURSOR_API_KEY"] = resolved
-    return out
-
-
-def _spawn_worker_subprocess(argv: list[str], *, pool: bool) -> int:
-    """Spawn the ``agent worker`` subprocess; inject keyring-resolved key when ``pool`` is True.
-
-    v0.9.2: when ``pool`` is True we may need to inject ``CURSOR_API_KEY``
-    into the subprocess env (the upstream CLI reads from env) so a
-    keyring-stored service-account key reaches the pool worker without
-    a manual ``export`` step. We do this by mutating the parent
-    ``os.environ`` only when the resolver-side value is missing —
-    short-circuiting both branches of :func:`_resolve_pool_env` when
-    no injection is needed.
-
-    The injection mutates ``os.environ`` directly (not a private dict)
-    so existing test fixtures that monkey-patch :func:`_run_subprocess`
-    with a 1-arg lambda continue to work; v0.9.2 callers gain the
-    keyring-aware behaviour transparently.
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #1): the keyring
+    injection branch tied to ``--pool`` has been removed alongside pool
+    mode itself; My Machines workers inherit the operator's browser
+    ``agent login`` session and never need ``CURSOR_API_KEY``.
 
     Returns the subprocess exit code (whatever :func:`_run_subprocess`
     returns).
     """
-    if pool:
-        merged = _resolve_pool_env(dict(os.environ))
-        injected_key = merged.get("CURSOR_API_KEY")
-        original_value = os.environ.get("CURSOR_API_KEY")
-        try:
-            if injected_key and not (original_value and original_value.strip()):
-                os.environ["CURSOR_API_KEY"] = injected_key
-                return _run_subprocess(argv)
-            return _run_subprocess(argv)
-        finally:
-            if injected_key and not (original_value and original_value.strip()):
-                if original_value is None:
-                    os.environ.pop("CURSOR_API_KEY", None)
-                else:
-                    os.environ["CURSOR_API_KEY"] = original_value
     return _run_subprocess(argv)
 
 
@@ -945,16 +899,6 @@ def worker_debug_cmd(
         "--name",
         help="Custom display name for the debug probe (defaults to upstream behaviour).",
     ),
-    pool: bool = typer.Option(  # noqa: B008
-        False,
-        "--pool",
-        help="Probe the worker as a Self-Hosted Pool member (requires service-account API key).",
-    ),
-    pool_name: str | None = typer.Option(  # noqa: B008
-        None,
-        "--pool-name",
-        help="Pool label when --pool is set; defaults to 'default'.",
-    ),
     label: list[str] = typer.Option(  # noqa: B008
         [],
         "--label",
@@ -964,26 +908,22 @@ def worker_debug_cmd(
     """Run the upstream ``agent worker debug`` preflight report.
 
     Forwards stdout / stderr verbatim so the operator sees the same
-    auth method / visibility-probe report the upstream CLI emits. Pool
-    workers require a service-account API key — when ``--pool`` is set
-    without one configured (env var OR keyring) we fail fast with the
-    canonical hint. v0.9.2: the keyring-stored value is injected into
-    the subprocess env so the upstream CLI sees ``CURSOR_API_KEY``.
-    """
-    if pool and not _has_resolvable_api_key():
-        _fail_pool_requires_api_key()
+    auth method / visibility-probe report the upstream CLI emits.
 
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #1): pool flags are
+    removed; the popola layer only supports My Machines workers. To
+    probe a Self-Hosted Pool worker, invoke ``agent worker debug
+    --pool`` directly with a service-account ``CURSOR_API_KEY``.
+    """
     binary = _resolve_agent_binary()
     labels_kv = [_validate_label(item) for item in label]
     argv = _build_debug_argv(
         binary=binary,
         worker_dir=worker_dir,
         name=name,
-        pool=pool,
-        pool_name=pool_name,
         labels=labels_kv,
     )
-    rc = _spawn_worker_subprocess(argv, pool=pool)
+    rc = _spawn_worker_subprocess(argv)
     raise typer.Exit(code=rc)
 
 
@@ -1005,19 +945,6 @@ def worker_start_cmd(
             "Custom display name for the worker. Defaults to a deterministic "
             "workspace-aware name like popolaloom-<repo>-<hash>."
         ),
-    ),
-    pool: bool = typer.Option(  # noqa: B008
-        False,
-        "--pool",
-        help=(
-            "Register as a Self-Hosted Pool worker. REQUIRES a service-account "
-            "API key; user / browser-login auth is rejected by Cursor."
-        ),
-    ),
-    pool_name: str | None = typer.Option(  # noqa: B008
-        None,
-        "--pool-name",
-        help="Pool label when --pool is set; defaults to 'default'.",
     ),
     idle_release_timeout: int | None = typer.Option(  # noqa: B008
         None,
@@ -1067,12 +994,14 @@ def worker_start_cmd(
         ),
     ),
 ) -> None:
-    """Start a Cursor self-hosted worker process.
+    """Start a Cursor self-hosted worker process (My Machines mode).
 
-    Defaults to **My Machines** mode (shared assignment; works with the
-    user's browser ``agent login``).  Pass ``--pool`` to register as a
-    Self-Hosted Pool worker — that mode is Enterprise-only and requires
-    a service-account ``CURSOR_API_KEY``.
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #1): pool flags are
+    removed; the popola layer only supports **My Machines** workers
+    (which inherit the user's browser ``agent login`` session). To
+    register a Self-Hosted Pool worker, invoke ``agent worker start
+    --pool`` directly with a service-account ``CURSOR_API_KEY`` —
+    PopolaLoom does not wrap that path.
 
     Default execution mode is **foreground** (mirrors the upstream CLI
     semantics); leave the terminal open or wrap it with ``systemd-run``
@@ -1105,16 +1034,11 @@ def worker_start_cmd(
             typer.echo(_format_worker_reuse_message(running[0]))
             raise typer.Exit(code=_EXIT_OK)
 
-    if pool and not _has_resolvable_api_key():
-        _fail_pool_requires_api_key()
-
     binary = _resolve_agent_binary()
     argv = _build_start_argv(
         binary=binary,
         worker_dir=resolved_worker_dir,
         name=effective_name,
-        pool=pool,
-        pool_name=pool_name,
         idle_release_timeout=idle_release_timeout,
         labels=labels_kv,
         management_addr=management_addr,
@@ -1127,32 +1051,12 @@ def worker_start_cmd(
             raise typer.Exit(code=_EXIT_OK)
         log_dir = Path.home() / ".popola" / "log"
         pid_dir = Path.home() / ".popola"
-        if pool:
-            merged_env = _resolve_pool_env(dict(os.environ))
-            injected = merged_env.get("CURSOR_API_KEY")
-            original = os.environ.get("CURSOR_API_KEY")
-            try:
-                if injected and not (original and original.strip()):
-                    os.environ["CURSOR_API_KEY"] = injected
-                result = _spawn_detached_worker(
-                    argv,
-                    name=effective_name,
-                    log_dir=log_dir,
-                    pid_dir=pid_dir,
-                )
-            finally:
-                if injected and not (original and original.strip()):
-                    if original is None:
-                        os.environ.pop("CURSOR_API_KEY", None)
-                    else:
-                        os.environ["CURSOR_API_KEY"] = original
-        else:
-            result = _spawn_detached_worker(
-                argv,
-                name=effective_name,
-                log_dir=log_dir,
-                pid_dir=pid_dir,
-            )
+        result = _spawn_detached_worker(
+            argv,
+            name=effective_name,
+            log_dir=log_dir,
+            pid_dir=pid_dir,
+        )
         typer.echo(json.dumps(result, ensure_ascii=False))
         raise typer.Exit(code=_EXIT_OK)
 
@@ -1161,7 +1065,7 @@ def worker_start_cmd(
         typer.echo(_format_quoted_argv(argv))
         raise typer.Exit(code=_EXIT_OK)
 
-    rc = _spawn_worker_subprocess(argv, pool=pool)
+    rc = _spawn_worker_subprocess(argv)
     raise typer.Exit(code=rc)
 
 
@@ -1478,19 +1382,6 @@ def worker_dispatch_cmd(
         typer.echo(response_payload["task_id"])
 
 
-def _has_resolvable_api_key() -> bool:
-    """True iff the credential resolver returns a non-empty key.
-
-    v0.9.2: the pool worker's API key lookup honours both the env var
-    and the OS keyring (precedence #2 + #3 from the resolver). Returning
-    True here means :func:`_resolve_pool_env` will subsequently inject
-    the resolved value into the spawned subprocess env.
-    """
-    from popolaloom.credentials import resolve_cursor_api_key
-
-    return resolve_cursor_api_key() is not None
-
-
 def _build_self_hosted_worker_missing_hint(worker_name: str) -> str:
     """Return the bilingual hint emitted when the named self-hosted worker is missing.
 
@@ -1651,22 +1542,6 @@ def _enforce_self_hosted_worker_exists(
             "until the worker is free",
             worker_name,
         )
-
-
-def _fail_pool_requires_api_key() -> NoReturn:
-    """Print the canonical pool-without-key hint and exit ``77``."""
-    typer.echo(
-        "error: --pool requires a Cursor service-account API key (Enterprise). "
-        "Configure one via: export CURSOR_API_KEY=<service-account-key>, OR "
-        "`popola auth cursor set` (stores in OS keyring), OR drop --pool to "
-        "launch a shared 'My Machines' worker (works with `agent login`).",
-        err=True,
-    )
-    typer.echo(
-        "  see: https://cursor.com/docs/cloud-agent/self-hosted-pool#authenticate-workers",
-        err=True,
-    )
-    raise typer.Exit(code=_EXIT_POOL_REQUIRES_API_KEY)
 
 
 # ── status verb ──────────────────────────────────────────────────────────
