@@ -532,14 +532,16 @@ def dispatch(
         False,
         "--allow-fallback",
         help=(
-            "v1.5.0 No-Silent-Fallback opt-in: when --cli=<X> is "
-            "unavailable, allow the resolver to walk "
-            "[user_preferences.routing].fallback_chain. Default OFF — "
+            "v1.5.0 No-Silent-Fallback opt-in (managed cloud / local CLI "
+            "only): when --cli=<X> is unavailable, allow the resolver to "
+            "walk [user_preferences.routing].fallback_chain. Default OFF — "
             "popola hard-fails when the requested CLI adapter is missing. "
-            "(v1.5.0 no-silent-fallback invariant: explicit opt-in needed "
-            "before popola switches the dispatched CLI adapter.) "
-            "v1.5.0 不静默回退默认约束:除非显式 --allow-fallback,"
-            "否则当请求的 --cli 不可用时直接退出。"
+            "v1.6.0 (feedback_for_v1.5.2 constraint #2): this flag is a "
+            "NO-OP + WARN when --cloud-target=self-hosted; popola NEVER "
+            "swaps to a local CLI on the self-hosted single-path dispatch. "
+            "v1.6.0 不静默回退默认约束:除非显式 --allow-fallback,"
+            "否则当请求的 --cli 不可用时直接退出。--cloud-target=self-hosted "
+            "时此标志强制为 no-op,popola 绝不回退到本地 CLI。"
         ),
     ),
     events_dir: Path | None = typer.Option(  # noqa: B008
@@ -620,6 +622,27 @@ def dispatch(
                 cloud_target,
             )
             cli = "cursor-cloud"
+
+        # v1.6.0 (feedback_for_v1.5.2 constraint #2 / locked DECISIONS Q-4):
+        # the `--allow-fallback` flag is preserved for managed cloud and
+        # local CLIs (cursor / claude / codex / ...), but is a no-op +
+        # bilingual WARN when ``cloud_target=self-hosted`` is in play.
+        # Per No-Silent-Failures: never silently swap to a local CLI on
+        # the self-hosted single-path dispatch.
+        if cloud_target == "self-hosted" and allow_fallback:
+            typer.echo(
+                "warn: --allow-fallback is a no-op when "
+                "--cloud-target=self-hosted (v1.6.0 single-path contract; "
+                "feedback_for_v1.5.2.md constraint #2). popola will NEVER "
+                "swap to a local CLI when the self-hosted worker dispatch "
+                "fails. Fix the worker registration or re-dispatch with "
+                "--cloud-target=cursor-managed if you need the managed "
+                "cloud. "
+                "(warn: --cloud-target=self-hosted 时 --allow-fallback 不生效; "
+                "popola 不会自动回退到本地 CLI。请修复 Worker 注册或重新派发)",
+                err=True,
+            )
+            allow_fallback = False
 
         if model:
             _apply_model_flag(extra, model, cli)
@@ -1904,8 +1927,19 @@ def _select_cli_from_preferences(
             err=True,
         )
         raise typer.Exit(code=2)
+    # v1.6.0 (feedback_for_v1.5.2 constraint #2): when the operator
+    # explicitly requested ``--cloud-target=self-hosted`` we MUST NOT
+    # consult ``fallback_chain`` — even if the resolver lands here via
+    # a misconfigured pref (the auto-set ``--cli=cursor-cloud`` branch
+    # in ``dispatch()`` already covers the common case; this defends
+    # the rare path where prefs say ``default_runtime="local"`` but
+    # the per-task flag says ``self-hosted``). Hard-fail with the
+    # existing self-hosted hint instead of walking the chain.
+    effective_allow_fallback = (
+        allow_fallback and cloud_target_flag != "self-hosted"
+    )
     return _select_available_local_cli(
-        cli, prefs, extra=selected_extra, allow_fallback=allow_fallback
+        cli, prefs, extra=selected_extra, allow_fallback=effective_allow_fallback
     )
 
 
