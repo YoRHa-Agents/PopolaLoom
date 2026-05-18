@@ -17,7 +17,33 @@ Accumulating for the next v1.5.x patch:
 - `BL-v1.4.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
-<!-- updated: 2026-05-17 -->
+<!-- updated: 2026-05-18 -->
+
+## [1.5.1] - 2026-05-18
+
+**Theme**: v1.5.0 minor-backlog closure — the 3 observable gaps from
+`.local/feedbacks/feedback_for_v1.5.0.md` §"Observable gaps (v1.5.1
+backlog)" close in this patch. No new feature surface; one
+loud-not-silent code change behind a backward-compat-friendly default,
+plus two empirical-finding documentation updates.
+
+### Fixed
+
+- **O.G3.3 — cloud-cancel race window** ([src/popolaloom/daemon/server.py](src/popolaloom/daemon/server.py), [src/popolaloom/daemon/rpc.py](src/popolaloom/daemon/rpc.py)): `popola cancel` of a `cursor-`-prefixed task that races the supervisor's cloud-handle hydration (path-A flip at `supervisor.py:383`, path-B flip at `:1010`, ID rehydrate via `state_store.rehydrate([dataclasses.replace(...)])` at `:703-711`/`:1010-1019`) used to raise either the LOCAL `task <id> has no pid yet (race window between dispatch and spawn)` guard or the cloud `cloud_cancel_no_handle` guard depending on which end of the race won. `Popolad.cancel_task(...)` now accepts a new keyword argument `cloud_cancel_grace_s: float = 3.0`. For `cursor-`-prefixed `task_id`s where the in-memory handle is not yet `runtime="cloud"` or has `cursor_agent_id is None` (and is NOT orphan-eligible — the existing `_soft_cancel_orphan` path still fires immediately), the cancel path polls `StateStore.get(task_id)` every 50 ms until either the supervisor populates the cloud handle (cancel proceeds), the entry vanishes (`logger.warning` + fall-through to legacy paths), the task reaches a terminal state mid-wait (raises the same `RuntimeError` the L1047 terminal guard would have raised), or the deadline expires. **On deadline expiry** the path emits a structured `task.failed` NDJSON event with `error_kind="cloud_cancel_race_window_exceeded"` and raises `RuntimeError("... grace window")` — both loud failures, no silent fallback. The shutdown loop in `popolaloom.daemon.rpc.lifespan` passes `cloud_cancel_grace_s=1.0` (instead of the public 3.0 default) so total daemon shutdown stays bounded under the cloud-cancel race window.
+
+### Documented
+
+- **O.G3.1 — Cursor REST `is_in_use` / `lastActivityAt` always null for named workers** ([src/popolaloom/skills/popola-loom/SKILL.md](src/popolaloom/skills/popola-loom/SKILL.md), [.claude/skills/popola-loom/SKILL.md](.claude/skills/popola-loom/SKILL.md)): the v1.5.0 G3 verification oracle (`worker.is_in_use=true` with `active_bc_id=<bc>` from `GET /v0/private-workers`) is empirically unusable — Stage T live probe (5 mid-run snapshots at 30 s intervals, 2026-05-18 against `api.cursor.com`) showed ALL three fields (`is_in_use`, `active_bc_id`, `lastActivityAt`) staying `null` even while the agent ran (`status=ACTIVE`, popola `cloud_phase=RUNNING`) and after it completed. **Replacement G3 oracle**: dual signal (1) `agent.env` from `GET /v1/agents/<bc-id>` — for a named-worker dispatch the response contains `env: {"type": "machine", "name": "<your-worker>"}` and this is durable for the agent's lifetime (note: `agent.target` is `null`; the routing target lives in `env`, not `target`); PLUS (2) the Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` exposed by the worker's own `--management-addr` `/metrics` endpoint. Treat a worker as free only when `now - last_activity_unix_seconds > 60` AND no in-flight agent has `env.type == "machine"` + `env.name == "<X>"`. Do NOT poll `is_in_use` for routing decisions.
+- **O.G3.2 — Cursor REST `model_details=null` for path-A agents** (same files): `GET /v1/agents/<bc-id>` returns `model_details=null` for agents created via path-A REST `POST /v1/agents`, even when the create call passed a non-default model (e.g. `gpt-5.5` with `--cli-flag model_id_override=gpt-5.5-high`). The v1.5.0 G5 oracle (`agent.model_details.model_name ends with "-high"`) is no longer reliable for path-A. **Replacement G5 oracle**: confirm model wiring by terminal-state outcome — a path-A agent reached the correct model when it transitions to a terminal state without raising the Cursor server error `Model '<X>' does not support long-running agent mode`. Equivalently, scan the agent's run-event NDJSON log for that exact error string; absence on terminal = success.
+- **`.claude/skills/popola-loom/SKILL.md` v1.5.0 docs catch-up**: the mirror file lacked the v1.5.0 "No-Silent-Fallback invariant", "popolad env injection (v1.5.0+)", and "Path-B self-hosted worker dispatch (v1.5.0+)" sections that the wheel `src/popolaloom/skills/popola-loom/SKILL.md` already had — bringing them forward maintains the skill-sync lockstep convention. Net diff is +76 lines on this file (vs. +11 on the wheel SKILL); no behavioral change.
+
+### Changed
+
+- **`Popolad.cancel_task` cursor-cancel error string** for the unhydrated-handle race: pre-v1.5.1 raised `RuntimeError("task <id> has no pid yet (race window between dispatch and spawn)")` (the LOCAL guard) or `RuntimeError("...cloud_cancel_no_handle...")` (the cloud guard). v1.5.1 raises `RuntimeError("task <id> cloud handle not populated within <N.NN>s grace window")` after the new grace primitive expires, AND emits a structured `task.failed` NDJSON event with `error_kind="cloud_cancel_race_window_exceeded"`. Both v1.5.0 and v1.5.1 are loud-fail; only the message string + the new structured event differ. External scripts that grep the old error text need to broaden the match. Setting `cloud_cancel_grace_s=0.0` opts out of the polling loop (deadline check fires on the first iteration) — the v1.5.0 `immediate-fail` semantics are preserved under the new error-kind name.
+
+### Tests
+
+- 5 new race-window contract tests in [tests/daemon/test_server_cloud_cancel.py](tests/daemon/test_server_cloud_cancel.py): `test_cancel_cloud_task_waits_for_runtime_flip`, `test_cancel_cloud_task_waits_for_agent_id_population`, `test_cancel_cloud_task_grace_window_timeout_emits_error_event`, `test_cancel_local_task_does_not_enter_grace_window`, `test_cancel_cloud_task_grace_window_zero_emits_event_immediately` (backward-compat ratchet — closes the gap between the public plan §S.1.b and the four originally shipped tests).
 
 ## [1.5.0] - 2026-05-17
 

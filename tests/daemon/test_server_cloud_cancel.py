@@ -1,7 +1,31 @@
-"""Cloud-runtime cancel path on :class:`popolad.Popolad` (v0.8.5 Stage 2 T2.B)."""
+"""Cloud-runtime cancel path on :class:`popolad.Popolad` (v0.8.5 Stage 2 T2.B).
+
+v1.5.1 O.G3.3 (race-window contract): the cancel path now waits up to
+``cloud_cancel_grace_s`` seconds for the supervisor to populate the
+cloud runtime/agent_id pair before deciding how to terminate a
+``cursor-``-prefixed task. The four trailing tests in this module
+exercise that contract:
+
+- ``test_cancel_cloud_task_waits_for_runtime_flip`` — supervisor flips
+  ``runtime`` and ``cursor_agent_id`` mid-wait; cancel proceeds.
+- ``test_cancel_cloud_task_waits_for_agent_id_population`` — supervisor
+  only needs to populate ``cursor_agent_id`` mid-wait.
+- ``test_cancel_cloud_task_grace_window_timeout_emits_error_event`` —
+  no flip ever arrives; cancel emits ``task.failed`` + raises.
+- ``test_cancel_local_task_does_not_enter_grace_window`` — backward-compat:
+  non-``cursor-`` task_ids skip the wait loop entirely.
+- ``test_cancel_cloud_task_grace_window_zero_emits_event_immediately`` —
+  backward-compat ratchet: cursor-prefixed task with
+  ``cloud_cancel_grace_s=0.0`` and unhydrated cloud handle fails fast
+  (< 0.5s) with the structured ``cloud_cancel_race_window_exceeded``
+  event, mirroring v1.5.0's loud-immediate-fail semantics under the
+  v1.5.1 error-kind name.
+"""
 
 from __future__ import annotations
 
+import threading
+import time
 from datetime import UTC, datetime
 from pathlib import Path
 from unittest.mock import MagicMock
@@ -25,6 +49,7 @@ def _register_cloud_handle(
     state: TaskState = TaskState.RUNNING,
     cursor_agent_id: str | None = "bc-agent-1",
     cursor_run_id: str | None = "run-1",
+    runtime: str = "cloud",
 ) -> str:
     events_dir = tmp_path / "events"
     events_dir.mkdir(parents=True, exist_ok=True)
@@ -36,10 +61,10 @@ def _register_cloud_handle(
         state=state,
         started_at=datetime.now(UTC),
         event_log_path=path,
-        runtime="cloud",
+        runtime=runtime,
         cursor_agent_id=cursor_agent_id,
         cursor_run_id=cursor_run_id,
-        cloud_phase="RUNNING",
+        cloud_phase="RUNNING" if runtime == "cloud" else None,
     )
     popolad.state_store.register(handle)
     log = EventLog(path, source=f"popola/{task_id}", fsync_interval_s=0)
@@ -215,3 +240,180 @@ def test_cancel_401_emits_cloud_cancel_failed(tmp_path: Path) -> None:
     events = popolad.tail_events(tid)
     failed = next(e for e in reversed(events) if e["type"] == "task.failed")
     assert failed["data"]["error_kind"] == "cloud_cancel_failed"
+
+
+def test_cancel_cloud_task_waits_for_runtime_flip(tmp_path: Path) -> None:
+    mock_client = MagicMock(spec=["cancel_run"])
+    mock_client.cancel_run.return_value = {}
+    popolad = Popolad(events_dir=tmp_path / "events", cloud_client=mock_client)
+    tid = _register_cloud_handle(
+        popolad,
+        tmp_path,
+        task_id="cursor-race-1",
+        runtime="local",
+        cursor_agent_id=None,
+        cursor_run_id=None,
+    )
+
+    def _hydrate() -> None:
+        time.sleep(0.15)
+        popolad.state_store.update(
+            tid,
+            runtime="cloud",
+            cursor_agent_id="bc-late-1",
+            cursor_run_id="run-late-1",
+        )
+
+    t = threading.Thread(target=_hydrate, daemon=True)
+    t.start()
+    try:
+        popolad.cancel_task(tid, cloud_cancel_grace_s=2.0)
+    finally:
+        t.join(timeout=3.0)
+
+    assert not t.is_alive()
+    mock_client.cancel_run.assert_called_once_with("bc-late-1", "run-late-1")
+
+
+def test_cancel_cloud_task_waits_for_agent_id_population(tmp_path: Path) -> None:
+    mock_client = MagicMock(spec=["cancel_run"])
+    mock_client.cancel_run.return_value = {}
+    popolad = Popolad(events_dir=tmp_path / "events", cloud_client=mock_client)
+    tid = _register_cloud_handle(
+        popolad,
+        tmp_path,
+        task_id="cursor-race-2",
+        runtime="cloud",
+        cursor_agent_id=None,
+        cursor_run_id=None,
+    )
+
+    def _hydrate() -> None:
+        time.sleep(0.15)
+        popolad.state_store.update(
+            tid,
+            cursor_agent_id="bc-late-2",
+            cursor_run_id="run-late-2",
+        )
+
+    t = threading.Thread(target=_hydrate, daemon=True)
+    t.start()
+    try:
+        popolad.cancel_task(tid, cloud_cancel_grace_s=2.0)
+    finally:
+        t.join(timeout=3.0)
+
+    assert not t.is_alive()
+    mock_client.cancel_run.assert_called_once_with("bc-late-2", "run-late-2")
+
+
+def test_cancel_cloud_task_grace_window_timeout_emits_error_event(
+    tmp_path: Path,
+) -> None:
+    mock_client = MagicMock(spec=["cancel_run"])
+    mock_client.cancel_run.return_value = {}
+    popolad = Popolad(events_dir=tmp_path / "events", cloud_client=mock_client)
+    tid = _register_cloud_handle(
+        popolad,
+        tmp_path,
+        task_id="cursor-stuck-1",
+        runtime="local",
+        cursor_agent_id=None,
+        cursor_run_id=None,
+    )
+
+    with pytest.raises(RuntimeError, match=r"grace window"):
+        popolad.cancel_task(tid, cloud_cancel_grace_s=0.2)
+
+    events = popolad.tail_events(tid)
+    failed = next(e for e in reversed(events) if e["type"] == "task.failed")
+    assert failed["data"]["error_kind"] == "cloud_cancel_race_window_exceeded"
+    assert failed["data"]["cloud_cancel_grace_s"] == 0.2
+    assert failed["data"]["runtime"] == "local"
+    assert failed["data"]["cursor_agent_id"] is None
+    assert failed["data"]["cursor_run_id"] is None
+    mock_client.cancel_run.assert_not_called()
+
+
+def test_cancel_local_task_does_not_enter_grace_window(tmp_path: Path) -> None:
+    mock_client = MagicMock(spec=["cancel_run"])
+    mock_client.cancel_run.return_value = {}
+    popolad = Popolad(events_dir=tmp_path / "events", cloud_client=mock_client)
+    tid = _register_cloud_handle(
+        popolad,
+        tmp_path,
+        task_id="local-no-wait",
+        runtime="local",
+        cursor_agent_id=None,
+        cursor_run_id=None,
+    )
+
+    start = time.monotonic()
+    with pytest.raises(
+        RuntimeError,
+        match=r"has no pid yet|race window between dispatch and spawn",
+    ):
+        popolad.cancel_task(tid, cloud_cancel_grace_s=10.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 1.0, (
+        f"expected legacy LOCAL guard to fire immediately for non-cursor "
+        f"task_id, but cancel_task took {elapsed:.3f}s (the grace window "
+        f"loop should be skipped when task_id does not start with 'cursor-')"
+    )
+    mock_client.cancel_run.assert_not_called()
+
+
+def test_cancel_cloud_task_grace_window_zero_emits_event_immediately(
+    tmp_path: Path,
+) -> None:
+    """v1.5.1 backward-compat ratchet — closes the gap between the public
+    plan §S.1.b (``test_cancel_cloud_task_grace_window_zero_preserves_old_behavior``)
+    and the four shipped tests.
+
+    Asserts that for a ``cursor-``-prefixed task with an unhydrated cloud
+    handle (``runtime != "cloud"`` AND ``cursor_agent_id is None``),
+    passing ``cloud_cancel_grace_s=0.0`` (the v1.5.0-equivalent opt-out)
+    causes the new cancel path to fail loudly + immediately rather than
+    blocking on a positive-duration grace window.
+
+    Note on the error-string change vs v1.5.0: pre-v1.5.1 this exact
+    code path raised the LOCAL ``"has no pid yet (race window between
+    dispatch and spawn)"`` ``RuntimeError``. v1.5.1 raises the new
+    ``cloud_cancel_race_window_exceeded`` variant (same loud-fail tier,
+    structured ``task.failed`` event with explicit ``error_kind``).
+    Both are loud failures with no silent fallback; the message string
+    change is documented under CHANGELOG ``[1.5.1] Changed``.
+    """
+    mock_client = MagicMock(spec=["cancel_run"])
+    mock_client.cancel_run.return_value = {}
+    popolad = Popolad(events_dir=tmp_path / "events", cloud_client=mock_client)
+    tid = _register_cloud_handle(
+        popolad,
+        tmp_path,
+        task_id="cursor-zero-1",
+        runtime="local",
+        cursor_agent_id=None,
+        cursor_run_id=None,
+    )
+
+    start = time.monotonic()
+    with pytest.raises(RuntimeError, match=r"grace window"):
+        popolad.cancel_task(tid, cloud_cancel_grace_s=0.0)
+    elapsed = time.monotonic() - start
+
+    assert elapsed < 0.5, (
+        f"expected cloud_cancel_grace_s=0.0 to fail immediately for a "
+        f"cursor-prefixed unhydrated handle, but cancel_task took "
+        f"{elapsed:.3f}s (the deadline check should fire on the first "
+        f"loop iteration when grace=0)"
+    )
+
+    events = popolad.tail_events(tid)
+    failed = next(e for e in reversed(events) if e["type"] == "task.failed")
+    assert failed["data"]["error_kind"] == "cloud_cancel_race_window_exceeded"
+    assert failed["data"]["cloud_cancel_grace_s"] == 0.0
+    assert failed["data"]["runtime"] == "local"
+    assert failed["data"]["cursor_agent_id"] is None
+    assert failed["data"]["cursor_run_id"] is None
+    mock_client.cancel_run.assert_not_called()

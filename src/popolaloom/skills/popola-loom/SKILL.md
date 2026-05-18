@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.5.0
+version: 1.5.1
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -578,6 +578,22 @@ Cursor's path-B Connect-RPC `StartBackgroundComposerFromSnapshot` SILENTLY downg
 
 The dispatch CLI emits a strong stderr warning when the `session-jwt + self-hosted + worker-name` combination is used so the operator sees the limitation at dispatch time.
 
+#### ⚠️ Cursor REST `is_in_use` / `lastActivityAt` always null for named workers (v1.5.1+ empirical)
+
+Cursor's `GET /v0/private-workers` returns `is_in_use=null`, `active_bc_id=null`, AND `lastActivityAt=null` for a named self-hosted worker EVEN WHILE the agent is mid-run (`agent.status=ACTIVE`, popola-side `cloud_phase=RUNNING`). The fields never flip to a non-null value during the agent's lifetime, so treating them as a worker-liveness oracle leads to false-positive "worker free" verdicts and double-dispatch races. Empirically verified 2026-05-18 against `api.cursor.com` with `popolaloom-dev-worker-v15`: 5 mid-run snapshots at 30 s intervals (across both `running` and `completed` task states) ALL reported `{is_in_use: null, active_bc_id: null, lastActivityAt: null}` even though the popola-side task definitively reached `cloud_phase=RUNNING` and then `cloud_phase=FINISHED` end-to-end.
+
+**Replacement oracle (G3).** Use the dual signal:
+
+1. `agent.env` from `GET /v1/agents/<bc-id>` — for a dispatch routed at a named worker, the response contains `env: {"type": "machine", "name": "<your-worker>"}` and this assignment is durable for the agent's lifetime. (NOTE: `agent.target` is `null` in this response shape; the routing target lives in the `env` field instead.)
+2. Prometheus metric `cursor_self_hosted_worker_last_activity_unix_seconds` exposed by the worker's own `--management-addr` `/metrics` endpoint.
+
+Treat a worker as free only when `now - cursor_self_hosted_worker_last_activity_unix_seconds > 60` AND no in-flight agent (any `bc-*` from your `GET /v1/agents`) has `env.type == "machine"` + `env.name == "<X>"`. Do NOT poll `is_in_use` for routing decisions.
+
+#### ⚠️ Cursor REST `model_details=null` for path-A agents (v1.5.1+ empirical)
+
+`GET /v1/agents/<bc-id>` returns `model_details=null` for agents created via path-A REST `POST /v1/agents`, even when the create call passed a non-default model (e.g. `gpt-5.5` with `--cli-flag model_id_override=gpt-5.5-high`). The `model_details` field is populated only for path-B (`StartBackgroundComposerFromSnapshot`) sessions, so any post-dispatch model-validation logic that consults `model_details` will mis-classify path-A agents as "model unset" and either falsely retry or falsely reject. Empirically verified 2026-05-17 against `api2.cursor.sh` for an agent dispatched with `--auth-mode=rest --model=gpt-5.5 --cli-flag model_id_override=gpt-5.5-high`.
+
+**Replacement oracle (G5).** Confirm model wiring not by the `model_details` field but by the agent's terminal-state outcome: a path-A agent reached the correct model when it transitions to a terminal state without raising the Cursor server error `Model '<X>' does not support long-running agent mode`. Equivalently, scan the agent's run-event NDJSON log for that exact error string; absence on terminal = success. Do NOT gate dispatch retry on `model_details` for path-A.
 
 PopolaLoom 用环境变量做配置（per ADR — 显式优于隐式）；下表是常用项：
 

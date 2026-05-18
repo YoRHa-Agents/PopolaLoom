@@ -509,7 +509,15 @@ def create_app(
                 if not tid:
                     continue
                 try:
-                    popolad.cancel_task(tid, sigterm_grace_s=2.0)
+                    # v1.5.1 — daemon shutdown is time-sensitive (uvicorn's
+                    # lifespan already issued SIGTERM), so cap each task's
+                    # cloud-handle grace at 1.0s instead of the public 3.0s
+                    # default to keep total shutdown bounded under the
+                    # cloud-cancel race window (closes O.G3.3 in
+                    # ``.local/feedbacks/feedback_for_v1.5.0.md``).
+                    popolad.cancel_task(
+                        tid, sigterm_grace_s=2.0, cloud_cancel_grace_s=1.0
+                    )
                 except Exception:
                     logger.exception("shutdown cancel failed for task=%s", tid)
             # v0.5.2 Loop 2 (L2.B): tear down the optional LarkSupervisor
