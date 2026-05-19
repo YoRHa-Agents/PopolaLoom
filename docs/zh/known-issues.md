@@ -8,9 +8,21 @@ translation_url: /known-issues.html
 
 # 已知限制
 
-<!-- updated: 2026-05-10 -->
+<!-- updated: 2026-05-19 -->
 
 本页是英文 [`known-issues.md`](../known-issues.html) 的中文导航版，记录当前 v0.9.x 文档中最常见、且已有绕行方式的限制。完整细节以英文页为准。
+
+## v1.6.1 — `agent worker` 退出时删除 `~/.config/cursor/auth.json`（上游行为）
+
+<!-- updated: 2026-05-19 -->
+
+**限制。** 当上游 Cursor CLI 的 `agent worker start` 子进程退出（SIGTERM、SIGKILL 或正常退出）时，会作为清理流程的一部分删除操作员的会话 JWT 文件 `~/.config/cursor/auth.json`。v1.6.0 Stage T live-probe 实测确认：`popola cloud worker stop`（或任何针对 worker 的进程 kill）之后，下一次派发会失败并报 `Authentication required for worker mode. Please run 'agent login', or provide an API key with --api-key or CURSOR_API_KEY.` 恢复方式只能重新跑 `agent login` 把 JWT 写回去。完整经验性 trace（命令、时间戳、暴露上游提示的 worker 日志片段）见 [`feedback_for_v1.6.0.md` L62-L80](../../.local/feedbacks/feedback_for_v1.6.0.md)。
+
+**影响。** PopolaLoom **无法**阻止这个行为 —— `auth.json` 的生命周期归上游 Cursor CLI 所有。v1.6.1 在 `popola cloud worker start` 增加防御性预检（auth.json 缺失时退 1 并打印 `agent login` 提示），让操作员在 popola 边界就看到失败，而不是埋在 worker 子进程的 "Authentication required" 日志里。
+
+**绕行方式。** 在 worker 重启之间重新跑一次 `agent login`。长期挂着的工作区推荐流程：`popola cloud worker stop` → `agent login` → `popola cloud worker start` —— 新预检会在第一时间挡下失败，避免一连串失败派发。`--allow-missing-auth` 是给 CI smoke 用的转义出口（CI 故意跳过 JWT 步骤时使用）。
+
+**跟踪。** `CHANGELOG.md §Unreleased` 中的 `BL-v1.6.x-worker-shutdown-auth-deletion`。延后到上游 Cursor —— popola 在客户端层面无法修复。
 
 ## v1.6.0 — Cursor 服务端 `env=machine→pool` 静默降级（上游回归）
 

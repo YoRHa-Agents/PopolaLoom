@@ -991,6 +991,16 @@ def worker_start_cmd(
             "--worker-dir. Default: reuse the existing workspace worker."
         ),
     ),
+    allow_missing_auth: bool = typer.Option(  # noqa: B008
+        False,
+        "--allow-missing-auth",
+        help=(
+            "Skip the ~/.config/cursor/auth.json existence pre-flight check. "
+            "Use only when bootstrapping a worker without a real Cursor session "
+            "JWT (e.g. CI smoke tests). Default: False — pre-flight is ON and "
+            "missing auth.json exits 1 with an `agent login` hint."
+        ),
+    ),
     detach: bool = typer.Option(  # noqa: B008
         False,
         "--detach",
@@ -1037,6 +1047,24 @@ def worker_start_cmd(
     resolved_worker_dir = _resolve_worker_dir(worker_dir)
     effective_name = name or _default_worker_name(resolved_worker_dir)
     labels_kv = [_validate_label(item) for item in label]
+
+    if not dry_run and not allow_missing_auth:
+        from popolaloom.cloud.internal.jwt_auth import DEFAULT_AUTH_JSON_PATH
+
+        if not DEFAULT_AUTH_JSON_PATH.exists():
+            typer.echo(
+                "error: ~/.config/cursor/auth.json is missing — `popola cloud worker start` "
+                "needs a Cursor session JWT to bootstrap a self-hosted worker. "
+                f"Expected path: {DEFAULT_AUTH_JSON_PATH}. "
+                "Run `agent login` on this machine first to populate the JWT, then re-run "
+                "this command. Pass `--allow-missing-auth` to skip this pre-flight (e.g. for "
+                "CI smoke tests that do not need a real Cursor session). "
+                "(error: ~/.config/cursor/auth.json 不存在 — popola cloud worker start "
+                "需要 Cursor 会话 JWT 才能引导 self-hosted worker。请先运行 `agent login` "
+                "生成 JWT 后重试;如确认跳过预检请加 `--allow-missing-auth`)",
+                err=True,
+            )
+            raise typer.Exit(code=1)
 
     if not dry_run and not allow_duplicate:
         running = _detect_running_workers_for_dir(resolved_worker_dir)
@@ -1317,7 +1345,7 @@ def worker_dispatch_cmd(
     # path): the ``popola cloud worker dispatch`` verb is, by
     # construction, the self-hosted-target dispatch path. Pre-load the
     # JWT here so a missing ``~/.config/cursor/auth.json`` surfaces a
-    # friendly ``cursor login`` hint AT this CLI boundary (not later at
+    # friendly ``agent login`` hint AT this CLI boundary (not later at
     # the daemon's first RPC). No Silent Failures: any JWTAuthError
     # propagates to exit 1 with the hint surfaced.
     from popolaloom.cloud.internal.jwt_auth import JWTAuthError, load_jwt_bundle

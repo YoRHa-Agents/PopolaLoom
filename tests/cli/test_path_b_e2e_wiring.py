@@ -85,7 +85,7 @@ def test_apply_path_b_flags_session_jwt_missing_jwt() -> None:
 
     No-Silent-Failures: the operator-facing error message MUST carry the
     bilingual ``hint`` produced by :class:`JWTAuthError` so they know
-    how to fix the configuration (``cursor login`` or
+    how to fix the configuration (``agent login`` or
     ``CURSOR_SESSION_JWT`` env).
 
     ``typer.Exit`` raises :class:`click.exceptions.Exit` (not
@@ -95,7 +95,7 @@ def test_apply_path_b_flags_session_jwt_missing_jwt() -> None:
     """
     err = JWTAuthError(
         "no JWT available",
-        hint="Run `cursor login` or export CURSOR_SESSION_JWT.",
+        hint="Run `agent login` or export CURSOR_SESSION_JWT.",
     )
     extra: dict[str, Any] = {}
     with (
@@ -127,7 +127,7 @@ def test_apply_path_b_flags_session_jwt_missing_jwt_prints_hint(
     """The operator-facing stderr carries the JWTAuthError hint verbatim."""
     err = JWTAuthError(
         "no JWT available",
-        hint="Run `cursor login` 在本机生成 ~/.config/cursor/auth.json",
+        hint="Run `agent login` 在本机生成 ~/.config/cursor/auth.json",
     )
     with (
         patch(
@@ -150,7 +150,7 @@ def test_apply_path_b_flags_session_jwt_missing_jwt_prints_hint(
         )
     captured = capsys.readouterr()
     assert "could not load a JWT" in captured.err
-    assert "cursor login" in captured.err
+    assert "agent login" in captured.err
 
 
 def test_apply_path_b_flags_session_jwt_with_preset_merges_explicit_wins() -> None:

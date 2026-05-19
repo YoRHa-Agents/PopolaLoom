@@ -27,7 +27,7 @@ def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
     ``cloud_target=self-hosted`` (feedback_for_v1.5.2 constraint #5), and
     :func:`_apply_path_b_flags` then eagerly calls
     :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle` so the
-    operator sees the ``cursor login`` hint at dispatch time instead of
+    operator sees the ``agent login`` hint at dispatch time instead of
     inside the daemon's RPC failure path.
 
     CI runners (and any hermetic test env) have neither ``CURSOR_SESSION_JWT``

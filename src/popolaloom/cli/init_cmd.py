@@ -2393,7 +2393,7 @@ def _run_preferences_wizard_step() -> None:
             if set_jwt_default:
                 cursor_cloud_default_auth_mode = "session-jwt"
         # If no JWT and previous value was session-jwt, keep it — the
-        # operator may be about to run `cursor login`.
+        # operator may be about to run `agent login`.
 
         claude_max_turns = _prompt_pref_int(
             "Claude max turns (0 = no limit)",

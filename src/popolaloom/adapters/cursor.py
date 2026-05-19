@@ -1,9 +1,12 @@
-"""CursorAdapter — wraps ``cursor-agent agent --print`` for non-interactive run.
+"""CursorAdapter — wraps ``agent agent --print`` for non-interactive run.
 
 Source command derivation (出处:
 ``.local/memory/research/02-cli-capabilities.md`` §"Cursor Agent CLI"):
 
-    cursor-agent agent --print --output-format text "<prompt>"
+    agent agent --print --output-format text "<prompt>"
+
+(legacy installs may still expose this as ``cursor-agent``; the resolver
+tries both, preferring ``agent``)
 
 Optional ``extra`` keys:
 
@@ -42,12 +45,46 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_OUTPUT_FORMATS: tuple[str, ...] = ("text", "stream-json")
 
+_DEFAULT_CURSOR_BINARIES: tuple[str, ...] = ("agent", "cursor-agent")
+"""Resolution order for the local Cursor CLI binary.
+
+v1.6.1 (``.local/feedbacks/feedback_for_v1.6.0.md``): the modern Cursor
+install (2026.05.07+) ships ``agent`` as the canonical CLI name with
+``cursor-agent`` kept as a symlink for backward compat. We prefer
+``agent`` to match the upstream CLI's own error messages (e.g.
+"Please run 'agent login'") and the worker-side resolver in
+``cloud_worker_cmd._DEFAULT_AGENT_BINARIES``. Legacy installs that only
+ship ``cursor-agent`` still work via fallback.
+"""
+
 
 class CursorAdapter:
-    """Cursor Agent CLI (``cursor-agent``) command builder."""
+    """Cursor Agent CLI (``agent``) command builder."""
 
     name: str = "cursor"
-    binary: str = "cursor-agent"
+    binary: str = "agent"
+
+    @classmethod
+    def _resolve_binary(cls) -> str:
+        """Return the first available cursor CLI binary on PATH (or the default).
+
+        Tries each entry in :data:`_DEFAULT_CURSOR_BINARIES` in order and
+        returns the first one that resolves on PATH. Falls back to
+        :attr:`cls.binary` (the class default ``"agent"``) when neither is
+        on PATH so :func:`subprocess.Popen` later surfaces a recognisable
+        ``FileNotFoundError`` against the canonical name rather than masking
+        the failure here.
+
+        v1.6.1 (``feedback_for_v1.6.0.md`` Q-3): mirrors the worker-side
+        resolver in :func:`popolaloom.cli.cloud_worker_cmd._resolve_agent_binary`
+        so the local subprocess adapter and the worker wrapper agree on
+        which binary name to invoke when both ``agent`` and ``cursor-agent``
+        are on the operator's PATH.
+        """
+        for candidate in _DEFAULT_CURSOR_BINARIES:
+            if shutil.which(candidate) is not None:
+                return candidate
+        return cls.binary
 
     def build_command(
         self,
@@ -83,7 +120,7 @@ class CursorAdapter:
             )
 
         cmd: list[str] = [
-            self.binary,
+            self._resolve_binary(),
             "agent",
             "--print",
             "--output-format",
@@ -111,8 +148,8 @@ class CursorAdapter:
         return cmd
 
     def is_available(self) -> bool:
-        """Return True iff ``cursor-agent`` resolves on ``$PATH``."""
-        return shutil.which(self.binary) is not None
+        """Return True iff ``agent`` (or legacy ``cursor-agent``) resolves on ``$PATH``."""
+        return any(shutil.which(b) is not None for b in _DEFAULT_CURSOR_BINARIES)
 
 
 def _normalize_cli_args(value: Any) -> list[str]:

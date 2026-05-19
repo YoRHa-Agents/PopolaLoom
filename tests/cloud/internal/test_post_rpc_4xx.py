@@ -141,7 +141,7 @@ def test_404_hint_mentions_both_causes() -> None:
 
 
 def test_401_kind_and_hint() -> None:
-    """401 → ``path_b_rpc_401_auth`` kind + ``cursor login`` hint."""
+    """401 → ``path_b_rpc_401_auth`` kind + ``agent login`` hint."""
     client = httpx.Client(
         transport=_mock_transport(401, {"code": "unauthenticated"})
     )
@@ -157,4 +157,4 @@ def test_401_kind_and_hint() -> None:
     err = exc_info.value
     assert err.error_kind == "path_b_rpc_401_auth"
     assert err.status_code == 401
-    assert "cursor login" in err.hint
+    assert "agent login" in err.hint

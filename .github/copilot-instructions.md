@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.6.0
+version: 1.6.1
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -18,7 +18,7 @@ last_updated: "2026-05-18"
 
 # PopolaLoom Skill
 
-> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。**v1.6.0 single-path self-hosted breaking changes**：`popola cloud worker {start,debug}` 不再接受 `--pool` / `--pool-name`；`--cloud-target=self-hosted --auth-mode=rest` 退 2（改用隐式默认 `--auth-mode=session-jwt`，需先 `cursor login`）；`--allow-fallback` 对 self-hosted 是 no-op + WARN。Managed cloud + 本地 CLI 行为不变。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
+> **v0.9.0 GA stable surface** — 自 v0.9.0 起 CLI verb / flag spelling / daemon RPC path / `--json` schema / `popolad.toml` section name 全部锁入 SemVer（详见 [`docs/API_STABILITY.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md)）。Workflow 6/7/8 涵盖的 `--cli=cursor-cloud` REST + Cloud HITL γ MCP + `popola relay` 全部 stable；Workflow 9 (`popola cloud runs`) 在 v0.9.0 仍标 **experimental**（[API_STABILITY §3.1](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/API_STABILITY.md#31-popola-cloud-runs-q-c-1)）。**v1.6.0 single-path self-hosted breaking changes**：`popola cloud worker {start,debug}` 不再接受 `--pool` / `--pool-name`；`--cloud-target=self-hosted --auth-mode=rest` 退 2（改用隐式默认 `--auth-mode=session-jwt`，需先 `agent login`）；`--allow-fallback` 对 self-hosted 是 no-op + WARN。Managed cloud + 本地 CLI 行为不变。v0.7.x → v0.9.0 升级走 [`docs/MIGRATION_v07_to_v09.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/docs/MIGRATION_v07_to_v09.md)。
 
 ## What is PopolaLoom?
 
@@ -215,7 +215,7 @@ LangGraph `interrupt()` 节点阻塞任务、Lark 卡片到人、人点确认后
 
 先决：
 - Managed cloud：**非空 `CURSOR_API_KEY` 环境变量** — HTTP Basic：`username=api_key`、`password=` 空串（适配器读环境变量，`CloudCursorAdapter.is_available()` 亦以此为准）。
-- Self-hosted (v1.6.0 单路径)：**`cursor login` 生成的 `~/.config/cursor/auth.json`**（Path-B JWT 直连用；不需要 `CURSOR_API_KEY`）。同时本机需要先用 `popola cloud worker start --worker-dir <repo>` 注册一个 self-hosted worker。
+- Self-hosted (v1.6.0 单路径)：**`agent login` 生成的 `~/.config/cursor/auth.json`**（Path-B JWT 直连用；不需要 `CURSOR_API_KEY`）。同时本机需要先用 `popola cloud worker start --worker-dir <repo>` 注册一个 self-hosted worker。
 
 派发命令形态 1 — **managed cloud（Path-A REST，行为同 v0.9.0）**，与工作区 Decision matrix Q6 对齐：默认 **`autoCreatePR=false`**，需要的话用 flag 打开：
 
@@ -236,7 +236,7 @@ popola dispatch "implement smoke-test stub in README" \
 派发命令形态 2 — **self-hosted（v1.6.0 单路径 Path-B JWT，构成 Workflow 12 的实际形态）**：
 
 ```bash
-cursor login   # 一次性,生成 ~/.config/cursor/auth.json
+agent login   # 一次性,生成 ~/.config/cursor/auth.json
 popola cloud worker start --worker-dir "$(pwd)" --management-addr 127.0.0.1:39231
 
 popola dispatch "ship the v1.6.0 release notes" \
@@ -465,10 +465,10 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
 
 > **v1.6.0 constraint #1**：`popola cloud worker {start,debug}` 不再接受 `--pool` / `--pool-name` 标志（My Machines workers 是 popola 唯一支持的模式）。Self-Hosted Pool workers 操作员可继续 `agent worker start --pool` 直接走上游 CLI；popola 不包装该路径。
 
-5 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），自动生成 `popolaloom-<repo>-<hash>` 名称并按 `--worker-dir` 复用已有进程，`--allow-duplicate` 才强制开第二份；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`；`dispatch` 直接 POST 到 `popolad`，预加载 JWT bundle（缺则退 1 并提示 `cursor login`），携带 `cli=cursor-cloud`、`cloud_target=self-hosted`、`__auth_mode__=session-jwt`、`worker_name`、repo/PR、`starting_ref`、`model` extras，把任务路由到当前 workspace worker；派发后 stdout 多打印一行 `view: https://cursor.com/agents/<bcId>`；`--print-only` / `--dry-run` 只输出等价命令。
+5 verb：`debug` 跑 `agent worker debug` 预检；`start` 默认 My Machines（`agent login` 即可），自动生成 `popolaloom-<repo>-<hash>` 名称并按 `--worker-dir` 复用已有进程，`--allow-duplicate` 才强制开第二份；`status` 读 `/healthz` + `/readyz` + `/metrics`（loopback only，无需 API key）；`handoff` 输出 `prompt + URL` 信封，`popola_task_id: null`；`dispatch` 直接 POST 到 `popolad`，预加载 JWT bundle（缺则退 1 并提示 `agent login`），携带 `cli=cursor-cloud`、`cloud_target=self-hosted`、`__auth_mode__=session-jwt`、`worker_name`、repo/PR、`starting_ref`、`model` extras，把任务路由到当前 workspace worker；派发后 stdout 多打印一行 `view: https://cursor.com/agents/<bcId>`；`--print-only` / `--dry-run` 只输出等价命令。
 
 ```bash
-cursor login   # 一次性,生成 ~/.config/cursor/auth.json (Path-B JWT 来源)
+agent login   # 一次性,生成 ~/.config/cursor/auth.json (Path-B JWT 来源)
 popola cloud worker start --worker-dir "$(pwd)" \
     --management-addr 127.0.0.1:39231
 # → "Run agents: https://cursor.com/agents#workerId=<uuid>"
@@ -510,7 +510,7 @@ popola dispatch "feature X" \
 # → view: https://cursor.com/agents/bc-...
 ```
 
-派发失败时：`401/404` JWT 过期或 worker 不存在 → 让用户跑 `cursor login` 重生成 JWT，或 `popola cloud worker start --name <your-worker> --worker-dir <repo-root>` 注册 worker；**绝不**告诉用户回退 `--auth-mode=rest`（v1.6.0 constraint #5：self-hosted 只有 Path-B 这一条路径）。
+派发失败时：`401/404` JWT 过期或 worker 不存在 → 让用户跑 `agent login` 重生成 JWT，或 `popola cloud worker start --name <your-worker> --worker-dir <repo-root>` 注册 worker；**绝不**告诉用户回退 `--auth-mode=rest`（v1.6.0 constraint #5：self-hosted 只有 Path-B 这一条路径）。
 
 ### Workflow 13 — Guided dispatch with option-group Q&A
 
@@ -690,12 +690,12 @@ timeout_seconds = 120
 
 ## Version + upgrade
 
-- **Current**: v1.6.0 GA（2026-05-18，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`. v1.6.0 collapses self-hosted dispatch to a single canonical Path-B JWT path; see [`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) for the 6 hard constraints and [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) §v1.6.0 for the migration notes.
+- **Current**: v1.6.1 GA（2026-05-19，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`. v1.6.0 collapsed self-hosted dispatch to a single canonical Path-B JWT path; v1.6.1 standardises the user-facing Cursor CLI command on `agent` (every login hint now points operators at `agent login`), flips the local `CursorAdapter` binary resolver to prefer `agent`, and adds a `~/.config/cursor/auth.json` pre-flight check on `popola cloud worker start`. See [`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) for the 6 hard constraints + [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) §v1.6.1 / §v1.6.0 for the migration notes.
 - **Install / Upgrade**:
   ```bash
   ./install.sh install
-  ./install.sh install --ref=v1.6.0
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.0
+  ./install.sh install --ref=v1.6.1
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.1
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
   > PyPI remains deferred for v0.9.x / v1.6.0; default installer uses GitHub.

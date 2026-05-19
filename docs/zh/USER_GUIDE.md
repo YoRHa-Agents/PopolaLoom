@@ -173,10 +173,10 @@ popola init --dry-run --cursor-api-key "cr_..."
 > | `popola dispatch --cloud-target=self-hosted --allow-fallback` | no-op + 中英双语 WARN（绝不回退到本地 CLI） |
 > | （派发后不打印 URL） | stdout 多打印一行 `view: https://cursor.com/agents/<bcId>` |
 >
-> Managed cloud（`--cloud-target=cursor-managed`）和本地 CLI 派发不变。self-hosted 新形态需要一次性 `cursor login`（生成 `~/.config/cursor/auth.json`）—— 不再需要 `CURSOR_API_KEY`。
+> Managed cloud（`--cloud-target=cursor-managed`）和本地 CLI 派发不变。self-hosted 新形态需要一次性 `agent login`（生成 `~/.config/cursor/auth.json`）—— 不再需要 `CURSOR_API_KEY`。
 
 ```bash
-cursor login                                                # 一次性 JWT bootstrap
+agent login                                                # 一次性 JWT bootstrap
 popola cloud worker debug --worker-dir "$(pwd)"             # 预检
 popola cloud worker start --worker-dir "$(pwd)"             # My Machines 模式
 popola cloud worker status --management-addr 127.0.0.1:39231 --json

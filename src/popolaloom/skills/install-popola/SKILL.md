@@ -1,6 +1,6 @@
 ---
 name: install-popola
-version: 1.6.0
+version: 1.6.1
 description: "Install PopolaLoom (popola CLI + popolad daemon + the `popola-loom` Skill) globally for Cursor / Claude Code / Codex / GitHub Copilot. Trigger when the user says install popola / install popola-loom / install popolaloom / set up popola-loom / 装 popola-loom / 装 popolaloom / 安装 popola / /install-popola. Walks pip install + per-IDE registration + daemon boot + post-install verification (popola doctor)."
 metadata:
   surfaces: ["cli", "ide"]
@@ -64,7 +64,7 @@ If you will drive **Cursor Background / Cloud Agents** through PopolaLoom (`--cl
 
 **Self-hosted dispatch (`popola dispatch ... --cloud-target=self-hosted`) has exactly ONE supported path in v1.6.0: Path-B JWT direct.** This closes the 6 hard constraints in `feedback_for_v1.5.2.md`:
 
-1. **`cursor login`** — populates `~/.config/cursor/auth.json` with the session JWT that Path-B reads. No `CURSOR_API_KEY` needed for self-hosted dispatch (constraint #5 / #3).
+1. **`agent login`** — populates `~/.config/cursor/auth.json` with the session JWT that Path-B reads. No `CURSOR_API_KEY` needed for self-hosted dispatch (constraint #5 / #3).
 2. **`popola cloud worker start --worker-dir <repo-root>`** — registers ONE My Machines worker per workspace. `--pool` / `--pool-name` flags are REMOVED at the popola layer (constraint #1); Self-Hosted Pool workers go through `agent worker start --pool` directly outside popola.
 3. **No GitHub-App probe** — the registered worker holds its own clone, so popola skips the `GET /v1/repositories` preflight for self-hosted (constraint #3).
 4. **`view: https://cursor.com/agents/<bcId>` URL** — every `--cloud-target=self-hosted` dispatch prints this line to stdout (after the task_id) for web-side observability (constraint #4).
@@ -76,7 +76,7 @@ End-to-end self-hosted bootstrap:
 ```bash
 # 0. install popolaloom (Step 0 above)
 # 1. Cursor session JWT
-cursor login                      # opens browser → writes ~/.config/cursor/auth.json
+agent login                      # opens browser → writes ~/.config/cursor/auth.json
 
 # 2. register the workspace worker (My Machines mode — no API key)
 popola cloud worker start --worker-dir "$(pwd)" --management-addr 127.0.0.1:39231

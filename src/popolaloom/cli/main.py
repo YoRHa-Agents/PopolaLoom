@@ -2354,7 +2354,7 @@ def _apply_path_b_flags(
     ``--auth-mode=session-jwt`` (v1.1.0+ wired): when ``cli=cursor-cloud``
     the JWT bundle is loaded eagerly via
     :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle` so the
-    operator gets a friendly ``cursor login`` hint at dispatch time
+    operator gets a friendly ``agent login`` hint at dispatch time
     rather than at the supervisor's first RPC. On success we inject
     ``extra["__auth_mode__"] = "session-jwt"`` plus the resolved Path-B
     knobs (``mode`` / ``max_mode`` / ``effort`` / ``time_budget`` /
@@ -2438,7 +2438,7 @@ def _apply_path_b_flags(
                 "--auth-mode=session-jwt (the implicit default when "
                 "you omit --auth-mode for a self-hosted dispatch), or "
                 "switch to --cloud-target=cursor-managed if you really "
-                "need REST. Hint: run `cursor login` to populate "
+                "need REST. Hint: run `agent login` to populate "
                 "~/.config/cursor/auth.json if your JWT is missing. "
                 "(error: --cloud-target=self-hosted 时禁止 --auth-mode=rest;"
                 "请使用 --auth-mode=session-jwt(留空即默认),或改用 "
@@ -2555,7 +2555,7 @@ def _apply_path_b_flags(
     if auth_mode_normalized == "session-jwt":
         # v1.1.0 (Track 6) — Path-B is now wired end-to-end. Eagerly verify
         # the JWT is loadable so the operator sees the friendly
-        # `cursor login` hint at dispatch time instead of inside the
+        # `agent login` hint at dispatch time instead of inside the
         # daemon's RPC failure path. No Silent Failures: any
         # JWTAuthError propagates to a non-zero exit with hint surfaced.
         from popolaloom.cloud.internal.jwt_auth import (

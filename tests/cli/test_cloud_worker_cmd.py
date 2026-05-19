@@ -82,6 +82,51 @@ def isolated_home(
 
 
 @pytest.fixture(autouse=True)
+def _stub_cursor_auth_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """v1.6.1 — stub ``~/.config/cursor/auth.json`` for the new B2 pre-flight.
+
+    Wave B2 (``feedback_for_v1.6.0.md`` Q-3) added a pre-flight check in
+    :func:`popolaloom.cli.cloud_worker_cmd.worker_start_cmd` that exits 1
+    with an ``agent login`` hint when
+    :data:`popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH` is
+    missing. The 4 pre-existing ``worker_start_*`` invocations in this
+    file rely on the monkey-patched ``_run_subprocess`` indirection to
+    avoid spawning a real worker — they never need a real Cursor session
+    JWT. This autouse fixture materialises a 0o600-protected stub under
+    ``tmp_path/.config/cursor/auth.json`` AND re-points
+    ``DEFAULT_AUTH_JSON_PATH`` to that path so the pre-flight check
+    passes regardless of when the ``jwt_auth`` module was first imported
+    (the module-level ``Path.home()`` evaluation captures the real
+    operator's HOME before pytest gets a chance to monkey-patch it).
+
+    Tests that intentionally exercise the missing-auth path
+    (:func:`test_worker_start_preflights_auth_json_missing`) re-patch
+    ``DEFAULT_AUTH_JSON_PATH`` to a guaranteed-nonexistent location,
+    overriding this fixture's setattr.
+    """
+    auth_dir = tmp_path / ".config" / "cursor"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_json = auth_dir / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "accessToken": "stub-access-token-for-cli-tests",
+                "refreshToken": "stub-refresh-token-for-cli-tests",
+            }
+        ),
+        encoding="utf-8",
+    )
+    auth_json.chmod(0o600)
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        auth_json,
+    )
+    return auth_json
+
+
+@pytest.fixture(autouse=True)
 def wide_console(monkeypatch: pytest.MonkeyPatch) -> None:
     """Force ``cloud_worker_cmd._console_out`` wide so substring asserts hold."""
     monkeypatch.setattr(
@@ -710,6 +755,105 @@ def test_worker_start_my_machines_runs_subprocess(
     assert "env=dev" in argv
 
 
+def test_worker_start_preflights_auth_json_missing(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 Wave B2 — missing ``~/.config/cursor/auth.json`` exits 1 with hint.
+
+    Pre-flight check (added in Wave B2 of v1.6.1) refuses to spawn an
+    upstream ``agent worker start`` subprocess when the operator has not
+    yet run ``agent login`` to populate the Cursor session JWT bundle.
+    The stderr hint MUST mention ``agent login`` so the operator knows
+    the remediation. We override the autouse ``_stub_cursor_auth_json``
+    by re-pointing ``DEFAULT_AUTH_JSON_PATH`` at a guaranteed-missing
+    path under ``tmp_path``.
+    """
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    missing = tmp_path / "definitely-not-here" / "auth.json"
+    assert not missing.exists()
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        missing,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--name",
+            "preflight-victim",
+        ],
+    )
+    assert result.exit_code == 1, _combined_output(result)
+    assert spawned == []
+    combined = _combined_output(result)
+    assert "agent login" in combined
+    assert "auth.json" in combined
+
+
+def test_worker_start_allow_missing_auth_skips_preflight(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 Wave B2 — ``--allow-missing-auth`` bypasses the pre-flight.
+
+    Same missing-auth setup as
+    :func:`test_worker_start_preflights_auth_json_missing` but with
+    ``--allow-missing-auth`` on the CLI. The pre-flight check must be
+    skipped so the test passes through to the monkey-patched
+    ``_run_subprocess`` runner (exit 0, captured argv recorded). This
+    documents the CI / smoke-test escape hatch for bootstrapping a
+    worker without a real Cursor session JWT.
+    """
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: captured.append(argv) or 0,
+    )
+    missing = tmp_path / "definitely-not-here" / "auth.json"
+    assert not missing.exists()
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        missing,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--name",
+            "preflight-bypassed",
+            "--allow-missing-auth",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert len(captured) == 1
+    assert "preflight-bypassed" in captured[0]
+
+
 def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
     runner: CliRunner,
     isolated_home: Path,
@@ -722,7 +866,7 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
     ``__auth_mode__=session-jwt`` — so the daemon supervisor routes via
     the single canonical Path-B JWT path. ``worker dispatch`` also
     pre-loads the JWT bundle so the operator sees a friendly
-    ``cursor login`` hint at this CLI boundary instead of inside the
+    ``agent login`` hint at this CLI boundary instead of inside the
     daemon's first RPC.
     """
     # v1.6.0 — pre-load the JWT bundle via a stub so the test does not

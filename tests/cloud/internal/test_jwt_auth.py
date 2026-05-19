@@ -81,11 +81,11 @@ def test_load_raises_when_neither_source(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """JWTAuthError carries a bilingual hint pointing at `cursor login`."""
+    """JWTAuthError carries a bilingual hint pointing at `agent login`."""
     monkeypatch.delenv(ENV_VAR_JWT, raising=False)
     with pytest.raises(JWTAuthError) as exc_info:
         load_jwt_bundle(auth_json_path=tmp_path / "missing.json")
-    assert "cursor login" in exc_info.value.hint
+    assert "agent login" in exc_info.value.hint
     assert "JWT" in str(exc_info.value)
 
 

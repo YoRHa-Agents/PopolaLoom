@@ -244,7 +244,7 @@ def test_path_b_branch_jwt_load_failure_emits_task_failed(
     )
     err = JWTAuthError(
         "no JWT available",
-        hint="Run `cursor login` to refresh ~/.config/cursor/auth.json.",
+        hint="Run `agent login` to refresh ~/.config/cursor/auth.json.",
     )
     with patch(
         "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
@@ -256,7 +256,7 @@ def test_path_b_branch_jwt_load_failure_emits_task_failed(
     failed = next(e for e in log.tail() if e["type"] == "task.failed")
     assert failed["data"]["error_kind"] == "path_b_jwt_load_failed"
     assert "no JWT available" in failed["data"]["error_detail"]
-    assert "cursor login" in failed["data"]["error_detail"]
+    assert "agent login" in failed["data"]["error_detail"]
 
 
 def test_path_b_branch_rpc_failure_emits_task_failed(

@@ -264,7 +264,7 @@ def test_start_composer_camel_case_response_key_accepted() -> None:
 
 
 def test_start_composer_401_raises_with_jwt_hint() -> None:
-    """401 → CursorCloudInternalError with hint pointing at `cursor login`."""
+    """401 → CursorCloudInternalError with hint pointing at `agent login`."""
 
     def handler(_req: httpx.Request) -> httpx.Response:
         return httpx.Response(401, text="auth required")
@@ -278,7 +278,7 @@ def test_start_composer_401_raises_with_jwt_hint() -> None:
             build_start_composer_request(prompt="x", repo_url="https://github.com/x/y")
         )
     assert exc_info.value.status_code == 401
-    assert "cursor login" in exc_info.value.hint
+    assert "agent login" in exc_info.value.hint
     assert "rest" in exc_info.value.hint
 
 

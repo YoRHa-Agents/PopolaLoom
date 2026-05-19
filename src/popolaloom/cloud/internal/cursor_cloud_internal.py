@@ -747,12 +747,12 @@ class CursorCloudInternalClient:
             if sc == 401:
                 error_kind = "path_b_rpc_401_auth"
                 hint = (
-                    "Re-run `cursor login` to refresh the JWT. "
+                    "Re-run `agent login` to refresh the JWT. "
                     "Alternatively, re-dispatch with --auth-mode=rest "
                     "and --cli-flag api_key=<X> (popola does NOT "
                     "auto-switch transports; v1.5.0 "
                     "no-silent-fallback invariant). "
-                    "(请重新运行 `cursor login` 刷新 JWT;若需走 REST,"
+                    "(请重新运行 `agent login` 刷新 JWT;若需走 REST,"
                     "请重新带 --auth-mode=rest 配合 CURSOR_API_KEY 派发——"
                     "popola 不会自动切换传输方式)"
                 )
