@@ -19,6 +19,32 @@ from popolaloom.daemon.main import (
 )
 
 
+@pytest.fixture(autouse=True)
+def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """Hermetic JWT-loader stub for v1.6.0 self-hosted single-path contract.
+
+    v1.6.0 hard-forces ``--auth-mode=session-jwt`` whenever the resolved
+    ``cloud_target=self-hosted`` (feedback_for_v1.5.2 constraint #5), and
+    :func:`_apply_path_b_flags` then eagerly calls
+    :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle` so the
+    operator sees the ``cursor login`` hint at dispatch time instead of
+    inside the daemon's RPC failure path.
+
+    CI runners (and any hermetic test env) have neither ``CURSOR_SESSION_JWT``
+    nor ``~/.config/cursor/auth.json``, so the load would exit 1 before
+    the dispatch ever reaches the mocked popolad client. Stubbing the
+    loader to a sentinel preserves the wizard end-to-end test intent
+    (verify the wizard produces the correct dispatch payload) without
+    requiring a real JWT — the dispatch wire shape is the unit under
+    test, not the JWT auth machinery (covered by
+    :mod:`tests.cloud.internal.test_jwt_auth`).
+    """
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+
+
 @pytest.fixture
 def isolated_popola_home(tmp_path: Path, monkeypatch: pytest.MonkeyPatch) -> Iterator[Path]:
     popola_home = tmp_path / "popola"
