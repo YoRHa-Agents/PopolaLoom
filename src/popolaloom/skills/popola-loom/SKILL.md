@@ -1,6 +1,6 @@
 ---
 name: popola-loom
-version: 1.6.1
+version: 1.6.2
 description: "PopolaLoom — 跨 CLI 元编排器。当用户要把任务派发给 Cursor / Claude / Codex / Kimi / Copilot 等 agent CLI 并跨终端持久化运行 (spawn → trace task_id → attach in)、查看任务状态、批量调度多 agent、需要 HITL 确认 / Lark 通知，或要查看 daemon 进程健康时使用本 Skill。提供 popola CLI (8+ root verb 含 dispatch / list / status / attach / cancel / probe / init / skill / doctor / update) + popolaloom-mcp stdio + Lark 双向通道。"
 metadata:
   surfaces: ["cli", "ide", "mcp"]
@@ -10,10 +10,10 @@ metadata:
   cliHelp: "popola --help"
 tier: 1
 token_estimate: 3400
-last_updated: "2026-05-19"
+last_updated: "2026-05-21"
 ---
 
-<!-- updated: 2026-05-19; v1.6.1 standardises `agent login` (formerly the `cursor`-prefixed verb) across all operator-facing hints. v1.6.0 single-path self-hosted dispatch contract intact. -->
+<!-- updated: 2026-05-21; v1.6.2 fixes git-source install bootstrap on incomplete pip mirrors. v1.6.0 single-path self-hosted dispatch contract intact. -->
 
 
 # PopolaLoom Skill

@@ -15,6 +15,7 @@ from pathlib import Path
 import pytest
 
 INSTALL_SCRIPT_PATH = Path(__file__).resolve().parents[2] / "install.sh"
+PIP_EXTRA_INDEX_ARG = "--extra-index-url=https://pypi.org/simple"
 
 
 def _install_script_shell_version_from_header() -> str:
@@ -125,6 +126,8 @@ def test_install_script_install_dry_run_prints_pip_command(tmp_path: Path) -> No
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "pip install" in out
+    assert PIP_EXTRA_INDEX_ARG in out
+    assert "using pip extra index for git-source build dependencies" in out
     assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
     assert "popolaloom" in out.lower()
 
@@ -153,6 +156,7 @@ def test_install_script_install_dry_run_with_version_pin(tmp_path: Path) -> None
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "popolaloom==9.9.9" in out
+    assert PIP_EXTRA_INDEX_ARG not in out
 
 
 def test_install_script_install_dry_run_with_git_source(tmp_path: Path) -> None:
@@ -169,6 +173,7 @@ def test_install_script_install_dry_run_with_git_source(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
+    assert PIP_EXTRA_INDEX_ARG in out
     assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
 
 
@@ -193,11 +198,31 @@ def test_install_script_install_default_uses_git_source(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
+    assert PIP_EXTRA_INDEX_ARG in out
     assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git" in out
     # Sanity: the unpinned PyPI form must not appear when default is git
     # (`popolaloom` still appears as the egg-name embedded in the URL,
     # so we anchor on the pin form to avoid a false positive).
     assert "popolaloom==" not in out
+
+
+def test_install_script_local_source_omits_git_extra_index(tmp_path: Path) -> None:
+    """Local path installs keep the user's pip index behavior unchanged."""
+    result = _run(
+        [
+            "install",
+            "--dry-run",
+            "--no-daemon",
+            "--no-skills",
+            "--from=./dist/popolaloom.whl",
+        ],
+        cwd=tmp_path,
+    )
+    assert result.returncode == 0, result.stderr
+    out = result.stdout
+    assert "./dist/popolaloom.whl" in out
+    assert PIP_EXTRA_INDEX_ARG not in out
+    assert "using pip extra index for git-source build dependencies" not in out
 
 
 def test_install_script_install_dry_run_with_ref_tag(tmp_path: Path) -> None:
@@ -222,6 +247,7 @@ def test_install_script_install_dry_run_with_ref_tag(tmp_path: Path) -> None:
     )
     assert result.returncode == 0, result.stderr
     out = result.stdout
+    assert PIP_EXTRA_INDEX_ARG in out
     assert "git+https://github.com/YoRHa-Agents/PopolaLoom.git@v0.9.6" in out
 
 
@@ -283,6 +309,7 @@ def test_install_script_update_dry_run_prints_upgrade_command(tmp_path: Path) ->
     assert result.returncode == 0, result.stderr
     out = result.stdout
     assert "pip install --upgrade" in out
+    assert PIP_EXTRA_INDEX_ARG in out
     assert "popolaloom" in out.lower()
 
 

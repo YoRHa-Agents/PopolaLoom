@@ -1,11 +1,11 @@
 #!/usr/bin/env bash
 # install.sh — unified PopolaLoom + Skill installer / updater / uninstaller.
 #
-# Version: 0.9.7
+# Version: 0.9.8
 # License: MIT (matches the PopolaLoom package license)
 # Repo:    https://github.com/YoRHa-Agents/PopolaLoom
 #
-# This is the v0.9.7 single-shell-command installer that wraps the four
+# This is the v0.9.8 single-shell-command installer that wraps the four
 # manual steps from the install-popola Skill workflow:
 #
 #   1. pip install popolaloom (defaults to git URL — see below; or PyPI / local path)
@@ -28,6 +28,10 @@
 # --cursor-api-key`` exercises lands in the same install — no follow-up
 # ``pip install popolaloom[credentials]`` needed. Composes with all
 # ``--from`` modes via PEP 508 ``pkg[extras] @ <url>``.
+#
+# v0.9.8 adds a per-command ``--extra-index-url=https://pypi.org/simple`` only
+# for git-source installs so isolated build dependencies such as ``hatchling``
+# can resolve even when the configured primary pip mirror is incomplete.
 #
 # It also exposes the inverse path: ``install.sh uninstall`` removes the
 # Skill from every IDE then ``pip uninstall popolaloom`` (and, when
@@ -58,9 +62,10 @@
 set -euo pipefail
 IFS=$'\n\t'
 
-readonly POPOLA_INSTALL_SCRIPT_VERSION="0.9.7"
+readonly POPOLA_INSTALL_SCRIPT_VERSION="0.9.8"
 readonly POPOLA_PACKAGE_NAME="popolaloom"
 readonly POPOLA_GIT_URL="git+https://github.com/YoRHa-Agents/PopolaLoom.git"
+readonly POPOLA_PIP_EXTRA_INDEX_URL="https://pypi.org/simple"
 
 # ── defaults ────────────────────────────────────────────────────────────
 
@@ -462,6 +467,28 @@ popola_installed() {
     "${py}" -c 'import popolaloom' >/dev/null 2>&1
 }
 
+run_pip_install() {
+    local py="$1"
+    local upgrade="$2"
+    local spec="$3"
+
+    if [ "${FROM}" = "git" ]; then
+        log "using pip extra index for git-source build dependencies: ${POPOLA_PIP_EXTRA_INDEX_URL}"
+        if [ "${upgrade}" -eq 1 ]; then
+            run_cmd 1 "${py}" -m pip install --upgrade "--extra-index-url=${POPOLA_PIP_EXTRA_INDEX_URL}" "${spec}"
+        else
+            run_cmd 1 "${py}" -m pip install "--extra-index-url=${POPOLA_PIP_EXTRA_INDEX_URL}" "${spec}"
+        fi
+        return 0
+    fi
+
+    if [ "${upgrade}" -eq 1 ]; then
+        run_cmd 1 "${py}" -m pip install --upgrade "${spec}"
+    else
+        run_cmd 1 "${py}" -m pip install "${spec}"
+    fi
+}
+
 # ── verbs ───────────────────────────────────────────────────────────────
 
 verb_install() {
@@ -475,7 +502,7 @@ verb_install() {
     spec="$(resolve_install_spec)"
 
     log "step 1/4: pip install ${spec}"
-    run_cmd 1 "${py}" -m pip install "${spec}"
+    run_pip_install "${py}" 0 "${spec}"
 
     if [ "${NO_SKILLS}" -eq 1 ]; then
         log "step 2/4: skipping skill install (--no-skills)"
@@ -509,7 +536,7 @@ verb_update() {
     spec="$(resolve_install_spec)"
 
     log "step 1/3: pip install --upgrade ${spec}"
-    run_cmd 1 "${py}" -m pip install --upgrade "${spec}"
+    run_pip_install "${py}" 1 "${spec}"
 
     if [ "${NO_SKILLS}" -eq 1 ]; then
         log "step 2/3: skipping skill upgrade (--no-skills)"
