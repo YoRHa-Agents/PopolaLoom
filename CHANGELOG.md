@@ -19,7 +19,27 @@ Accumulating for the next v1.6.x patch:
 - `BL-v1.6.x-worker-shutdown-auth-deletion` — upstream Cursor CLI's `agent worker start` subprocess deletes `~/.config/cursor/auth.json` as part of its shutdown cleanup (observed empirically during the v1.6.0 Stage T live probe; see [`feedback_for_v1.6.0.md`](.local/feedbacks/feedback_for_v1.6.0.md) L62-L80). PopolaLoom CANNOT prevent this — auth.json lifecycle is owned by the upstream Cursor CLI. v1.6.1 adds a defensive pre-flight at `popola cloud worker start` so operators see the failure at the popola boundary; full description in [`docs/known-issues.md`](docs/known-issues.md). Deferred to upstream Cursor.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
-<!-- updated: 2026-05-19 -->
+<!-- updated: 2026-05-21 -->
+
+## [1.6.2] - 2026-05-21
+
+**Theme**: Patch the git-source `install.sh` bootstrap path so fresh installs keep working when the operator's configured primary pip mirror is incomplete and lacks isolated build dependencies such as `hatchling`. No daemon contract changes, no dispatch behavior changes, and no migration.
+
+### Fixed
+
+- **Git-source installer build dependencies** ([install.sh](install.sh)): `install.sh install` and `install.sh update` now route git-source pip commands through a small `run_pip_install` helper that adds `--extra-index-url=https://pypi.org/simple` only when `--from=git` is active. This preserves the user's configured primary index while giving pip a fallback source for build-system packages required by `pyproject.toml` (`hatchling`). `--from=pypi` and local path or wheel installs keep their previous index behavior.
+
+### Changed
+
+- **Release metadata bump** ([pyproject.toml](pyproject.toml), [src/popolaloom/__init__.py](src/popolaloom/__init__.py), bundled Skill markers, tracked project Skill copies): package and shipped skill metadata now report `1.6.2`; `install.sh version` now reports `0.9.8`.
+
+### Tests
+
+- **Modified** [tests/cli/test_install_script.py](tests/cli/test_install_script.py) — pins that default/git install and update dry-runs include the scoped extra index, while PyPI and local path installs omit it.
+
+### Migration notes (v1.6.1 → v1.6.2)
+
+- No command-line changes required. Operators using `./install.sh install` or the one-line `curl ... | bash -s -- install --scope=global --target=all` bootstrap get the mirror fallback automatically once this release is the target ref.
 
 ## [1.6.1] - 2026-05-19
 

@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "popolaloom"
-version = "1.6.1"
+version = "1.6.2"
 description = "Meta-orchestrator over local agent CLIs"
 readme = "README.md"
 requires-python = ">=3.11"
@@ -262,7 +262,11 @@ exclude_lines = [
 # the source of truth for that code.
 python_version = "3.11"
 strict = true
-exclude = ["src/popolaloom/_vendored/.*"]
+exclude = "src/popolaloom/_vendored/.*"
+
+[[tool.mypy.overrides]]
+module = "popolaloom._vendored.*"
+ignore_errors = true
 
 [tool.mutmut]
 # v0.3.4 round 4 — mutation testing baseline (per testing-matrix.md §6).
