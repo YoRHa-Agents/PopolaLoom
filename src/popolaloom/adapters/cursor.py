@@ -64,22 +64,61 @@ class CursorAdapter:
     name: str = "cursor"
     binary: str = "agent"
 
+    def __init__(self, binary: str | None = None) -> None:
+        """Construct an adapter, optionally pinning the CLI binary name.
+
+        Args:
+            binary: Explicit cursor CLI binary spelling
+                (``"agent"`` / ``"cursor-agent"`` / a custom path).  When
+                ``None`` (default), the constructor probes PATH for each
+                entry in :data:`_DEFAULT_CURSOR_BINARIES` in order and
+                assigns the first hit to ``self.binary``.  When neither
+                spelling is on PATH, the class default ``"agent"`` is
+                kept so :func:`subprocess.Popen` later surfaces a
+                recognisable ``FileNotFoundError`` against the canonical
+                name (No Silent Failures).
+
+        v1.6.1 (``feedback_for_v1.6.0.md`` Q-3 + Bugbot review of
+        PR #39): the previous ``@classmethod _resolve_binary`` ignored
+        per-instance ``binary`` overrides because it accessed
+        ``cls.binary`` rather than ``self.binary``; the adapter
+        combinatorial matrix's ``argv[0] == adapter.binary`` assertion
+        broke on legacy hosts that only shipped ``cursor-agent``.  The
+        fix pins ``self.binary`` to the resolved spelling at
+        construction time (or to the explicit ``binary=`` override) so
+        every call to :meth:`build_command` and :meth:`is_available`
+        agrees with the documented contract that ``argv[0]`` mirrors
+        ``adapter.binary``.
+
+        Reading PATH at construction time is treated as pure here:
+        no writes, no mutation of state outside ``self``, and no
+        ``os.getcwd()`` call (that's the original purity invariant from
+        the module docstring).  Callers that need a fully air-gapped
+        adapter (zero PATH probes) pass an explicit ``binary=`` value.
+        """
+        if binary is not None:
+            self.binary = binary
+            return
+        for candidate in _DEFAULT_CURSOR_BINARIES:
+            if shutil.which(candidate) is not None:
+                self.binary = candidate
+                return
+        # Neither spelling is on PATH; keep the class default so a later
+        # subprocess.Popen surfaces FileNotFoundError against the
+        # canonical name.
+
     @classmethod
     def _resolve_binary(cls) -> str:
-        """Return the first available cursor CLI binary on PATH (or the default).
+        """Class-level resolver kept for backward compat with v1.6.1-pre callers.
 
-        Tries each entry in :data:`_DEFAULT_CURSOR_BINARIES` in order and
-        returns the first one that resolves on PATH. Falls back to
-        :attr:`cls.binary` (the class default ``"agent"``) when neither is
-        on PATH so :func:`subprocess.Popen` later surfaces a recognisable
-        ``FileNotFoundError`` against the canonical name rather than masking
-        the failure here.
+        Most call sites should prefer :attr:`self.binary` (set at
+        construction time by :meth:`__init__`).  This classmethod stays
+        for the rare caller that wants the "first PATH hit OR class
+        default" lookup without instantiating a full adapter.
 
-        v1.6.1 (``feedback_for_v1.6.0.md`` Q-3): mirrors the worker-side
-        resolver in :func:`popolaloom.cli.cloud_worker_cmd._resolve_agent_binary`
-        so the local subprocess adapter and the worker wrapper agree on
-        which binary name to invoke when both ``agent`` and ``cursor-agent``
-        are on the operator's PATH.
+        Tries each entry in :data:`_DEFAULT_CURSOR_BINARIES` in order
+        and returns the first one that resolves on PATH.  Falls back to
+        :attr:`cls.binary` (``"agent"``) when neither is on PATH.
         """
         for candidate in _DEFAULT_CURSOR_BINARIES:
             if shutil.which(candidate) is not None:
@@ -120,7 +159,7 @@ class CursorAdapter:
             )
 
         cmd: list[str] = [
-            self._resolve_binary(),
+            self.binary,
             "agent",
             "--print",
             "--output-format",
