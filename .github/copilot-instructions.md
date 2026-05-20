@@ -10,10 +10,10 @@ metadata:
   cliHelp: "popola --help"
 tier: 1
 token_estimate: 3400
-last_updated: "2026-05-18"
+last_updated: "2026-05-19"
 ---
 
-<!-- updated: 2026-05-18; v1.6.0 single-path self-hosted dispatch (closes feedback_for_v1.5.2) -->
+<!-- updated: 2026-05-19; v1.6.1 standardises `agent login` (formerly the `cursor`-prefixed verb) across all operator-facing hints. v1.6.0 single-path self-hosted dispatch contract intact. -->
 
 
 # PopolaLoom Skill
@@ -45,7 +45,7 @@ PopolaLoom 是 DevolaFlow 之上的本机常驻"织机式 (loom) / 编织者 (we
 
 ## Ambiguity Resolution Protocol
 
-When the user asks vaguely to "dispatch/run a cloud task" and target/model/thinking depth/special modes are missing, ask option-group questions before calling `popola_submit`. Dimensions: `target` (local cursor | local claude | local codex | cursor-cloud managed | cursor-cloud self-hosted), `model` (adapter default plus known models such as composer-2, composer-2-fast, sonnet, gpt-5.5), `thinking_depth` (cursor output_format, claude max_turns, codex sandbox, cursor-cloud effort/path-B), and `special_modes` (auto_create_pr, work_on_current_branch, skip_reviewer_request, cwd_flag).
+When the user asks vaguely to "dispatch/run a cloud task" and target/model/thinking depth/special modes are missing, ask option-group questions before calling `popola_submit`. Dimensions: `target` (local cursor | local claude | local codex | cursor-cloud managed | cursor-cloud self-hosted), `model` (adapter default plus known models such as composer-2.5, composer-2-5, sonnet, gpt-5.5, opus, gemini — v1.6.1: legacy `composer-2` / `composer-2-fast` removed upstream), `thinking_depth` (cursor output_format, claude max_turns, codex sandbox, cursor-cloud effort/path-B), and `special_modes` (auto_create_pr, work_on_current_branch, skip_reviewer_request, cwd_flag).
 
 AskQuestion templates (copy/paste shape): `{"question":"Dispatch target?","options":["local cursor","local claude","local codex","cursor-cloud managed","cursor-cloud self-hosted"]}`, then ask model, thinking_depth, and multi-select special_modes. Construct `extra` from the answers and call `popola_submit` with only `cli`, `prompt`, `cwd`, and `extra`; MCP schema remains free-form for `extra`. Precise user intent may skip Q&A and call `popola dispatch --wizard` or explicit flags.
 
@@ -227,7 +227,7 @@ popola dispatch "implement smoke-test stub in README" \
   --cwd ~/src/myrepo \
   --cli-flag repo_url=https://github.com/acme/monorepo \
   --cli-flag starting_ref=main \
-  --cli-flag model=composer-2 \
+  --cli-flag model=composer-2.5 \
   --cli-flag auto_create_pr=false
 # → cursor-cloud-deadbeef
 # → view: https://cursor.com/agents/bc-...
@@ -263,7 +263,7 @@ popola dispatch "ship the v1.6.0 release notes" \
 | `repo_url` | Git HTTPS 克隆地址（或与 `pr_url` 二选一） |
 | `pr_url` | 直接基于已有 PR URL 派发（与 `repo_url` 二选一） |
 | `starting_ref` | branch / tag，默认 `"main"` |
-| `model` | 云端模型 id，默认 `"composer-2"` |
+| `model` | 云端模型 id，默认 `"default"`（Cursor Auto；v0.10.0 起从 `"composer-2"` bump 到 `"default"`，v1.6.1 文档对齐）。可选当前 ids：`composer-2.5`、`composer-2-5`、`sonnet`、`gpt-5.5`、`opus`、`gemini`（见 `GET /v1/models`） |
 | `auto_create_pr` | bool，默认 `false` |
 | `work_on_current_branch` | bool，默认 `false` |
 | `skip_reviewer_request` | bool，`auto_create_pr=true` 时可选 |
@@ -386,7 +386,7 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
    popola relay v088-task-abc --dry-run --json | jq
    # → {"mode": "dry-run", "outcome": "would_dispatch",
    #     "source_task": "v088-task-abc", "target_repo": "neolix-ai/popola-loom",
-   #     "model": "composer-2", "prompt_sha256": "9c1f...",
+   #     "model": "composer-2.5", "prompt_sha256": "9c1f...",
    #     "audit_path": ".local/.agent/archive/relay/v088-task-abc.jsonl",
    #     "dispatched_at": null}
    ```
@@ -394,7 +394,7 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
    ```bash
    popola relay v088-task-abc
    # → DISPATCHED v088-task-def → https://github.com/neolix-ai/popola-loom
-   #   model=composer-2  prUrl=https://github.com/neolix-ai/popola-loom/pull/42
+   #   model=composer-2.5  prUrl=https://github.com/neolix-ai/popola-loom/pull/42
    #   audit=.local/.agent/archive/relay/v088-task-abc.jsonl
    ```
 3. **跨 org 接力（罕见、需要显式 override）**：默认 `[cloud.relay] repo_allowlist = []` 会**阻断**任何 target；要想跨 allowlist 必须 `--confirm-allowlist`，且会在 stderr 打 WARN + 在 audit 行记 `gate_decision="override_confirm_allowlist"`：
@@ -424,7 +424,7 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
      --cli=cursor-cloud \
      --cli-flag repo_url=https://github.com/neolix-ai/popola-loom \
      --cli-flag starting_ref=main \
-     --cli-flag model=composer-2
+     --cli-flag model=composer-2.5
    # → cursor-cloud-deadbeef
    ```
 2. **等任务跑（attach 跟随；多 run 时自动加 `[run-N]` 前缀 + 分隔行）**：
@@ -440,8 +440,8 @@ Cursor Cloud Agent (云端) ──tool_call──▶ Self-Hosted Worker
    ```bash
    popola cloud runs cursor-cloud-deadbeef
    # ┃ run_id              ┃ run_index ┃ state    ┃ created_at                  ┃ wall_clock ┃ model      ┃
-   # │ run-yyyyyyyy-00…    │ 1         │ finished │ 2026-05-08T18:30:00.000Z    │ 00:32:00   │ composer-2 │
-   # │ run-xxxxxxxx-00…    │ 0         │ finished │ 2026-05-08T17:00:00.000Z    │ 00:15:00   │ composer-2 │
+   # │ run-yyyyyyyy-00…    │ 1         │ finished │ 2026-05-08T18:30:00.000Z    │ 00:32:00   │ composer-2.5│
+   # │ run-xxxxxxxx-00…    │ 0         │ finished │ 2026-05-08T17:00:00.000Z    │ 00:15:00   │ composer-2.5│
    ```
 4. **要 JSON 写脚本（`--json`，full `run_id` 不截断；分页用 `--cursor`）**：
    ```bash
@@ -560,7 +560,7 @@ Use AskQuestion for target → model → thinking_depth → special_modes, then 
 
 ## Configuration
 
-v1.1.1 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2 --set lark.notify_on_completed=false`.
+v1.1.1 preferences are nested under eight sections: `[user_preferences.routing]`, `[user_preferences.defaults]`, `[user_preferences.cursor]`, `[user_preferences.cursor-cloud]`, `[user_preferences.claude]`, `[user_preferences.codex]`, `[user_preferences.lark]`, and `[user_preferences.dispatch]`. Legacy flat `[user_preferences]` keys auto-migrate to `schema_version = 2`; use dotted writes such as `popola init prefs --set cursor-cloud.model=composer-2.5 --set lark.notify_on_completed=false`.
 
 ### No-Silent-Fallback invariant (v1.5.0+, **single-path tightened in v1.6.0**)
 
@@ -690,12 +690,12 @@ timeout_seconds = 120
 
 ## Version + upgrade
 
-- **Current**: v1.6.1 GA（2026-05-19，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`. v1.6.0 collapsed self-hosted dispatch to a single canonical Path-B JWT path; v1.6.1 standardises the user-facing Cursor CLI command on `agent` (every login hint now points operators at `agent login`), flips the local `CursorAdapter` binary resolver to prefer `agent`, and adds a `~/.config/cursor/auth.json` pre-flight check on `popola cloud worker start`. See [`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) for the 6 hard constraints + [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) §v1.6.1 / §v1.6.0 for the migration notes.
+- **Current**: v1.6.0 GA（2026-05-18，**stable since v0.9.0**, GA from v1.1.1）— Skill `name` / `version` / `description` frontmatter travels in lockstep with `popolaloom.__version__`. v1.6.0 collapses self-hosted dispatch to a single canonical Path-B JWT path; see [`feedback_for_v1.5.2.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/.local/feedbacks/feedback_for_v1.5.2.md) for the 6 hard constraints and [`CHANGELOG.md`](https://github.com/YoRHa-Agents/PopolaLoom/blob/main/CHANGELOG.md) §v1.6.0 for the migration notes.
 - **Install / Upgrade**:
   ```bash
   ./install.sh install
-  ./install.sh install --ref=v1.6.1
-  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.1
+  ./install.sh install --ref=v1.6.0
+  pip install git+https://github.com/YoRHa-Agents/PopolaLoom@v1.6.0
   popola skill upgrade --target=cursor   # Stage S4 比对 SHA256 + 备份
   ```
   > PyPI remains deferred for v0.9.x / v1.6.0; default installer uses GitHub.

@@ -1293,9 +1293,13 @@ def worker_dispatch_cmd(
         help="Starting ref forwarded to `cursor-cloud`.",
     ),
     model: str = typer.Option(  # noqa: B008
-        "composer-2",
+        "composer-2.5",
         "--model",
-        help="Cursor cloud model id forwarded via --cli-flag model=...",
+        help=(
+            "Cursor cloud model id forwarded via --cli-flag model=.... "
+            "v1.6.1: default bumped from the discontinued 'composer-2' to "
+            "'composer-2.5' (see GET /v1/models for the current inventory)."
+        ),
     ),
     print_only: bool = typer.Option(  # noqa: B008
         False,

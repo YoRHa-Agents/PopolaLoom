@@ -9,11 +9,24 @@ import typer
 
 CURSOR_CLOUD_MODELS: tuple[str, ...] = (
     "default",
-    "composer-2",
-    "composer-2-fast",
+    "composer-2.5",
+    "composer-2-5",
     "sonnet",
     "gpt-5.5",
+    "opus",
+    "gemini",
 )
+"""Known Cursor cloud model ids surfaced by the dispatch wizard.
+
+v1.6.1: ``composer-2`` and ``composer-2-fast`` were removed from
+``GET https://api.cursor.com/v1/models`` upstream and now return
+``HTTP 400 invalid_model``. The wizard offers the current
+``composer-2.5`` (canonical id) and its ``composer-2-5`` alias (the
+``fast`` variant), plus the still-current ``sonnet`` / ``gpt-5.5``
+aliases that Cursor keeps as ``-latest`` pointers. New mainline
+models ``opus`` and ``gemini`` (aliases for ``claude-opus-4-7`` and
+``gemini-3.1-pro`` per ``GET /v1/models``) are added so the wizard
+matches the inventory the gateway actually accepts."""
 
 
 def _choose(prompt: str, options: list[tuple[str, str]], *, default: str) -> str:

@@ -186,11 +186,22 @@ VALID_TARGETS: frozenset[str] = frozenset({"cursor", "claude", "copilot", "codex
 
 CURSOR_CLOUD_KNOWN_MODELS: tuple[str, ...] = (
     "default",
-    "composer-2",
-    "composer-2-fast",
+    "composer-2.5",
+    "composer-2-5",
     "sonnet",
     "gpt-5.5",
+    "opus",
+    "gemini",
 )
+"""Cursor cloud model ids accepted by the ``popola init prefs`` validator.
+
+v1.6.1: kept in lockstep with
+:data:`popolaloom.cli.dispatch_wizard.CURSOR_CLOUD_MODELS` so the same
+inventory surfaces in interactive prompts AND in
+``popola init prefs --set cursor-cloud.model=<X>`` validation. The
+legacy ``composer-2`` / ``composer-2-fast`` ids were removed from
+``GET /v1/models`` upstream and now return ``HTTP 400 invalid_model``;
+see :mod:`popolaloom.cli.dispatch_wizard` for the migration note."""
 
 
 # ── user_preferences helpers (v0.9.10) ───────────────────────────────────

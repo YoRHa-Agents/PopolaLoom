@@ -931,7 +931,7 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
                 "worker_name": "popolaloom-PopolaLoom-deadbeef",
                 "repo_url": "https://github.com/acme/repo",
                 "starting_ref": "main",
-                "model": "composer-2",
+                "model": "composer-2.5",
                 "cloud_target": "self-hosted",
                 "__auth_mode__": "session-jwt",
             },

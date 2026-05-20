@@ -472,7 +472,7 @@ def test_existing_worker_proceeds_to_dispatch_with_expected_body(
     assert body["extra"]["worker_name"] == worker_name
     assert body["extra"]["repo_url"] == "https://github.com/acme/repo"
     assert body["extra"]["starting_ref"] == "main"
-    assert body["extra"]["model"] == "composer-2"
+    assert body["extra"]["model"] == "composer-2.5"
 
 
 # ── (d) cursor-managed target skips the worker-existence check ────────
