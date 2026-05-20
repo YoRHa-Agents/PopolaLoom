@@ -33,6 +33,19 @@ from popolaloom.cli.main import app as main_app
 from popolaloom.daemon.main import UserPreferencesConfig
 
 
+@pytest.fixture(autouse=True)
+def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.6.0 — ``_apply_path_b_flags`` eagerly verifies the JWT bundle
+    when self-hosted forces ``__auth_mode__=session-jwt``. Tests in
+    this file exercise the no-silent-fallback wire shape rather than
+    JWT auth, so stub the loader so the eager-verify step is a no-op.
+    """
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+
+
 @pytest.fixture
 def isolated_popola_home(
     tmp_path: Path,
@@ -223,3 +236,37 @@ def test_spawn_cloud_path_b_error_does_not_trigger_rest_retry() -> None:
     )
     # The hard-fail call must be present.
     assert 'error_kind="path_b_rpc_failed"' in src or "path_b_rpc_failed" in src
+
+
+# ── Assertion #5 (v1.6.0): --allow-fallback is a NO-OP for self-hosted ──
+
+
+def test_allow_fallback_is_noop_for_self_hosted_cloud_target(
+    isolated_popola_home: Path,
+    runner: CliRunner,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.0 constraint #2 — --allow-fallback is a no-op + WARN when
+    --cloud-target=self-hosted. popola must NEVER swap to a local CLI
+    on the self-hosted single-path dispatch.
+
+    The check is bilingual + visible on stderr so operators see exactly
+    why their fallback opt-in was ignored (per No-Silent-Failures).
+    """
+    _mock_dispatch_client(monkeypatch, "self-hosted-noop-1234")
+
+    result = runner.invoke(
+        main_app,
+        [
+            "dispatch",
+            "self-hosted with stray fallback",
+            "--cloud-target=self-hosted",
+            "--worker-name=probe-w1",
+            "--allow-fallback",
+        ],
+    )
+
+    assert result.exit_code == 0, _combined_output(result)
+    out = _combined_output(result)
+    # The WARN must be surfaced (bilingual marker — either side).
+    assert "--allow-fallback is a no-op" in out or "不生效" in out

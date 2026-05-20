@@ -44,6 +44,19 @@ from popolaloom.cli.main import (
 from popolaloom.daemon.main import UserPreferencesConfig, UserPrefsCursorCloud
 
 
+@pytest.fixture(autouse=True)
+def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.6.0 — ``_apply_path_b_flags`` eagerly verifies the JWT bundle
+    when self-hosted forces ``__auth_mode__=session-jwt``. Tests in
+    this file exercise the dispatch wire shape rather than JWT auth, so
+    stub the loader to a sentinel so the eager-verify step is a no-op.
+    """
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+
+
 @pytest.fixture
 def isolated_popola_home(
     tmp_path: Path,
@@ -299,18 +312,26 @@ def test_dispatch_flag_only_routes_to_cursor_cloud(
     assert body["extra"]["worker_name"] == "probe-w1"
 
 
-def test_dispatch_explicit_rest_auth_overrides_session_jwt_pref_for_named_worker(
+def test_dispatch_explicit_rest_auth_rejected_for_self_hosted_in_v1_6_0(
     isolated_popola_home: Path,
     runner: CliRunner,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Explicit REST path-A must not be upgraded by default_auth_mode prefs."""
+    """v1.6.0 inverts the v1.5.x contract for this case.
+
+    Pre-v1.6.0 ``--cloud-target=self-hosted --auth-mode=rest`` dispatched
+    successfully on the REST path-A. v1.6.0 (``feedback_for_v1.5.2.md``
+    constraint #5: single canonical path) rejects this combination at
+    the CLI boundary with ``_EXIT_INVALID_ARGS`` (2) and a bilingual
+    hint pointing at ``--auth-mode=session-jwt``. The previous test
+    name is inverted to pin the v1.6.0 behaviour.
+    """
     write_user_preferences_for_cli(
         UserPreferencesConfig(
             cursor_cloud=UserPrefsCursorCloud(default_auth_mode="session-jwt"),
         )
     )
-    mock_client = _mock_dispatch_client(monkeypatch, "rest-path-a-worker-1234")
+    _mock_dispatch_client(monkeypatch, "rest-path-a-worker-1234")
 
     result = runner.invoke(
         main_app,
@@ -323,13 +344,10 @@ def test_dispatch_explicit_rest_auth_overrides_session_jwt_pref_for_named_worker
         ],
     )
 
-    assert result.exit_code == 0, _combined_output(result)
-    assert "[prefs] applying" not in _combined_output(result)
-    body = _posted_body(mock_client)
-    assert body["cli"] == "cursor-cloud"
-    assert body["extra"]["cloud_target"] == "self-hosted"
-    assert body["extra"]["worker_name"] == "probe-w1"
-    assert "__auth_mode__" not in body["extra"]
+    assert result.exit_code == _EXIT_INVALID_ARGS
+    out = _combined_output(result)
+    assert "session-jwt" in out
+    assert "self-hosted" in out
 
 
 def test_dispatch_flag_overrides_pref(

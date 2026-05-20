@@ -410,6 +410,34 @@ class Supervisor:
                 error_detail="marker payload requires string 'prompt'",
             )
 
+        # v1.6.0 (feedback_for_v1.5.2 constraint #5) — enforce the
+        # single canonical path at the daemon boundary too: when
+        # ``cloud_target=self-hosted`` the dispatch MUST carry
+        # ``__auth_mode__=session-jwt``. The CLI (`_apply_path_b_flags`)
+        # already forces this, but a legacy CLI pinned by an operator
+        # or a hand-rolled marker payload could still set
+        # ``rest`` — reject defensively with a Path-B-tagged
+        # ``error_kind`` so the constraint is satisfied at the
+        # daemon level as well.
+        if (
+            str(extra.get("cloud_target") or "") == "self-hosted"
+            and extra.get("__auth_mode__") != "session-jwt"
+        ):
+            return _fail(
+                error_kind="invalid_auth_mode_for_self_hosted",
+                error_detail=(
+                    "self-hosted dispatch requires "
+                    "extra.__auth_mode__='session-jwt' (v1.6.0 "
+                    "feedback_for_v1.5.2 constraint #5: self-hosted has "
+                    "exactly ONE canonical transport — Path-B JWT). Got "
+                    f"extra.__auth_mode__={extra.get('__auth_mode__')!r}. "
+                    "Re-dispatch via `popola dispatch ... --cli=cursor-cloud "
+                    "--cloud-target=self-hosted` (the CLI defaults to "
+                    "session-jwt for self-hosted) or "
+                    "--cloud-target=cursor-managed for REST."
+                ),
+            )
+
         # v1.1.0 (Track 6) — Path-B (--auth-mode=session-jwt) branch.
         # The CLI's `_apply_path_b_flags` injects `extra["__auth_mode__"]
         # = "session-jwt"` after eagerly verifying the JWT loads. Here we
@@ -499,6 +527,15 @@ class Supervisor:
         # `use_private_worker=True + labels.worker=X` are both present we
         # translate to `env={type:"machine", name:X}` and emit one warning.
         # If `env` IS present the legacy keys are ignored (env wins).
+        #
+        # v1.6.0 (feedback_for_v1.5.2 constraint #1): pool routing is
+        # forbidden at the popola layer when ``cloud_target=self-hosted``.
+        # The CLI no longer offers a ``--pool`` flag and the wizard no
+        # longer shows a pool option, but a legacy CLI pinned by an
+        # operator or a hand-rolled marker payload could still set
+        # ``env={type:'pool'}`` — we reject it explicitly so the
+        # constraint is satisfied at the daemon boundary as well.
+        cloud_target_str = str(extra.get("cloud_target") or "")
         env_param: AgentEnv | None = None
         env_raw = extra.get("env")
         if env_raw is not None:
@@ -522,6 +559,19 @@ class Supervisor:
                         "extra.env.type must be one of "
                         "['cloud', 'machine', 'pool']; "
                         f"got {env_type!r}"
+                    ),
+                )
+            if env_type == "pool" and cloud_target_str == "self-hosted":
+                return _fail(
+                    error_kind="pool_forbidden_self_hosted",
+                    error_detail=(
+                        "extra.env.type='pool' is forbidden when "
+                        "cloud_target='self-hosted' (v1.6.0 feedback_for_v1.5.2 "
+                        "constraint #1: popola only routes My Machines workers "
+                        "on the self-hosted path). Use --cli=cursor-cloud "
+                        "--cloud-target=self-hosted --worker-name=<X> for a "
+                        "named worker, or invoke `agent worker start --pool` "
+                        "directly outside popola if you need a pool worker."
                     ),
                 )
             env_name_raw = env_raw.get("name")
@@ -637,6 +687,7 @@ class Supervisor:
                 pr_url=pr_url,
                 env_vars=env_vars_param,
                 env=env_param,
+                cloud_target=cloud_target_str or None,
                 timeout_s=timeout_s_param,
             )
         except ValueError as exc:
@@ -709,6 +760,13 @@ class Supervisor:
             cloud_phase="CREATING",
         )
         self._state_store.rehydrate([seeded_handle])
+        # v1.6.0 (feedback_for_v1.5.2 constraint #4): derive the Cursor
+        # web-side URL from the agent_id so the CLI's post-dispatch
+        # poller can surface ``view: <url>``. Path-A REST response
+        # does not carry an explicit ``dashboard_url`` (that's a
+        # Path-B Connect-RPC field), but the canonical URL shape is
+        # stable — ``https://cursor.com/agents/<bc-id>``.
+        rest_dashboard_url = f"https://cursor.com/agents/{agent_id}"
         event_log.append(
             "cloud.queued",
             {
@@ -717,13 +775,15 @@ class Supervisor:
                 "run_id": run_id,
                 "runtime": "cloud",
                 "initial_phase": "CREATING",
+                "dashboard_url": rest_dashboard_url,
             },
         )
         logger.info(
-            "cloud task queued task=%s agent=%s run=%s",
+            "cloud task queued task=%s agent=%s run=%s dashboard=%s",
             task_id,
             agent_id,
             run_id,
+            rest_dashboard_url,
         )
 
         poll_thread = run_poll_loop(

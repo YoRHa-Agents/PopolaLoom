@@ -616,7 +616,13 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
 
         # v0.8.8 T2.1.2 (cost-fields.md §4 caveat 3 + DECISIONS.md EOQ-B2):
         # When the user did NOT pass ``model`` for a cloud-cursor dispatch,
-        # popolad substitutes a hard default (currently ``composer-2``).
+        # popolad substitutes a hard default. v0.10.0 (AC12) bumped the
+        # actual substitution in ``cursor_cloud._normalize_cloud_extra``
+        # from ``"composer-2"`` to ``"default"`` (Cursor's Auto model
+        # selector). v1.6.1 brings this audit row into sync with that
+        # reality — previously this event lied with ``"composer-2"``,
+        # which has been removed from ``GET /v1/models`` upstream and
+        # would mislead SREs auditing drift.
         # Emit ``cloud.model_default_used`` so the verbose status surface
         # can render ``model: -`` (truthful) instead of the substituted
         # value, and so SREs can audit drift if Cursor changes its system
@@ -634,7 +640,7 @@ def _register_routes(app: FastAPI, popolad: Popolad) -> None:
                             "cloud.model_default_used",
                             {
                                 "task_id": task_id,
-                                "default_model": "composer-2",
+                                "default_model": "default",
                             },
                         )
                     except Exception:

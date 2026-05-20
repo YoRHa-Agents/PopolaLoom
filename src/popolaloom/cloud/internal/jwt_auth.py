@@ -153,7 +153,7 @@ def load_jwt_bundle(
         JWTAuthError: when neither the env var nor the file has a usable
             access token. The error's ``hint`` field carries a bilingual
             operator-facing message pointing at how to obtain a JWT
-            (``cursor login`` or ``CURSOR_SESSION_JWT`` env var).
+            (``agent login`` or ``CURSOR_SESSION_JWT`` env var).
     """
     env_map = env if env is not None else dict(os.environ)
     path = auth_json_path or DEFAULT_AUTH_JSON_PATH
@@ -174,9 +174,9 @@ def load_jwt_bundle(
             f"path-B requires a JWT, but neither {ENV_VAR_JWT} env var "
             f"nor {path} exists",
             hint=(
-                f"Run `cursor login` on this machine to populate {path}, "
+                f"Run `agent login` on this machine to populate {path}, "
                 f"OR export {ENV_VAR_JWT}=<jwt> for CI / ephemeral envs. "
-                f"路径-B 需要 JWT,可以运行 `cursor login` 生成 {path},"
+                f"路径-B 需要 JWT,可以运行 `agent login` 生成 {path},"
                 f"或者通过 {ENV_VAR_JWT} 环境变量提供。"
             ),
         )
@@ -203,8 +203,8 @@ def load_jwt_bundle(
         raise JWTAuthError(
             f"{path} missing or empty 'accessToken' field",
             hint=(
-                f"Run `cursor login` to refresh {path} and re-populate "
-                f"accessToken. (运行 `cursor login` 重新生成 accessToken)"
+                f"Run `agent login` to refresh {path} and re-populate "
+                f"accessToken. (运行 `agent login` 重新生成 accessToken)"
             ),
         )
     refresh = data.get("refreshToken")

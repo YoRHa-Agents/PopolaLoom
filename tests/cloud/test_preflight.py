@@ -209,3 +209,62 @@ def test_check_github_app_raises_on_list_payload() -> None:
     client = _FakeClient(repositories_payload=[{"name": "x"}])
     with pytest.raises(CursorCloudError):
         check_github_app_installed(client, "https://github.com/x/y")
+
+
+# ── v1.6.0 constraint #3: self-hosted target skips the GitHub-App gate ──
+
+
+def test_check_github_app_installed_skipped_for_self_hosted() -> None:
+    """v1.6.0 ``feedback_for_v1.5.2.md`` constraint #3: when the
+    ``target`` kwarg is ``"self-hosted"`` the GitHub-App gate
+    short-circuits to ``installed=None`` and the message explains the
+    skip, even for a github.com URL that would otherwise probe
+    ``GET /v1/repositories``.
+
+    The client's ``_request_json`` must NOT be called — gate the
+    behaviour at the function boundary so the contract holds for the
+    Path-B ``cursor-cloud-internal`` transport too (it doesn't own
+    ``_request_json``).
+    """
+    call_count = {"n": 0}
+
+    class _SpyClient(_FakeClient):
+        def _request_json(self, method: str, path: str) -> Any:
+            call_count["n"] += 1
+            return super()._request_json(method, path)
+
+    client = _SpyClient(repositories_payload={"items": [{"name": "z"}]})
+    out = check_github_app_installed(
+        client,
+        "https://github.com/owner/name",
+        target="self-hosted",
+    )
+    assert out.installed is None
+    assert call_count["n"] == 0, (
+        "self-hosted target must short-circuit BEFORE calling _request_json "
+        "(constraint #3); Path-B transports do not expose _request_json"
+    )
+    assert "self-hosted" in out.message
+    assert "skipped" in out.message.lower()
+
+
+def test_check_github_app_installed_managed_target_still_probes() -> None:
+    """Non-self-hosted target preserves the v0.10.0 behaviour (probes the
+    server). Empty repo_url early-exit still fires.
+    """
+    client = _FakeClient(
+        repositories_payload={"items": [{"name": "z"}]},
+    )
+    out = check_github_app_installed(
+        client,
+        "https://github.com/x/y",
+        target="cursor-managed",
+    )
+    assert out.installed is True
+
+    out = check_github_app_installed(
+        client,
+        "https://github.com/x/y",
+        target=None,
+    )
+    assert out.installed is True

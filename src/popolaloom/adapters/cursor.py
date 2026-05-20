@@ -1,9 +1,12 @@
-"""CursorAdapter — wraps ``cursor-agent agent --print`` for non-interactive run.
+"""CursorAdapter — wraps ``agent agent --print`` for non-interactive run.
 
 Source command derivation (出处:
 ``.local/memory/research/02-cli-capabilities.md`` §"Cursor Agent CLI"):
 
-    cursor-agent agent --print --output-format text "<prompt>"
+    agent agent --print --output-format text "<prompt>"
+
+(legacy installs may still expose this as ``cursor-agent``; the resolver
+tries both, preferring ``agent``)
 
 Optional ``extra`` keys:
 
@@ -42,12 +45,85 @@ logger = logging.getLogger(__name__)
 
 _ALLOWED_OUTPUT_FORMATS: tuple[str, ...] = ("text", "stream-json")
 
+_DEFAULT_CURSOR_BINARIES: tuple[str, ...] = ("agent", "cursor-agent")
+"""Resolution order for the local Cursor CLI binary.
+
+v1.6.1 (``.local/feedbacks/feedback_for_v1.6.0.md``): the modern Cursor
+install (2026.05.07+) ships ``agent`` as the canonical CLI name with
+``cursor-agent`` kept as a symlink for backward compat. We prefer
+``agent`` to match the upstream CLI's own error messages (e.g.
+"Please run 'agent login'") and the worker-side resolver in
+``cloud_worker_cmd._DEFAULT_AGENT_BINARIES``. Legacy installs that only
+ship ``cursor-agent`` still work via fallback.
+"""
+
 
 class CursorAdapter:
-    """Cursor Agent CLI (``cursor-agent``) command builder."""
+    """Cursor Agent CLI (``agent``) command builder."""
 
     name: str = "cursor"
-    binary: str = "cursor-agent"
+    binary: str = "agent"
+
+    def __init__(self, binary: str | None = None) -> None:
+        """Construct an adapter, optionally pinning the CLI binary name.
+
+        Args:
+            binary: Explicit cursor CLI binary spelling
+                (``"agent"`` / ``"cursor-agent"`` / a custom path).  When
+                ``None`` (default), the constructor probes PATH for each
+                entry in :data:`_DEFAULT_CURSOR_BINARIES` in order and
+                assigns the first hit to ``self.binary``.  When neither
+                spelling is on PATH, the class default ``"agent"`` is
+                kept so :func:`subprocess.Popen` later surfaces a
+                recognisable ``FileNotFoundError`` against the canonical
+                name (No Silent Failures).
+
+        v1.6.1 (``feedback_for_v1.6.0.md`` Q-3 + Bugbot review of
+        PR #39): the previous ``@classmethod _resolve_binary`` ignored
+        per-instance ``binary`` overrides because it accessed
+        ``cls.binary`` rather than ``self.binary``; the adapter
+        combinatorial matrix's ``argv[0] == adapter.binary`` assertion
+        broke on legacy hosts that only shipped ``cursor-agent``.  The
+        fix pins ``self.binary`` to the resolved spelling at
+        construction time (or to the explicit ``binary=`` override) so
+        every call to :meth:`build_command` and :meth:`is_available`
+        agrees with the documented contract that ``argv[0]`` mirrors
+        ``adapter.binary``.
+
+        Reading PATH at construction time is treated as pure here:
+        no writes, no mutation of state outside ``self``, and no
+        ``os.getcwd()`` call (that's the original purity invariant from
+        the module docstring).  Callers that need a fully air-gapped
+        adapter (zero PATH probes) pass an explicit ``binary=`` value.
+        """
+        if binary is not None:
+            self.binary = binary
+            return
+        for candidate in _DEFAULT_CURSOR_BINARIES:
+            if shutil.which(candidate) is not None:
+                self.binary = candidate
+                return
+        # Neither spelling is on PATH; keep the class default so a later
+        # subprocess.Popen surfaces FileNotFoundError against the
+        # canonical name.
+
+    @classmethod
+    def _resolve_binary(cls) -> str:
+        """Class-level resolver kept for backward compat with v1.6.1-pre callers.
+
+        Most call sites should prefer :attr:`self.binary` (set at
+        construction time by :meth:`__init__`).  This classmethod stays
+        for the rare caller that wants the "first PATH hit OR class
+        default" lookup without instantiating a full adapter.
+
+        Tries each entry in :data:`_DEFAULT_CURSOR_BINARIES` in order
+        and returns the first one that resolves on PATH.  Falls back to
+        :attr:`cls.binary` (``"agent"``) when neither is on PATH.
+        """
+        for candidate in _DEFAULT_CURSOR_BINARIES:
+            if shutil.which(candidate) is not None:
+                return candidate
+        return cls.binary
 
     def build_command(
         self,
@@ -111,7 +187,19 @@ class CursorAdapter:
         return cmd
 
     def is_available(self) -> bool:
-        """Return True iff ``cursor-agent`` resolves on ``$PATH``."""
+        """Return True iff this adapter's pinned binary resolves on ``$PATH``.
+
+        v1.6.1 (Bugbot review of PR #39): the previous implementation
+        checked every entry in :data:`_DEFAULT_CURSOR_BINARIES` so an
+        explicit ``CursorAdapter(binary="cursor-agent")`` override would
+        report ``is_available() == True`` even when only the OTHER
+        spelling (``"agent"``) was on PATH — and then
+        :meth:`build_command` would emit ``["cursor-agent", ...]`` for
+        :class:`subprocess.Popen` to raise ``FileNotFoundError``
+        against. The fix probes the actual binary this adapter will
+        invoke, so the availability check matches the binary the next
+        ``build_command`` call will produce (No Silent Failures).
+        """
         return shutil.which(self.binary) is not None
 
 

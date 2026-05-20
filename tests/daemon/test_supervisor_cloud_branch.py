@@ -371,6 +371,13 @@ def test_missing_api_key_emits_task_failed(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    # Isolate the OS keyring precedence slot — without this hook, a
+    # developer-stored CURSOR_API_KEY in the system keychain leaks into
+    # `resolve_cursor_api_key` and the test exercises the create_agent
+    # 401 branch instead of the documented missing_api_key path.
+    monkeypatch.setattr(
+        "popolaloom.credentials._import_keyring", lambda: None
+    )
     sup, _, log, task_id = cloud_task_env
     cmd = _marker_cmd("hi", {"repo_url": "https://github.com/o/r"})
     cb = MagicMock()
@@ -387,6 +394,10 @@ def test_spawn_cloud_failed_path_still_tags_runtime_cloud(
 ) -> None:
     """Missing API key after valid marker: runtime=cloud before task.failed."""
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    # See `test_missing_api_key_emits_task_failed` for the keyring isolation rationale.
+    monkeypatch.setattr(
+        "popolaloom.credentials._import_keyring", lambda: None
+    )
     sup, store, log, task_id = cloud_task_env
     update_calls: list[tuple[str, dict[str, Any]]] = []
     orig_update = store.update

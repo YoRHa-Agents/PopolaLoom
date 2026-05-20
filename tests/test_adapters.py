@@ -97,11 +97,22 @@ def test_register_duplicate_raises(isolated_registry: None) -> None:
 # ── CursorAdapter ────────────────────────────────────────────────────────
 
 
-def test_cursor_build_command_basic() -> None:
-    """``cursor-agent agent --print --output-format text "<prompt>"`` 字段断言."""
+def test_cursor_build_command_basic(monkeypatch: pytest.MonkeyPatch) -> None:
+    """``agent agent --print --output-format text "<prompt>"`` 字段断言.
+
+    v1.6.1 (``feedback_for_v1.6.0.md`` Q-3): the canonical Cursor CLI
+    binary is now ``agent``; ``cursor-agent`` is kept as a legacy
+    alias that the adapter still resolves when the modern binary is
+    absent. Force the test to assert against the canonical name by
+    pretending ``agent`` resolves on PATH so
+    :func:`CursorAdapter._resolve_binary` returns ``"agent"``
+    deterministically (hermetic — the test runner may or may not
+    have either binary installed).
+    """
+    monkeypatch.setattr(shutil, "which", lambda name: f"/usr/local/bin/{name}")
     adapter = CursorAdapter()
     cmd = adapter.build_command("say hi")
-    assert cmd[0] == "cursor-agent"
+    assert cmd[0] == "agent"
     assert "agent" in cmd
     assert "--print" in cmd
     assert "--output-format" in cmd
@@ -132,6 +143,71 @@ def test_cursor_invalid_output_format_raises() -> None:
     adapter = CursorAdapter()
     with pytest.raises(ValueError, match="output_format"):
         adapter.build_command("hi", extra={"output_format": "yaml"})
+
+
+def test_cursor_adapter_resolves_agent_first_then_cursor_agent(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 — when both binaries exist, ``agent`` wins (canonical name).
+
+    Mirrors the worker-side resolver in
+    :func:`popolaloom.cli.cloud_worker_cmd._resolve_agent_binary` so the
+    local subprocess adapter and the worker wrapper agree on the
+    canonical Cursor CLI name (per ``feedback_for_v1.6.0.md`` Q-3 —
+    modern installs ship ``agent`` as the canonical binary with
+    ``cursor-agent`` kept as a legacy symlink).
+    """
+    monkeypatch.setattr(
+        shutil, "which", lambda name: f"/usr/local/bin/{name}"
+    )
+    assert CursorAdapter._resolve_binary() == "agent"
+
+
+def test_cursor_adapter_resolves_cursor_agent_when_only_legacy_available(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 — legacy installs that only ship ``cursor-agent`` still work.
+
+    The resolver tries ``agent`` first, then falls through to
+    ``cursor-agent`` so operators on a stale Cursor install (pre-
+    2026.05.07) don't need to upgrade just to use PopolaLoom.
+    """
+
+    def which_legacy_only(name: str) -> str | None:
+        if name == "agent":
+            return None
+        if name == "cursor-agent":
+            return "/usr/bin/cursor-agent"
+        return None
+
+    monkeypatch.setattr(shutil, "which", which_legacy_only)
+    assert CursorAdapter._resolve_binary() == "cursor-agent"
+
+
+def test_cursor_adapter_is_available_with_either_name(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 — ``is_available()`` is True iff ANY known binary is on PATH.
+
+    Covers the cross-product of (agent present, cursor-agent present)
+    so a legacy-only install, a modern-only install, both-present, and
+    neither-present each route to the right boolean.
+    """
+
+    def which_only_legacy(name: str) -> str | None:
+        return "/usr/bin/cursor-agent" if name == "cursor-agent" else None
+
+    monkeypatch.setattr(shutil, "which", which_only_legacy)
+    assert CursorAdapter().is_available() is True
+
+    def which_only_modern(name: str) -> str | None:
+        return "/usr/local/bin/agent" if name == "agent" else None
+
+    monkeypatch.setattr(shutil, "which", which_only_modern)
+    assert CursorAdapter().is_available() is True
+
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
+    assert CursorAdapter().is_available() is False
 
 
 # ── ClaudeAdapter ────────────────────────────────────────────────────────
@@ -196,8 +272,18 @@ def test_is_available_without_binary(monkeypatch: pytest.MonkeyPatch) -> None:
     assert CodexAdapter().is_available() is False
 
 
-def test_protocol_runtime_satisfaction() -> None:
-    """3 个 adapter 均满足 ``runtime_checkable`` :class:`Adapter` Protocol."""
+def test_protocol_runtime_satisfaction(monkeypatch: pytest.MonkeyPatch) -> None:
+    """3 个 adapter 均满足 ``runtime_checkable`` :class:`Adapter` Protocol.
+
+    v1.6.1: :class:`CursorAdapter` consults :func:`shutil.which` lazily
+    via :meth:`CursorAdapter._resolve_binary` during ``build_command``,
+    so we pin the resolver to the canonical ``agent`` name by patching
+    PATH lookups to None (resolver falls back to ``cls.binary``). This
+    keeps the Protocol invariant ``cmd[0] == adapter.binary`` hermetic
+    regardless of which Cursor CLI variant the test runner happens to
+    have installed.
+    """
+    monkeypatch.setattr(shutil, "which", lambda _name: None)
     for adapter in (CursorAdapter(), ClaudeAdapter(), CodexAdapter()):
         assert isinstance(adapter, Adapter)
         assert isinstance(adapter.name, str) and adapter.name

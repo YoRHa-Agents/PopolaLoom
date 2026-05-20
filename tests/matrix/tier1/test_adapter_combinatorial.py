@@ -146,11 +146,22 @@ def test_cursor_cwd_flag_adds_cwd_argument() -> None:
     assert argv[idx + 1] == "/x"
 
 
-def test_cursor_cwd_flag_without_cwd_skips_cleanly() -> None:
-    """``cwd_flag=True`` with cwd=None must NOT inject ``--cwd`` (logs warning, no crash)."""
+def test_cursor_cwd_flag_without_cwd_skips_cleanly(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``cwd_flag=True`` with cwd=None must NOT inject ``--cwd`` (logs warning, no crash).
+
+    v1.6.1 (``feedback_for_v1.6.0.md`` Q-3): pin ``agent`` as ``argv[0]``
+    via a hermetic ``shutil.which`` monkeypatch — the resolver in
+    :func:`CursorAdapter._resolve_binary` returns whichever of
+    ``("agent", "cursor-agent")`` is found first on PATH, with a
+    fall-through to ``cls.binary == "agent"`` when neither resolves,
+    so the assertion must not depend on the test machine's PATH.
+    """
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
     argv = CursorAdapter().build_command("p", cwd=None, extra={"cwd_flag": True})
     assert "--cwd" not in argv
-    assert argv[0] == "cursor-agent"
+    assert argv[0] == "agent"
 
 
 def test_claude_max_turns_appears_with_int_value() -> None:

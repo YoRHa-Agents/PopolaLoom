@@ -16,6 +16,66 @@ addressed in future versions* — file an issue under
 [`.local/feedbacks/`](../.local/feedbacks/) if you hit one and the
 listed workaround does not unblock you.
 
+## v1.6.1 — `agent worker` shutdown deletes `~/.config/cursor/auth.json` (upstream behavior)
+
+<!-- updated: 2026-05-19 -->
+
+**Limitation.** When the upstream Cursor CLI's `agent worker start` subprocess
+exits (SIGTERM, SIGKILL, or normal exit), it deletes the operator's session JWT
+file at `~/.config/cursor/auth.json` as part of its cleanup routine. Observed
+empirically during the v1.6.0 live-probe attempt: after `popola cloud worker
+stop` (or any process kill targeting the worker), the next dispatch attempt
+fails with `Authentication required for worker mode. Please run 'agent login',
+or provide an API key with --api-key or CURSOR_API_KEY.` Recovering requires
+re-running `agent login` to repopulate the JWT. The empirical trace (commands,
+timestamps, and the worker-log snippet that surfaced the upstream hint) lives
+in [`feedback_for_v1.6.0.md` L62-L80](../.local/feedbacks/feedback_for_v1.6.0.md).
+
+**Implication.** PopolaLoom CANNOT prevent this — auth.json lifecycle is owned
+by the upstream Cursor CLI. v1.6.1 adds a defensive pre-flight at
+`popola cloud worker start` (exits 1 with an `agent login` hint when auth.json
+is missing) so operators see the failure AT the popola boundary rather than
+inside the worker subprocess's "Authentication required" log line.
+
+**Workaround.** Re-run `agent login` between worker restarts. For long-running
+workspaces, prefer `popola cloud worker stop` followed by `agent login` and
+then `popola cloud worker start` — the new pre-flight prevents the failed
+dispatch trail-of-tears. The `--allow-missing-auth` flag is an escape hatch for
+CI smoke tests where the JWT step is intentionally skipped.
+
+**Tracking.** `BL-v1.6.x-worker-shutdown-auth-deletion` in `CHANGELOG.md`
+§Unreleased. Deferred to upstream Cursor — popola cannot fix client-side.
+
+## v1.6.0 — Cursor server downgrades `env=machine→pool` (upstream regression)
+
+<!-- updated: 2026-05-18 -->
+
+**Limitation.** Cursor's Connect-RPC `StartBackgroundComposerFromSnapshot`
+server SILENTLY downgrades the request body's
+`env={"type":"machine","name":X}` to `env={"type":"pool"}` server-side.
+The request body shape is accepted (200 + `bc_id` + `initial_run_id`), but
+`GET /v1/agents/<bcId>` afterwards returns `env={"type":"pool"}` — the
+`name` field is dropped. Verified empirically 2026-05-17 against
+`api2.cursor.sh` with `env={"type":"machine","name":"popolaloom-dev-worker-v15"}`.
+
+**Implication.** PopolaLoom CANNOT fix server-side routing. v1.6.0's
+constraint #1 is satisfied at the popola layer (the worker process is My
+Machines only via `popola cloud worker start` — no `--pool` flag — AND
+the daemon supervisor rejects `extra.env.type='pool'` for
+`cloud_target=self-hosted` with `error_kind="pool_forbidden_self_hosted"`),
+but operators on a multi-worker account may see a different worker claim
+the task than the named one.
+
+**Workaround.** Run **one worker per repo**: with a single My-Machines
+worker registered per workspace, the Cursor server's pool fallback
+trivially picks the only matching worker. Operators with multiple workers
+sharing the same repo should either consolidate to one worker per repo OR
+accept that Cursor's server-side scheduling may route to a sibling.
+
+**Tracking.** `BL-v1.6.x-cursor-env-machine-to-pool` in `CHANGELOG.md`
+§Unreleased. Deferred to a future v1.7.x (or later) iteration if Cursor
+exposes a non-downgrading RPC; popola cannot fix this client-side.
+
 ## v1.1.0 — experimental Path-B RPC endpoint may return HTTP 404
 
 <!-- updated: 2026-05-11 -->

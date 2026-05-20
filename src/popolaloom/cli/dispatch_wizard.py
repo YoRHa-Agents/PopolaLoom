@@ -9,11 +9,24 @@ import typer
 
 CURSOR_CLOUD_MODELS: tuple[str, ...] = (
     "default",
-    "composer-2",
-    "composer-2-fast",
+    "composer-2.5",
+    "composer-2-5",
     "sonnet",
     "gpt-5.5",
+    "opus",
+    "gemini",
 )
+"""Known Cursor cloud model ids surfaced by the dispatch wizard.
+
+v1.6.1: ``composer-2`` and ``composer-2-fast`` were removed from
+``GET https://api.cursor.com/v1/models`` upstream and now return
+``HTTP 400 invalid_model``. The wizard offers the current
+``composer-2.5`` (canonical id) and its ``composer-2-5`` alias (the
+``fast`` variant), plus the still-current ``sonnet`` / ``gpt-5.5``
+aliases that Cursor keeps as ``-latest`` pointers. New mainline
+models ``opus`` and ``gemini`` (aliases for ``claude-opus-4-7`` and
+``gemini-3.1-pro`` per ``GET /v1/models``) are added so the wizard
+matches the inventory the gateway actually accepts."""
 
 
 def _choose(prompt: str, options: list[tuple[str, str]], *, default: str) -> str:
@@ -140,6 +153,7 @@ def run_dispatch_wizard(
     typer.echo("Cursor Cloud effort is available with --auth-mode=session-jwt.")
     if target == "cursor-cloud-managed":
         selected_extra["env"] = {"type": "cloud"}
+        selected_extra["cloud_target"] = "cursor-managed"
     else:
         worker_default = getattr(prefs.cursor_cloud, "worker_name", "")
         worker_name = typer.prompt("Self-hosted worker name", default=worker_default)
@@ -147,6 +161,14 @@ def run_dispatch_wizard(
         if not worker_name_text:
             raise typer.BadParameter("self-hosted target requires a worker name")
         selected_extra["env"] = {"type": "machine", "name": worker_name_text}
+        # v1.6.0 (feedback_for_v1.5.2 constraint #5): self-hosted choice
+        # ALWAYS sets cloud_target=self-hosted + auth_mode=session-jwt
+        # at the extras level so the daemon supervisor routes via the
+        # single canonical Path-B JWT path. The wizard never offers a
+        # pool option or a REST fallback for self-hosted.
+        selected_extra["cloud_target"] = "self-hosted"
+        selected_extra["worker_name"] = worker_name_text
+        selected_extra["__auth_mode__"] = "session-jwt"
     selected_extra.setdefault(
         "starting_ref", getattr(prefs.cursor_cloud, "starting_ref", "main")
     )

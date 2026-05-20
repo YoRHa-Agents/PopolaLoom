@@ -30,11 +30,53 @@ import json
 from pathlib import Path
 from typing import Any
 
+import pytest
 from typer.testing import CliRunner
 
 from popolaloom.cli import cloud_worker_cmd
 
 runner = CliRunner()
+
+
+@pytest.fixture(autouse=True)
+def _stub_cursor_auth_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """v1.6.1 — stub ``~/.config/cursor/auth.json`` for the new B2 pre-flight.
+
+    Mirrors the autouse fixture in
+    :file:`tests/cli/test_cloud_worker_cmd.py`. Wave B2
+    (``feedback_for_v1.6.0.md`` Q-3) added a pre-flight check in
+    :func:`popolaloom.cli.cloud_worker_cmd.worker_start_cmd` that exits 1
+    with an ``agent login`` hint when
+    :data:`popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH` is
+    missing. The ``worker start`` invocations in this file
+    monkey-patch ``_spawn_*`` helpers so they never need a real Cursor
+    session JWT; this fixture materialises a 0o600-protected stub under
+    ``tmp_path/.config/cursor/auth.json`` AND re-points
+    ``DEFAULT_AUTH_JSON_PATH`` to that path so the pre-flight check
+    passes regardless of when the ``jwt_auth`` module was first imported
+    (its module-level ``Path.home()`` evaluation captures the real
+    operator's HOME before pytest gets a chance to monkey-patch it).
+    """
+    auth_dir = tmp_path / ".config" / "cursor"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_json = auth_dir / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "accessToken": "stub-access-token-for-cli-tests",
+                "refreshToken": "stub-refresh-token-for-cli-tests",
+            }
+        ),
+        encoding="utf-8",
+    )
+    auth_json.chmod(0o600)
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        auth_json,
+    )
+    return auth_json
 
 
 def test_detach_invokes_spawn_detached_worker(monkeypatch, tmp_path: Path) -> None:
@@ -113,7 +155,7 @@ def test_no_detach_invokes_foreground_subprocess(
     """
     foreground_calls: list[list[str]] = []
 
-    def fake_fg(argv: list[str], *, pool: bool) -> int:
+    def fake_fg(argv: list[str]) -> int:
         foreground_calls.append(list(argv))
         return 0
 

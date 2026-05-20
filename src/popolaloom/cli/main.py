@@ -395,9 +395,13 @@ def dispatch(
             "unlock --mode/--max-mode/--effort/--time-budget/--long-running/"
             "--auto-proceed-after-plan/--preset). Path-B (session-jwt) is "
             "NOT part of the v1.x SemVer stability surface; Cursor may "
-            "change the wire format without notice. "
+            "change the wire format without notice. v1.6.0 "
+            "(feedback_for_v1.5.2 constraint #5): --cloud-target=self-hosted "
+            "FORCES --auth-mode=session-jwt — an explicit --auth-mode=rest "
+            "with --cloud-target=self-hosted exits 2. "
             "(实验性) cursor-cloud 派发使用的鉴权通道;'rest' 为默认稳定接口,"
             "'session-jwt' 启用实验性 RPC 路径以支持 --mode 等高级控制项。"
+            "v1.6.0 起 --cloud-target=self-hosted 强制 session-jwt。"
         ),
     ),
     mode: str = typer.Option(
@@ -532,14 +536,16 @@ def dispatch(
         False,
         "--allow-fallback",
         help=(
-            "v1.5.0 No-Silent-Fallback opt-in: when --cli=<X> is "
-            "unavailable, allow the resolver to walk "
-            "[user_preferences.routing].fallback_chain. Default OFF — "
+            "v1.5.0 No-Silent-Fallback opt-in (managed cloud / local CLI "
+            "only): when --cli=<X> is unavailable, allow the resolver to "
+            "walk [user_preferences.routing].fallback_chain. Default OFF — "
             "popola hard-fails when the requested CLI adapter is missing. "
-            "(v1.5.0 no-silent-fallback invariant: explicit opt-in needed "
-            "before popola switches the dispatched CLI adapter.) "
-            "v1.5.0 不静默回退默认约束:除非显式 --allow-fallback,"
-            "否则当请求的 --cli 不可用时直接退出。"
+            "v1.6.0 (feedback_for_v1.5.2 constraint #2): this flag is a "
+            "NO-OP + WARN when --cloud-target=self-hosted; popola NEVER "
+            "swaps to a local CLI on the self-hosted single-path dispatch. "
+            "v1.6.0 不静默回退默认约束:除非显式 --allow-fallback,"
+            "否则当请求的 --cli 不可用时直接退出。--cloud-target=self-hosted "
+            "时此标志强制为 no-op,popola 绝不回退到本地 CLI。"
         ),
     ),
     events_dir: Path | None = typer.Option(  # noqa: B008
@@ -620,6 +626,27 @@ def dispatch(
                 cloud_target,
             )
             cli = "cursor-cloud"
+
+        # v1.6.0 (feedback_for_v1.5.2 constraint #2 / locked DECISIONS Q-4):
+        # the `--allow-fallback` flag is preserved for managed cloud and
+        # local CLIs (cursor / claude / codex / ...), but is a no-op +
+        # bilingual WARN when ``cloud_target=self-hosted`` is in play.
+        # Per No-Silent-Failures: never silently swap to a local CLI on
+        # the self-hosted single-path dispatch.
+        if cloud_target == "self-hosted" and allow_fallback:
+            typer.echo(
+                "warn: --allow-fallback is a no-op when "
+                "--cloud-target=self-hosted (v1.6.0 single-path contract; "
+                "feedback_for_v1.5.2.md constraint #2). popola will NEVER "
+                "swap to a local CLI when the self-hosted worker dispatch "
+                "fails. Fix the worker registration or re-dispatch with "
+                "--cloud-target=cursor-managed if you need the managed "
+                "cloud. "
+                "(warn: --cloud-target=self-hosted 时 --allow-fallback 不生效; "
+                "popola 不会自动回退到本地 CLI。请修复 Worker 注册或重新派发)",
+                err=True,
+            )
+            allow_fallback = False
 
         if model:
             _apply_model_flag(extra, model, cli)
@@ -763,6 +790,16 @@ def dispatch(
                 "subprocess tasks)"
             )
 
+        # v1.6.0 (feedback_for_v1.5.2 constraint #4): cloud dispatches
+        # need a clear web-side observability link printed AT dispatch
+        # time so operators can verify the task is queued and inspect
+        # the workspace clone via Cursor's UI. The daemon emits
+        # ``cloud.queued`` carrying ``dashboard_url`` once the
+        # supervisor's StartBackgroundComposerFromSnapshot RPC
+        # returns; poll for up to ~2 s and surface the URL.
+        if cli == "cursor-cloud":
+            _print_dashboard_url_or_warn(task_id)
+
 
 # ── status ────────────────────────────────────────────────────────────────
 
@@ -890,6 +927,74 @@ def _build_status_busy_line(task_id: str) -> str | None:
     if not events:
         return None
     return _busy_line_from_events(events)
+
+
+_DASHBOARD_URL_POLL_TOTAL_S: float = 2.0
+"""Total time the post-dispatch poller waits for ``cloud.queued`` (s).
+
+v1.6.0 (``feedback_for_v1.5.2.md`` constraint #4): after a successful
+``cloud`` / ``cloud-target=self-hosted`` dispatch the CLI polls the
+events log for the daemon's ``cloud.queued`` event and prints its
+``dashboard_url`` to stdout as ``view: <url>``. A 2 s ceiling keeps
+the common case snappy without blocking the operator's shell when
+the daemon is slow / the dispatch failed. On timeout we emit a
+stderr WARN (No-Silent-Failures: NEVER silently skip).
+"""
+
+_DASHBOARD_URL_POLL_INTERVAL_S: float = 0.05
+"""Per-iteration sleep between events-log reads (50 ms)."""
+
+
+def _print_dashboard_url_or_warn(task_id: str) -> None:
+    """Poll the events log for ``cloud.queued`` and print ``view: <url>``.
+
+    v1.6.0 (``feedback_for_v1.5.2.md`` constraint #4) — every cloud
+    dispatch (managed cloud or self-hosted-via-Path-B) needs a clear
+    URL printed at dispatch time so operators can verify the task is
+    queued and inspect the workspace clone via Cursor's UI.
+
+    Reads ``$POPOLA_HOME/events/<task_id>.jsonl`` directly because the
+    daemon already owns the authoritative writes via ``EventLog`` —
+    we don't need to add a new RPC method for the post-dispatch
+    polling. On timeout (~2 s default) emit a single stderr WARN
+    explaining the skip (No-Silent-Failures rule: NEVER silently
+    swallow the missing URL).
+
+    Args:
+        task_id: The task id returned by ``POST /dispatch``.
+    """
+    deadline = time.monotonic() + _DASHBOARD_URL_POLL_TOTAL_S
+    while time.monotonic() < deadline:
+        events = _read_events_for_task(task_id)
+        for ev in events:
+            if not isinstance(ev, dict):
+                continue
+            if ev.get("type") != "cloud.queued":
+                continue
+            data = ev.get("data") if isinstance(ev.get("data"), dict) else {}
+            url = data.get("dashboard_url") if isinstance(data, dict) else None
+            if isinstance(url, str) and url:
+                typer.echo(f"view: {url}")
+                return
+            # A cloud.queued event with no dashboard_url is unexpected —
+            # emit an explicit WARN rather than silently skipping.
+            typer.echo(
+                "warn: cloud.queued event for "
+                f"task_id={task_id} did not carry a dashboard_url; "
+                "inspect ~/.popola/events/<task_id>.jsonl for details",
+                err=True,
+            )
+            return
+        time.sleep(_DASHBOARD_URL_POLL_INTERVAL_S)
+    typer.echo(
+        f"warn: dashboard_url not surfaced within "
+        f"{_DASHBOARD_URL_POLL_TOTAL_S:.1f}s for task_id={task_id} "
+        "(cloud.queued event not observed). Run `popola attach "
+        f"{task_id} --follow` to see why the dispatch is delayed, OR "
+        "`popola status` once the daemon emits the event. "
+        "(warn: 派发后 2s 内未观察到 cloud.queued 事件,无法显示 dashboard_url)",
+        err=True,
+    )
 
 
 def _events_path_for_task(task_id: str) -> Path:
@@ -1904,8 +2009,19 @@ def _select_cli_from_preferences(
             err=True,
         )
         raise typer.Exit(code=2)
+    # v1.6.0 (feedback_for_v1.5.2 constraint #2): when the operator
+    # explicitly requested ``--cloud-target=self-hosted`` we MUST NOT
+    # consult ``fallback_chain`` — even if the resolver lands here via
+    # a misconfigured pref (the auto-set ``--cli=cursor-cloud`` branch
+    # in ``dispatch()`` already covers the common case; this defends
+    # the rare path where prefs say ``default_runtime="local"`` but
+    # the per-task flag says ``self-hosted``). Hard-fail with the
+    # existing self-hosted hint instead of walking the chain.
+    effective_allow_fallback = (
+        allow_fallback and cloud_target_flag != "self-hosted"
+    )
     return _select_available_local_cli(
-        cli, prefs, extra=selected_extra, allow_fallback=allow_fallback
+        cli, prefs, extra=selected_extra, allow_fallback=effective_allow_fallback
     )
 
 
@@ -2238,7 +2354,7 @@ def _apply_path_b_flags(
     ``--auth-mode=session-jwt`` (v1.1.0+ wired): when ``cli=cursor-cloud``
     the JWT bundle is loaded eagerly via
     :func:`popolaloom.cloud.internal.jwt_auth.load_jwt_bundle` so the
-    operator gets a friendly ``cursor login`` hint at dispatch time
+    operator gets a friendly ``agent login`` hint at dispatch time
     rather than at the supervisor's first RPC. On success we inject
     ``extra["__auth_mode__"] = "session-jwt"`` plus the resolved Path-B
     knobs (``mode`` / ``max_mode`` / ``effort`` / ``time_budget`` /
@@ -2301,6 +2417,42 @@ def _apply_path_b_flags(
             err=True,
         )
         raise typer.Exit(code=_EXIT_INVALID_ARGS)
+
+    # v1.6.0 (feedback_for_v1.5.2 constraint #5 — single canonical path):
+    # when ``cloud_target=self-hosted`` (resolved upstream by
+    # ``_apply_cloud_preferences``), force ``auth_mode=session-jwt``.
+    #   - Operator explicitly passed ``--auth-mode=rest`` for a
+    #     self-hosted dispatch → exit 2 with a bilingual error pointing
+    #     at ``--auth-mode=session-jwt`` (the v1.6.0 single path).
+    #   - Operator left the flag at its default ``"rest"`` → silently
+    #     upgrade to ``session-jwt`` and emit a one-line ``[prefs] ...``
+    #     stderr note so the change is visible (No Silent Failures).
+    cloud_target_resolved = str(extra.get("cloud_target") or "")
+    if cloud_target_resolved == "self-hosted" and raw_auth == "rest":
+        if auth_mode_explicit:
+            typer.echo(
+                "error: --auth-mode=rest is rejected when "
+                "--cloud-target=self-hosted (v1.6.0 feedback_for_v1.5.2 "
+                "constraint #5: self-hosted dispatch has exactly ONE "
+                "canonical path — Path-B JWT direct). Use "
+                "--auth-mode=session-jwt (the implicit default when "
+                "you omit --auth-mode for a self-hosted dispatch), or "
+                "switch to --cloud-target=cursor-managed if you really "
+                "need REST. Hint: run `agent login` to populate "
+                "~/.config/cursor/auth.json if your JWT is missing. "
+                "(error: --cloud-target=self-hosted 时禁止 --auth-mode=rest;"
+                "请使用 --auth-mode=session-jwt(留空即默认),或改用 "
+                "--cloud-target=cursor-managed)",
+                err=True,
+            )
+            raise typer.Exit(code=_EXIT_INVALID_ARGS)
+        raw_auth = "session-jwt"
+        typer.echo(
+            "[prefs] forcing --auth-mode=session-jwt for "
+            "--cloud-target=self-hosted (v1.6.0 single-path contract). "
+            "(已将 --auth-mode 设为 session-jwt — self-hosted 单路径默认)",
+            err=True,
+        )
 
     auth_mode_normalized = raw_auth
 
@@ -2403,7 +2555,7 @@ def _apply_path_b_flags(
     if auth_mode_normalized == "session-jwt":
         # v1.1.0 (Track 6) — Path-B is now wired end-to-end. Eagerly verify
         # the JWT is loadable so the operator sees the friendly
-        # `cursor login` hint at dispatch time instead of inside the
+        # `agent login` hint at dispatch time instead of inside the
         # daemon's RPC failure path. No Silent Failures: any
         # JWTAuthError propagates to a non-zero exit with hint surfaced.
         from popolaloom.cloud.internal.jwt_auth import (

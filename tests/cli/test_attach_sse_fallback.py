@@ -700,6 +700,14 @@ def test_missing_api_key_skips_cloud_sse_with_notice(
 ) -> None:
     """Cloud runtime + agent/run ids present but no CURSOR_API_KEY → skip."""
     monkeypatch.delenv("CURSOR_API_KEY", raising=False)
+    # Isolate the OS keyring precedence slot so a developer-stored
+    # CURSOR_API_KEY in the system keychain doesn't satisfy
+    # `resolve_cursor_api_key` and force the SSE thread to spawn — which
+    # would fail this test that asserts the cloud-SSE branch short-circuits
+    # cleanly when no key is configured anywhere.
+    monkeypatch.setattr(
+        "popolaloom.credentials._import_keyring", lambda: None
+    )
     factory_calls: list[Any] = []
 
     def _tracking_factory(*args: Any, **kwargs: Any) -> Any:

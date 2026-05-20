@@ -85,6 +85,36 @@ def runner() -> CliRunner:
     return CliRunner()
 
 
+@pytest.fixture(autouse=True)
+def _stub_jwt_loader(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.6.0 — ``popola cloud worker dispatch`` pre-loads the JWT bundle.
+
+    Tests in this file exercise the worker-existence pre-flight, not
+    JWT auth, so stub ``load_jwt_bundle`` to a sentinel so the eager
+    JWT-load step is a no-op.
+    """
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+
+
+@pytest.fixture(autouse=True)
+def _short_dashboard_poll(monkeypatch: pytest.MonkeyPatch) -> None:
+    """v1.6.0 — shrink the post-dispatch dashboard_url poll window for hermetic speed.
+
+    Production default is 2.0 s; the tests don't seed the events log
+    so they always hit the timeout path. 50 ms keeps each test fast
+    while still exercising the timeout-WARN branch.
+    """
+    monkeypatch.setattr(
+        "popolaloom.cli.main._DASHBOARD_URL_POLL_TOTAL_S", 0.05
+    )
+    monkeypatch.setattr(
+        "popolaloom.cli.main._DASHBOARD_URL_POLL_INTERVAL_S", 0.01
+    )
+
+
 @pytest.fixture
 def isolated_home(
     tmp_path: Path, monkeypatch: pytest.MonkeyPatch
@@ -412,10 +442,17 @@ def test_existing_worker_proceeds_to_dispatch_with_expected_body(
     )
 
     assert result.exit_code == 0, _combined_output(result)
-    assert _combined_output(result).strip().endswith(
-        "cursor-cloud-existing-1"
-    ), (
-        f"expected dispatch task_id on stdout; got {_combined_output(result)!r}"
+    # v1.6.0 (feedback_for_v1.5.2 constraint #4): the verb prints the
+    # task_id AND polls for ``cloud.queued.dashboard_url``. The events
+    # log is not seeded in this test so the poller times out with the
+    # bilingual stderr WARN — both are expected.
+    out = _combined_output(result).strip()
+    assert "cursor-cloud-existing-1" in out, (
+        f"expected dispatch task_id on stdout; got {out!r}"
+    )
+    assert "dashboard_url not surfaced" in out, (
+        "constraint #4: when the poller times out it MUST emit a WARN "
+        "(never silently skip)"
     )
     assert tracker.list_workers_calls == 1, (
         "expected exactly one list_workers() call to validate the worker; "
@@ -435,7 +472,7 @@ def test_existing_worker_proceeds_to_dispatch_with_expected_body(
     assert body["extra"]["worker_name"] == worker_name
     assert body["extra"]["repo_url"] == "https://github.com/acme/repo"
     assert body["extra"]["starting_ref"] == "main"
-    assert body["extra"]["model"] == "composer-2"
+    assert body["extra"]["model"] == "composer-2.5"
 
 
 # ── (d) cursor-managed target skips the worker-existence check ────────

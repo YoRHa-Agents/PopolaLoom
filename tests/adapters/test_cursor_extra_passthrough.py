@@ -193,16 +193,25 @@ def test_cursor_cli_args_empty_string_is_noop() -> None:
     assert argv_with == argv_without
 
 
-def test_cursor_no_cli_args_key_preserves_legacy_argv_shape() -> None:
+def test_cursor_no_cli_args_key_preserves_legacy_argv_shape(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Without ``cli_args`` (or ``cmd_args``) the v0.5.x argv shape is unchanged.
 
     Pins the v0.5.x → v0.6.0 contract that the new feature is purely
     opt-in: callers that never set the new key see byte-identical argv
     to what v0.5.5 produced.
+
+    v1.6.1 (``feedback_for_v1.6.0.md`` Q-3): the canonical Cursor CLI
+    binary is now ``agent`` (``cursor-agent`` kept as a legacy alias).
+    Force ``agent`` as ``argv[0]`` via a hermetic ``shutil.which``
+    monkeypatch so the assertion does not depend on whether the test
+    machine has ``agent`` and/or ``cursor-agent`` installed.
     """
+    monkeypatch.setattr("shutil.which", lambda name: f"/usr/local/bin/{name}")
     argv = CursorAdapter().build_command("p")
     assert argv == [
-        "cursor-agent",
+        "agent",
         "agent",
         "--print",
         "--output-format",

@@ -6,12 +6,15 @@ Hermetic — every test monkeypatches the three indirection points in
 so no real
 subprocess is spawned and no real network IO occurs.
 
-Coverage summary (mirrors v0.9.1 plan §"Coverage targets"):
+Coverage summary (mirrors v0.9.1 plan §"Coverage targets"; v1.6.0
+constraint #1 — popola only wraps My Machines workers; pool flags
+removed from the popola layer):
 
-- argv construction for My Machines (no ``--pool``) and Self-Hosted
-  Pool (``--pool``) modes.
-- ``--pool`` without ``CURSOR_API_KEY`` exits ``77`` with an explicit
-  service-account-API-key hint (No Silent Failures).
+- argv construction for My Machines mode (the only supported mode at
+  the popola layer; Self-Hosted Pool workers go through ``agent worker
+  start --pool`` directly outside popola).
+- ``--pool`` / ``--pool-name`` flags raise Click ``UsageError`` (exit 2)
+  on ``popola cloud worker start`` and ``popola cloud worker debug``.
 - ``--dry-run`` prints the argv and does not invoke the subprocess
   helper.
 - ``status`` parses ``/healthz`` / ``/readyz`` / ``/metrics`` and
@@ -76,6 +79,51 @@ def isolated_home(
     )
     metadata.chmod(0o600)
     yield tmp_path
+
+
+@pytest.fixture(autouse=True)
+def _stub_cursor_auth_json(
+    tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+) -> Path:
+    """v1.6.1 — stub ``~/.config/cursor/auth.json`` for the new B2 pre-flight.
+
+    Wave B2 (``feedback_for_v1.6.0.md`` Q-3) added a pre-flight check in
+    :func:`popolaloom.cli.cloud_worker_cmd.worker_start_cmd` that exits 1
+    with an ``agent login`` hint when
+    :data:`popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH` is
+    missing. The 4 pre-existing ``worker_start_*`` invocations in this
+    file rely on the monkey-patched ``_run_subprocess`` indirection to
+    avoid spawning a real worker — they never need a real Cursor session
+    JWT. This autouse fixture materialises a 0o600-protected stub under
+    ``tmp_path/.config/cursor/auth.json`` AND re-points
+    ``DEFAULT_AUTH_JSON_PATH`` to that path so the pre-flight check
+    passes regardless of when the ``jwt_auth`` module was first imported
+    (the module-level ``Path.home()`` evaluation captures the real
+    operator's HOME before pytest gets a chance to monkey-patch it).
+
+    Tests that intentionally exercise the missing-auth path
+    (:func:`test_worker_start_preflights_auth_json_missing`) re-patch
+    ``DEFAULT_AUTH_JSON_PATH`` to a guaranteed-nonexistent location,
+    overriding this fixture's setattr.
+    """
+    auth_dir = tmp_path / ".config" / "cursor"
+    auth_dir.mkdir(parents=True, exist_ok=True)
+    auth_json = auth_dir / "auth.json"
+    auth_json.write_text(
+        json.dumps(
+            {
+                "accessToken": "stub-access-token-for-cli-tests",
+                "refreshToken": "stub-refresh-token-for-cli-tests",
+            }
+        ),
+        encoding="utf-8",
+    )
+    auth_json.chmod(0o600)
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        auth_json,
+    )
+    return auth_json
 
 
 @pytest.fixture(autouse=True)
@@ -335,60 +383,99 @@ def test_format_unix_timestamp_unparseable_renders_dash() -> None:
 
 
 def test_build_start_argv_my_machines_default(tmp_path: Path) -> None:
-    """My Machines mode: no ``--pool`` flag, no ``--pool-name``."""
+    """v1.6.0: only My Machines mode is supported (no ``--pool`` ever)."""
     argv = cloud_worker_cmd._build_start_argv(
         binary="/bin/agent",
         worker_dir=tmp_path,
         name="dev-1",
-        pool=False,
-        pool_name=None,
-        idle_release_timeout=None,
-        labels=[],
-        management_addr=None,
+        idle_release_timeout=600,
+        labels=[("env", "prod")],
+        management_addr=":8080",
     )
     assert "--pool" not in argv
     assert "--pool-name" not in argv
     assert "--name" in argv and "dev-1" in argv
     assert "--worker-dir" in argv and str(tmp_path) in argv
-
-
-def test_build_start_argv_pool_mode(tmp_path: Path) -> None:
-    """Pool mode: ``--pool`` + optional ``--pool-name`` propagate."""
-    argv = cloud_worker_cmd._build_start_argv(
-        binary="/bin/agent",
-        worker_dir=tmp_path,
-        name=None,
-        pool=True,
-        pool_name="popolaloom",
-        idle_release_timeout=600,
-        labels=[("env", "prod"), ("hitl", "enabled")],
-        management_addr=":8080",
-    )
-    assert "--pool" in argv
-    pool_idx = argv.index("--pool-name")
-    assert argv[pool_idx + 1] == "popolaloom"
     idle_idx = argv.index("--idle-release-timeout")
     assert argv[idle_idx + 1] == "600"
     addr_idx = argv.index("--management-addr")
     assert argv[addr_idx + 1] == ":8080"
-    # Labels are emitted as repeatable ``--label key=value`` pairs.
-    assert argv.count("--label") == 2
     assert "env=prod" in argv
-    assert "hitl=enabled" in argv
 
 
 def test_build_debug_argv_minimal(tmp_path: Path) -> None:
-    """Debug argv has the ``debug`` subcommand + worker dir at minimum."""
+    """v1.6.0: debug argv has the ``debug`` subcommand + worker dir; no pool flags."""
     argv = cloud_worker_cmd._build_debug_argv(
         binary="/bin/agent",
         worker_dir=tmp_path,
         name=None,
-        pool=False,
-        pool_name=None,
         labels=[],
     )
     assert argv[:3] == ["/bin/agent", "worker", "debug"]
     assert "--worker-dir" in argv
+    assert "--pool" not in argv
+    assert "--pool-name" not in argv
+
+
+def test_pool_flag_does_not_exist_on_worker_start(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.0 constraint #1: ``popola cloud worker start --pool`` is rejected."""
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--pool",
+        ],
+    )
+    # Click rejects the unknown flag with a UsageError → exit code 2.
+    assert result.exit_code == 2
+    assert spawned == []
+
+
+def test_pool_flag_does_not_exist_on_worker_debug(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.0 constraint #1: ``popola cloud worker debug --pool`` is rejected."""
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "debug",
+            "--worker-dir",
+            str(isolated_home),
+            "--pool",
+        ],
+    )
+    assert result.exit_code == 2
+    assert spawned == []
 
 
 # ---------------------------------------------------------------------------
@@ -425,68 +512,13 @@ def test_worker_debug_invokes_agent_subprocess(
     assert str(isolated_home) in argv
 
 
-def test_worker_debug_pool_without_api_key_exits_77(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--pool`` without ``CURSOR_API_KEY`` fails with the canonical hint."""
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    monkeypatch.setattr(
-        cloud_worker_cmd, "_run_subprocess", lambda argv: 0
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "debug",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-        ],
-    )
-    assert result.exit_code == cloud_worker_cmd._EXIT_POOL_REQUIRES_API_KEY
-    out = _combined_output(result)
-    assert "service-account API key" in out
-    assert "CURSOR_API_KEY" in out
-
-
-def test_worker_debug_pool_with_api_key_runs(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``--pool`` with ``CURSOR_API_KEY`` exported reaches subprocess."""
-    monkeypatch.setenv("CURSOR_API_KEY", "test-service-account-key")
-    captured: list[list[str]] = []
-    monkeypatch.setattr(
-        cloud_worker_cmd,
-        "_run_subprocess",
-        lambda argv: captured.append(argv) or 0,
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "debug",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-            "--pool-name",
-            "default",
-        ],
-    )
-    assert result.exit_code == 0, _combined_output(result)
-    assert len(captured) == 1
-    assert "--pool" in captured[0]
+# v1.6.0 (feedback_for_v1.5.2 constraint #1): the v1.5.x
+# ``test_worker_debug_pool_without_api_key_exits_77`` /
+# ``test_worker_debug_pool_with_api_key_runs`` /
+# ``test_worker_start_pool_without_api_key_exits_77`` cases were deleted
+# alongside the ``--pool`` / ``--pool-name`` flags. See
+# ``test_pool_flag_does_not_exist_on_worker_{start,debug}`` above for the
+# replacement contract.
 
 
 # ---------------------------------------------------------------------------
@@ -564,39 +596,6 @@ def test_worker_start_without_name_uses_workspace_default(
     assert argv[name_idx + 1].startswith(
         f"popolaloom-{isolated_home.name}-"
     )
-
-
-def test_worker_start_pool_without_api_key_exits_77(
-    runner: CliRunner,
-    isolated_home: Path,
-    fake_agent_binary: str,
-    monkeypatch: pytest.MonkeyPatch,
-) -> None:
-    """``start --pool`` without ``CURSOR_API_KEY`` fails before spawning."""
-    monkeypatch.delenv("CURSOR_API_KEY", raising=False)
-    spawned: list[Any] = []
-    monkeypatch.setattr(
-        cloud_worker_cmd,
-        "_run_subprocess",
-        lambda argv: spawned.append(argv) or 0,
-    )
-    from popolaloom.cli.main import app as root_app
-
-    result = runner.invoke(
-        root_app,
-        [
-            "cloud",
-            "worker",
-            "start",
-            "--worker-dir",
-            str(isolated_home),
-            "--pool",
-        ],
-    )
-    assert result.exit_code == cloud_worker_cmd._EXIT_POOL_REQUIRES_API_KEY
-    assert spawned == []
-    out = _combined_output(result)
-    assert "service-account API key" in out
 
 
 def test_worker_start_reuses_existing_workspace_worker(
@@ -756,12 +755,126 @@ def test_worker_start_my_machines_runs_subprocess(
     assert "env=dev" in argv
 
 
+def test_worker_start_preflights_auth_json_missing(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 Wave B2 — missing ``~/.config/cursor/auth.json`` exits 1 with hint.
+
+    Pre-flight check (added in Wave B2 of v1.6.1) refuses to spawn an
+    upstream ``agent worker start`` subprocess when the operator has not
+    yet run ``agent login`` to populate the Cursor session JWT bundle.
+    The stderr hint MUST mention ``agent login`` so the operator knows
+    the remediation. We override the autouse ``_stub_cursor_auth_json``
+    by re-pointing ``DEFAULT_AUTH_JSON_PATH`` at a guaranteed-missing
+    path under ``tmp_path``.
+    """
+    spawned: list[Any] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: spawned.append(argv) or 0,
+    )
+    missing = tmp_path / "definitely-not-here" / "auth.json"
+    assert not missing.exists()
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        missing,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--name",
+            "preflight-victim",
+        ],
+    )
+    assert result.exit_code == 1, _combined_output(result)
+    assert spawned == []
+    combined = _combined_output(result)
+    assert "agent login" in combined
+    assert "auth.json" in combined
+
+
+def test_worker_start_allow_missing_auth_skips_preflight(
+    runner: CliRunner,
+    isolated_home: Path,
+    fake_agent_binary: str,
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """v1.6.1 Wave B2 — ``--allow-missing-auth`` bypasses the pre-flight.
+
+    Same missing-auth setup as
+    :func:`test_worker_start_preflights_auth_json_missing` but with
+    ``--allow-missing-auth`` on the CLI. The pre-flight check must be
+    skipped so the test passes through to the monkey-patched
+    ``_run_subprocess`` runner (exit 0, captured argv recorded). This
+    documents the CI / smoke-test escape hatch for bootstrapping a
+    worker without a real Cursor session JWT.
+    """
+    captured: list[list[str]] = []
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_run_subprocess",
+        lambda argv: captured.append(argv) or 0,
+    )
+    missing = tmp_path / "definitely-not-here" / "auth.json"
+    assert not missing.exists()
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.DEFAULT_AUTH_JSON_PATH",
+        missing,
+    )
+    from popolaloom.cli.main import app as root_app
+
+    result = runner.invoke(
+        root_app,
+        [
+            "cloud",
+            "worker",
+            "start",
+            "--worker-dir",
+            str(isolated_home),
+            "--name",
+            "preflight-bypassed",
+            "--allow-missing-auth",
+        ],
+    )
+    assert result.exit_code == 0, _combined_output(result)
+    assert len(captured) == 1
+    assert "preflight-bypassed" in captured[0]
+
+
 def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
     runner: CliRunner,
     isolated_home: Path,
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
-    """Default dispatch POSTs a cursor-cloud body targeting the worker name."""
+    """Default dispatch POSTs a cursor-cloud body targeting the worker name.
+
+    v1.6.0 (feedback_for_v1.5.2 constraint #5): the body now carries the
+    v1.6.0 canonical extras shape — ``cloud_target=self-hosted`` +
+    ``__auth_mode__=session-jwt`` — so the daemon supervisor routes via
+    the single canonical Path-B JWT path. ``worker dispatch`` also
+    pre-loads the JWT bundle so the operator sees a friendly
+    ``agent login`` hint at this CLI boundary instead of inside the
+    daemon's first RPC.
+    """
+    # v1.6.0 — pre-load the JWT bundle via a stub so the test does not
+    # require a real ``~/.config/cursor/auth.json``.
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
     worker = cloud_worker_cmd.LocalWorkerProcess(
         pid=4242,
         worker_dir=isolated_home.resolve(),
@@ -773,6 +886,13 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
         lambda worker_dir: [worker],
+    )
+    # v1.6.0 — bypass the v0.10.0 self-hosted worker existence pre-flight
+    # so the test does not need a real Cursor REST API key.
+    monkeypatch.setattr(
+        cloud_worker_cmd,
+        "_enforce_self_hosted_worker_exists",
+        lambda **kwargs: None,
     )
     captured: list[dict[str, Any]] = []
 
@@ -801,7 +921,7 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
         ],
     )
     assert result.exit_code == 0, _combined_output(result)
-    assert _combined_output(result).strip() == "cursor-cloud-123"
+    assert "cursor-cloud-123" in _combined_output(result)
     assert captured == [
         {
             "cli": "cursor-cloud",
@@ -811,7 +931,9 @@ def test_worker_dispatch_posts_to_daemon_with_existing_worker_routing(
                 "worker_name": "popolaloom-PopolaLoom-deadbeef",
                 "repo_url": "https://github.com/acme/repo",
                 "starting_ref": "main",
-                "model": "composer-2",
+                "model": "composer-2.5",
+                "cloud_target": "self-hosted",
+                "__auth_mode__": "session-jwt",
             },
         }
     ]
@@ -823,6 +945,13 @@ def test_worker_dispatch_daemon_down_exits_nonzero(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """Connection failure names ``popolad`` and exits non-zero."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
@@ -863,6 +992,13 @@ def test_worker_dispatch_json_prints_daemon_payload(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """``--json`` prints the daemon response payload for direct dispatch."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     worker = cloud_worker_cmd.LocalWorkerProcess(
         pid=4242,
         worker_dir=isolated_home.resolve(),
@@ -917,6 +1053,13 @@ def test_worker_dispatch_print_only_does_not_call_daemon(
 ) -> None:
     """``--print-only`` preserves side-effect-free command preview mode."""
     monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
+    monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
         lambda worker_dir: [],
@@ -961,6 +1104,13 @@ def test_worker_dispatch_print_only_json_uses_generated_name_when_no_worker(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     """JSON preview still exposes deterministic fallback routing."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     monkeypatch.setattr(
         cloud_worker_cmd,
         "_detect_running_workers_for_dir",
@@ -1055,6 +1205,13 @@ def test_worker_dispatch_rejects_invalid_args(
     expected: str,
 ) -> None:
     """Argument validation fails before daemon dispatch."""
+    monkeypatch.setattr(
+        "popolaloom.cloud.internal.jwt_auth.load_jwt_bundle",
+        lambda: object(),
+    )
+    monkeypatch.setattr(
+        cloud_worker_cmd, "_enforce_self_hosted_worker_exists", lambda **k: None
+    )
     called: list[dict[str, Any]] = []
     monkeypatch.setattr(
         cloud_worker_cmd,

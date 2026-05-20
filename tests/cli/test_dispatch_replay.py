@@ -171,8 +171,22 @@ def test_dispatch_without_replay_still_requires_prompt(tmp_path: Path) -> None:
     assert "missing prompt" in result.output
 
 
-def test_dispatch_without_replay_still_requires_cli(tmp_path: Path) -> None:
-    """``popola dispatch <prompt>`` (no --cli, no --replay) → exit 2."""
+def test_dispatch_without_replay_still_requires_cli(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """``popola dispatch <prompt>`` (no --cli, no --replay) → exit 2.
+
+    Pins ``POPOLA_HOME`` at a fresh ``tmp_path`` so the operator's real
+    ``~/.popola/popolad.toml`` ``[user_preferences]`` (which may pin a
+    default ``--cloud-target`` after v1.6.0's wizard rewrite) does not
+    answer for the test — without that, ``_select_cli_from_preferences``
+    would resolve a CLI from the persisted preferences instead of exiting
+    with "--cli is required". The contract under test (no preferences →
+    explicit exit 2 + hint) is what guards the v0.7.3+ behaviour for
+    operators who haven't yet run ``popola init``.
+    """
+    monkeypatch.setenv("POPOLA_HOME", str(tmp_path))
     runner = CliRunner()
     result = runner.invoke(main_app, ["dispatch", "some prompt"])
 

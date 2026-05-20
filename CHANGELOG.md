@@ -10,14 +10,98 @@ Latest release notes also live at [`RELEASE_NOTES.md`](RELEASE_NOTES.md) (overwr
 
 ## [Unreleased]
 
-Accumulating for the next v1.5.x patch:
+Accumulating for the next v1.6.x patch:
 
 - `BL-v1.3.x-path-b-non-github-routing` — Cursor server-side hard constraint; cannot fix client-side. v1.5.0's `env={type:machine,name:X}` route bypasses this for **self-hosted-worker dispatches**, but cursor-managed cloud + non-GitHub repos still need a Cursor-side fix.
 - `BL-v1.3.x-bc-model-whitelist-sync` — Cursor BackgroundComposer model list ≠ REST `/v1/models` list (feedback §2 model whitelist table). v1.5.0 adds the `--cli-flag model_id_override=<id>` escape hatch but no probe-and-cache.
 - `BL-v1.4.x-jwt-auto-refresh` — JWT exp is 1h; popolaloom currently warns at boundary but doesn't refresh.
+- `BL-v1.6.x-cursor-env-machine-to-pool` — Cursor Connect-RPC server-side downgrades `env={type:machine,name:X}` → `env={type:pool}`. popola CANNOT fix server-side routing; constraint #1 is satisfied at the popola layer (worker process is My Machines only and the daemon rejects pool routing for self-hosted), but if your account hosts multiple workers Cursor may route the dispatch to a sibling that matches the repo. Operators running ONE worker per repo are unaffected.
+- `BL-v1.6.x-worker-shutdown-auth-deletion` — upstream Cursor CLI's `agent worker start` subprocess deletes `~/.config/cursor/auth.json` as part of its shutdown cleanup (observed empirically during the v1.6.0 Stage T live probe; see [`feedback_for_v1.6.0.md`](.local/feedbacks/feedback_for_v1.6.0.md) L62-L80). PopolaLoom CANNOT prevent this — auth.json lifecycle is owned by the upstream Cursor CLI. v1.6.1 adds a defensive pre-flight at `popola cloud worker start` so operators see the failure at the popola boundary; full description in [`docs/known-issues.md`](docs/known-issues.md). Deferred to upstream Cursor.
 - `BL-v1.0.x-coverage-94-restore` — restore the `[tool.coverage.report] fail_under` floor from 93 back to 94. Pending soak on the cloud_worker_cmd.py / cursor_cloud.py error paths.
 
-<!-- updated: 2026-05-18 -->
+<!-- updated: 2026-05-19 -->
+
+## [1.6.1] - 2026-05-19
+
+**Theme**: Close the three Stage-T live-probe findings filed in [`feedback_for_v1.6.0.md`](.local/feedbacks/feedback_for_v1.6.0.md) — standardise the operator-facing JWT bootstrap command name on `agent login`, flip the `CursorAdapter` default binary to `agent`, and defensively pre-check `~/.config/cursor/auth.json` at the popola layer before launching the worker subprocess. No new features; no daemon contract changes. The v1.6.0 single-path self-hosted dispatch contract and all 6 hard constraints from `feedback_for_v1.5.2.md` remain intact.
+
+### Fixed
+
+- **Login command-name standardisation** ([src/popolaloom/cloud/internal/jwt_auth.py](src/popolaloom/cloud/internal/jwt_auth.py), [src/popolaloom/cloud/internal/cursor_cloud_internal.py](src/popolaloom/cloud/internal/cursor_cloud_internal.py), [src/popolaloom/cli/main.py](src/popolaloom/cli/main.py), [src/popolaloom/cli/init_cmd.py](src/popolaloom/cli/init_cmd.py)): every operator-facing string that previously instructed the legacy `cursor`-prefixed login verb now reads `agent login`. The upstream Cursor CLI was renamed from `cursor` to `agent` in 2026.05; v1.6.0 still spelt the JWT bootstrap command with the legacy `cursor`-prefixed verb in hints, skill copies, and copilot instructions. 11 substitutions across 4 source files; the bilingual hints (`Run \`agent login\` ...` / `请运行 \`agent login\` ...`) keep the v1.5.x No-Silent-Failures contract intact.
+- **`CursorAdapter` default binary** ([src/popolaloom/adapters/cursor.py](src/popolaloom/adapters/cursor.py)): the adapter previously defaulted to the legacy `cursor-agent` binary name, surfacing `FileNotFoundError` on machines that only have the new `agent` spelling on PATH. v1.6.1 flips the default to `"agent"` and adds a `_DEFAULT_CURSOR_BINARIES = ("agent", "cursor-agent")` tuple + `CursorAdapter._resolve_binary()` classmethod that prefers `agent` and falls back to `cursor-agent`. Both `build_command()` and `is_available()` route through the resolver. Explicit `CursorAdapter(binary="cursor-agent")` overrides still pin the legacy name for tests / multi-version hosts.
+- **User-facing hint divergence** (both Skill copies, both `USER_GUIDE.md` copies, `.github/copilot-instructions.md`): 21 occurrences across the 5 user-facing surfaces aligned on `agent login`. The byte-identical mirror between `src/popolaloom/skills/popola-loom/SKILL.md` and `.claude/skills/popola-loom/SKILL.md` is enforced by the new `tests/skills/test_skill_self_hosted_compliance.py::test_skill_copies_byte_identical` case.
+
+### Added
+
+- **`--allow-missing-auth` flag on `popola cloud worker start`** ([src/popolaloom/cli/cloud_worker_cmd.py](src/popolaloom/cli/cloud_worker_cmd.py)): the new `worker_start_cmd` pre-flight checks `~/.config/cursor/auth.json` before launching the worker subprocess. When the file is missing, the command exits 1 with an `agent login` hint at the popola boundary instead of letting the worker subprocess fail later with the harder-to-diagnose `Authentication required for worker mode. Please run 'agent login' ...` log line. `--allow-missing-auth` skips the gate for CI smoke tests that intentionally omit the JWT step (e.g. tests that mint a JWT out-of-band via `CURSOR_SESSION_JWT`). `--dry-run` also bypasses the check (the dry-run path never spawns a worker).
+
+### Changed
+
+- **`CursorAdapter` binary resolver semantics** (same source as Fixed above): `is_available()` returns `True` if EITHER `agent` OR `cursor-agent` resolves on PATH (was: only the explicit `binary=` value). `build_command()` uses `_resolve_binary()` so the resolved argv argv-head matches whatever PATH actually surfaces. Tests asserting against a specific argv-head should patch `which()` or override `binary=` explicitly; existing tests already do this.
+
+### Tests
+
+- **NEW** [tests/skills/test_skill_self_hosted_compliance.py](tests/skills/test_skill_self_hosted_compliance.py) — 6 enforcement cases parametrised over both SKILL.md copies: section detection sanity, no `--pool` in self-hosted code blocks (constraint #1), no `--allow-fallback` in self-hosted code blocks (constraint #2), no `--auth-mode=rest` pair with `--cloud-target=self-hosted` (constraint #5), no GitHub-App preflight phrases in self-hosted sections (constraint #3), `agent login` is the canonical spelling (Wave B4 / v1.6.1 rewrite contract), and the two copies are byte-identical (lockstep mirror gate).
+- **Modified** [tests/cli/test_cloud_worker_cmd.py](tests/cli/test_cloud_worker_cmd.py) — 2 new cases pinning the worker-start pre-flight: `test_worker_start_exits_with_agent_login_hint_when_auth_json_missing` (exit 1 + bilingual `agent login` hint when `--allow-missing-auth` not set) and `test_worker_start_skips_pre_flight_when_allow_missing_auth_set` (the new flag bypasses the gate cleanly). Existing v1.6.0 cases swapped any legacy `cursor`-prefixed login hint text to `agent login`.
+- **Modified** [tests/test_adapters.py](tests/test_adapters.py) — 3 new cases pinning the binary resolver: `test_cursor_adapter_default_binary_is_agent`, `test_cursor_adapter_resolver_falls_back_to_cursor_agent_when_agent_absent`, `test_cursor_adapter_is_available_succeeds_with_either_name`.
+- **Modified** [tests/cli/test_dispatch_wizard.py](tests/cli/test_dispatch_wizard.py), [tests/cli/test_path_b_e2e_wiring.py](tests/cli/test_path_b_e2e_wiring.py), [tests/cloud/internal/test_jwt_auth.py](tests/cloud/internal/test_jwt_auth.py), [tests/cloud/internal/test_post_rpc_4xx.py](tests/cloud/internal/test_post_rpc_4xx.py), [tests/cloud/internal/test_rpc_mock.py](tests/cloud/internal/test_rpc_mock.py), [tests/daemon/test_supervisor_path_b_branch.py](tests/daemon/test_supervisor_path_b_branch.py) — assertions that previously matched the v1.6.0 legacy-login substrings now match `agent login`. No production-behaviour changes.
+
+### Migration notes (v1.6.0 → v1.6.1)
+
+- **No command-line changes required** for operators already on v1.6.0. The new binary resolver tries both `agent` and `cursor-agent`, so existing shells that have only `cursor-agent` on PATH continue to work; if both are present, `agent` wins. The `--auth-mode` semantics, dispatch contract, and daemon RPC shape are byte-identical to v1.6.0.
+- **Re-run `popola skill install --target=cursor --global --force`** (and `--target=claude` if applicable) if you previously installed a customised v1.6.0 Skill copy under `~/.cursor/skills/popola-loom/SKILL.md` or `~/.claude/skills/popola-loom/SKILL.md`. The new v1.6.1 Skill spells the JWT bootstrap command `agent login` everywhere; the installer refuses to overwrite a customised copy without `--force`.
+- **CI smoke tests that previously relied on `popola cloud worker start` running without a JWT** must add `--allow-missing-auth` to skip the new pre-flight gate. The flag is the documented escape hatch for environments that mint the JWT out-of-band (e.g. via `CURSOR_SESSION_JWT`) or test the worker boot path without a real Cursor session.
+
+<!-- updated: 2026-05-19 -->
+
+## [1.6.0] - 2026-05-18
+
+**Theme**: Single canonical self-hosted dispatch path — closes the 6 hard constraints in [`feedback_for_v1.5.2.md`](.local/feedbacks/feedback_for_v1.5.2.md). Self-hosted dispatch (`popola dispatch ... --cloud-target=self-hosted`) now follows exactly ONE path: Path-B JWT direct via `cursor-cloud-internal`. Zero auto-decision fallback. Managed cloud (`--cloud-target=cursor-managed`) and local CLI dispatch (`--cli=cursor|claude|codex|...`) are unchanged.
+
+### Breaking (constraint #1 + #5 — operator-visible)
+
+- **`--pool` / `--pool-name` removed from `popola cloud worker {start,debug}`** ([src/popolaloom/cli/cloud_worker_cmd.py](src/popolaloom/cli/cloud_worker_cmd.py)): the popola layer no longer wraps Self-Hosted Pool mode. My Machines is now the ONLY supported worker mode at the popola layer; operators on Cursor Enterprise pools can continue to use `agent worker start --pool` directly against the upstream Cursor CLI without going through popola. The 4 v1.5.x pool-related tests (`test_build_start_argv_pool_mode`, `test_worker_debug_pool_*`, `test_worker_start_pool_without_api_key_exits_77`) are deleted; replaced by `test_pool_flag_does_not_exist_on_worker_{start,debug}` which assert Click `UsageError` (exit 2) for the removed flags.
+- **`--cloud-target=self-hosted --auth-mode=rest` is rejected** ([src/popolaloom/cli/main.py](src/popolaloom/cli/main.py) `_apply_path_b_flags`): operators who explicitly passed `--auth-mode=rest` with `--cloud-target=self-hosted` previously dispatched via Path-A REST. v1.6.0 hard-fails with exit 2 and a bilingual hint pointing at `--auth-mode=session-jwt`. When `--auth-mode` is omitted the CLI silently upgrades to `session-jwt` with a one-line `[prefs] forcing --auth-mode=session-jwt ...` stderr note (No-Silent-Failures: the upgrade is visible).
+- **`--allow-fallback` is a no-op + WARN for self-hosted** ([src/popolaloom/cli/main.py](src/popolaloom/cli/main.py) `dispatch` + `_select_cli_from_preferences`): per locked decision Q-4 in the v1.6.0 plan, the flag stays available for non-self-hosted CLIs (`cursor-managed`, local `cursor|claude|codex|copilot`) but becomes a no-op + bilingual stderr WARN when `cloud_target=self-hosted`. The resolver NEVER walks `[user_preferences.routing].fallback_chain` on the self-hosted path. Closes constraint #2.
+
+### Added (constraint #4 — dashboard URL surfacing)
+
+- **`view: https://cursor.com/agents/<bcId>` line on stdout after every cloud dispatch** ([src/popolaloom/cli/main.py](src/popolaloom/cli/main.py) `_print_dashboard_url_or_warn` + [src/popolaloom/cli/cloud_worker_cmd.py](src/popolaloom/cli/cloud_worker_cmd.py) `worker_dispatch_cmd`): both `popola dispatch --cli=cursor-cloud` and `popola cloud worker dispatch` poll the daemon's events log (`$POPOLA_HOME/events/<task_id>.jsonl`) for up to ~2 s after dispatch waiting for the `cloud.queued` event. On observe → print `view: <url>`. On timeout OR missing field → bilingual stderr WARN (No-Silent-Failures: NEVER silently skip the URL). Path-A REST `cloud.queued` event now carries `dashboard_url=https://cursor.com/agents/<bc-id>` derived from the agent_id; Path-B was already emitting it.
+
+### Changed (constraint #3 — skip GitHub-App preflight)
+
+- **`check_github_app_installed(..., target='self-hosted')` short-circuits** ([src/popolaloom/cloud/preflight.py](src/popolaloom/cloud/preflight.py)): the gate function gains a `target` keyword; when `target == "self-hosted"` it returns `installed=None` with an explanatory message BEFORE calling the client's `_request_json` method. The contract holds for Path-B `cursor-cloud-internal` transport that doesn't own `_request_json`. `CloudCursorClient.create_agent` gains a `cloud_target` kwarg and forwards it; the supervisor's `_spawn_cloud` forwards `extra.cloud_target`. Defensive: the v1.6.0 single-path contract routes ALL self-hosted dispatches via Path-B so this REST branch is unreachable in practice — the test pins the contract regardless.
+
+### Changed (constraint #5 — defensive daemon-side gates)
+
+- **Supervisor rejects `extra.env.type='pool'` when `cloud_target='self-hosted'`** ([src/popolaloom/daemon/supervisor.py](src/popolaloom/daemon/supervisor.py)): emits `task.failed` with `error_kind="pool_forbidden_self_hosted"`. Even though the new CLI cannot reach this branch, the daemon boundary defensively enforces constraint #1.
+- **Supervisor rejects `extra.__auth_mode__ != 'session-jwt'` for self-hosted**: emits `task.failed` with `error_kind="invalid_auth_mode_for_self_hosted"`. Defensive gate for a legacy CLI / hand-rolled marker payload bypassing the CLI-side force.
+- **`popola cloud worker dispatch` pre-loads the JWT bundle** ([src/popolaloom/cli/cloud_worker_cmd.py](src/popolaloom/cli/cloud_worker_cmd.py) `worker_dispatch_cmd`): a missing `~/.config/cursor/auth.json` now surfaces the `cursor login` hint at this CLI boundary instead of inside the daemon's first RPC. Builder also hard-sets `cloud_target=self-hosted` + `__auth_mode__=session-jwt` in the extras so the daemon routes via the canonical path.
+
+### Changed (constraint #6 — skill enforcement)
+
+- **Both SKILL.md copies bumped to v1.6.0**, byte-identical between `src/popolaloom/skills/popola-loom/SKILL.md` and `.claude/skills/popola-loom/SKILL.md` (+ the tracked `.github/copilot-instructions.md` mirror). Workflow 6 / 10 / 12 rewritten to a SINGLE self-hosted example (the v1.5.x cross-workflow boilerplate consolidated). `--auth-mode=session-jwt` is documented as the implicit default for self-hosted. `No-Silent-Fallback invariant` table reduced from 6 rows to 4 (drops the env_emit_mode pool reference + the dedicated `--allow-fallback` row, now folded into the `--cli` row with the v1.6.0 self-hosted no-op note). New `Verifying a self-hosted dispatch` section documents the `view:` URL contract + `popola attach <task_id> --follow` for live workspace events.
+- **[install-popola SKILL.md](src/popolaloom/skills/install-popola/SKILL.md)** gains a new "Self-hosted setup (one-path, v1.6.0+)" subsection documenting the 6 hard constraints + the end-to-end bootstrap (`cursor login` → `popola cloud worker start` → `popola popolad start` → `popola dispatch --cloud-target=self-hosted`).
+
+### Tests
+
+- **NEW** [tests/contract/test_self_hosted_single_path.py](tests/contract/test_self_hosted_single_path.py) — 15 cases pinning all 6 constraints with a 1:1 mapping in the module docstring + per-constraint test section headers.
+- **NEW** [tests/cli/test_dispatch_dashboard_url.py](tests/cli/test_dispatch_dashboard_url.py) — 6 cases for the `view: <url>` print contract (happy path, self-hosted, timeout WARN, missing URL field, local-CLI skip, worker dispatch surface).
+- **Modified** [tests/cli/test_no_silent_fallback.py](tests/cli/test_no_silent_fallback.py) — adds `test_allow_fallback_is_noop_for_self_hosted_cloud_target` to pin the v1.6.0 contract.
+- **Modified** [tests/cli/test_dispatch_cloud_target_flags.py](tests/cli/test_dispatch_cloud_target_flags.py) — inverts `test_dispatch_explicit_rest_auth_overrides_session_jwt_pref_for_named_worker` → `test_dispatch_explicit_rest_auth_rejected_for_self_hosted_in_v1_6_0` (the v1.5.x assertion that the combination succeeded becomes the v1.6.0 assertion that it exits 2).
+- **Modified** [tests/cli/test_cloud_worker_cmd.py](tests/cli/test_cloud_worker_cmd.py) — deletes the 4 pool-related test cases (`test_build_start_argv_pool_mode`, `test_worker_debug_pool_*`, `test_worker_start_pool_without_api_key_exits_77`); adds `test_pool_flag_does_not_exist_on_worker_{start,debug}` for the v1.6.0 contract.
+- **Modified** [tests/cloud/test_preflight.py](tests/cloud/test_preflight.py) — adds `test_check_github_app_installed_skipped_for_self_hosted` + `test_check_github_app_installed_managed_target_still_probes`.
+- **Modified** several test fixture files to add autouse `_stub_jwt_loader` (since the v1.6.0 self-hosted force triggers an eager JWT-load step that breaks hermetic test environments without a real `~/.config/cursor/auth.json`).
+
+### Known issues (carried into v1.6.0)
+
+- **Cursor Connect-RPC server-side `env=machine→pool` downgrade** ([docs/known-issues.md](docs/known-issues.md)): Cursor's `StartBackgroundComposerFromSnapshot` Connect-RPC silently downgrades `env={"type":"machine","name":X}` → `env={"type":"pool"}` server-side. PopolaLoom CANNOT fix server-side routing; constraint #1 is satisfied at the popola layer (worker process is My Machines only; daemon rejects pool routing for self-hosted), but operators on a multi-worker account may see a different worker claim the task than the named one. Workaround: run one worker per repo.
+
+### Migration notes (v1.5.x → v1.6.0)
+
+- **Operators using `popola cloud worker start --pool`** must drop the flag and either accept My Machines mode (the v1.6.0 popola contract) OR invoke `agent worker start --pool` directly against the upstream Cursor CLI outside popola.
+- **Operators using `popola dispatch --cloud-target=self-hosted --auth-mode=rest`** must remove the explicit `--auth-mode=rest` (the v1.6.0 default is `session-jwt` for self-hosted) AND run `cursor login` once to populate `~/.config/cursor/auth.json` (no more `CURSOR_API_KEY` needed for self-hosted dispatch).
+- **Operators using `popola dispatch --allow-fallback` with `--cloud-target=self-hosted`** should drop the flag — it's a no-op + WARN under v1.6.0. The flag still works for non-self-hosted dispatches (managed cloud + local CLI).
 
 ## [1.5.1] - 2026-05-18
 
