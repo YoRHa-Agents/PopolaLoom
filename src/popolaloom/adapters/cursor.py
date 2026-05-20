@@ -187,8 +187,20 @@ class CursorAdapter:
         return cmd
 
     def is_available(self) -> bool:
-        """Return True iff ``agent`` (or legacy ``cursor-agent``) resolves on ``$PATH``."""
-        return any(shutil.which(b) is not None for b in _DEFAULT_CURSOR_BINARIES)
+        """Return True iff this adapter's pinned binary resolves on ``$PATH``.
+
+        v1.6.1 (Bugbot review of PR #39): the previous implementation
+        checked every entry in :data:`_DEFAULT_CURSOR_BINARIES` so an
+        explicit ``CursorAdapter(binary="cursor-agent")`` override would
+        report ``is_available() == True`` even when only the OTHER
+        spelling (``"agent"``) was on PATH — and then
+        :meth:`build_command` would emit ``["cursor-agent", ...]`` for
+        :class:`subprocess.Popen` to raise ``FileNotFoundError``
+        against. The fix probes the actual binary this adapter will
+        invoke, so the availability check matches the binary the next
+        ``build_command`` call will produce (No Silent Failures).
+        """
+        return shutil.which(self.binary) is not None
 
 
 def _normalize_cli_args(value: Any) -> list[str]:
